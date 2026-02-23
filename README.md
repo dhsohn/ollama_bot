@@ -44,7 +44,6 @@ TELEGRAM_BOT_TOKEN=your_bot_token_here
 ALLOWED_TELEGRAM_USERS=your_telegram_chat_id_here
 OLLAMA_HOST=http://localhost:11434  # Ollama 서버 주소
 OLLAMA_MODEL=gpt-oss:20b           # 사용할 모델
-ORCA_RUNS_HOST_DIR=./orca_runs     # ORCA 상태 파일 디렉토리(선택)
 ```
 
 > `ALLOWED_TELEGRAM_USERS`를 placeholder 그대로 두거나 형식이 잘못되면 봇은 시작되지 않습니다(fail-fast).
@@ -249,7 +248,6 @@ security:
 | `ALLOWED_TELEGRAM_USERS` | 허용 사용자 ID (쉼표 구분) | O |
 | `OLLAMA_HOST` | Ollama 서버 주소 | X |
 | `OLLAMA_MODEL` | 기본 모델 | X |
-| `ORCA_RUNS_HOST_DIR` | ORCA run_state.json 호스트 경로 | X |
 | `LOG_LEVEL` | 로그 레벨 (DEBUG/INFO/WARNING) | X |
 
 ---

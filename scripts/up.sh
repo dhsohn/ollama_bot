@@ -35,8 +35,7 @@ mkdir -p \
   "${PROJECT_ROOT}/data/conversations" \
   "${PROJECT_ROOT}/data/memory" \
   "${PROJECT_ROOT}/data/logs" \
-  "${PROJECT_ROOT}/data/reports" \
-  "${PROJECT_ROOT}/orca_runs"
+  "${PROJECT_ROOT}/data/reports"
 
 cd "${PROJECT_ROOT}"
 

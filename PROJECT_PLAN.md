@@ -360,7 +360,6 @@ services:
       - ./skills/custom:/app/skills/custom    # 사용자 스킬 핫 리로드
       - ./auto/custom:/app/auto/custom        # 사용자 자동화 핫 리로드
       - ./config:/app/config         # 설정 파일
-      - ${ORCA_RUNS_HOST_DIR:-./orca_runs}:/orca_runs:ro  # ORCA 상태 파일(읽기 전용)
     security_opt:
       - no-new-privileges:true
     read_only: true
@@ -394,7 +393,6 @@ networks:
 ### 8.3 WSL2 호환성
 - `extra_hosts`로 호스트의 Ollama 서버 접근
 - Volume mount 경로 Windows/Linux 호환
-- ORCA 경로는 `ORCA_RUNS_HOST_DIR` 환경변수로 사용자별 경로 지정
 - Docker Desktop for Windows 또는 WSL2 내부 Docker 엔진 모두 지원
 
 ### 8.4 실행 전 모델 준비 체크
@@ -521,9 +519,6 @@ OLLAMA_HOST=http://host.docker.internal:11434
 
 # 기본 모델
 OLLAMA_MODEL=gpt-oss:20b
-
-# ORCA run_state.json 루트 디렉토리 (호스트 경로)
-ORCA_RUNS_HOST_DIR=./orca_runs
 
 # 로그 레벨
 LOG_LEVEL=INFO

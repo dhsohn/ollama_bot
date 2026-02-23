@@ -9,7 +9,6 @@ services:
       - ./skills/custom:/app/skills/custom
       - ./auto/custom:/app/auto/custom
       - ./config:/app/config
-      - ${ORCA_RUNS_HOST_DIR:-./orca_runs}:/orca_runs:ro
     security_opt:
       - no-new-privileges:true
     read_only: true

@@ -17,7 +17,6 @@ from core.engine import Engine
 from core.logging_setup import get_logger, setup_logging
 from core.memory import MemoryManager
 from core.ollama_client import OllamaClient
-from core.orca_monitor import generate_orca_progress_report
 from core.security import SecurityManager
 from core.skill_manager import SkillManager
 from core.telegram_handler import TelegramHandler
@@ -157,7 +156,6 @@ async def async_main() -> None:
         auto_dir="auto",
     )
     scheduler.set_dependencies(engine=engine, telegram=telegram)
-    scheduler.register_callable("orca_progress_report", generate_orca_progress_report)
     telegram.set_scheduler(scheduler)
     auto_count = await scheduler.load_automations()
     logger.info("automations_loaded", count=auto_count)
