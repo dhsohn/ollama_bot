@@ -121,6 +121,7 @@ def load_config(
         env_kwargs["_env_file"] = env_file
 
     settings = AppSettings(**env_kwargs)
+    explicit_env_fields = set(settings.__pydantic_fields_set__)
 
     # YAML 데이터를 서브 모델에 오버레이
     if "bot" in yaml_data:
@@ -136,12 +137,12 @@ def load_config(
     if "scheduler" in yaml_data:
         settings.scheduler = SchedulerConfig(**yaml_data["scheduler"])
 
-    # .env의 OLLAMA_HOST/OLLAMA_MODEL이 YAML보다 우선
-    if settings.ollama_host:
+    # 명시적으로 지정된 env 값만 YAML보다 우선
+    if "ollama_host" in explicit_env_fields and settings.ollama_host:
         settings.ollama.host = settings.ollama_host
-    if settings.ollama_model:
+    if "ollama_model" in explicit_env_fields and settings.ollama_model:
         settings.ollama.model = settings.ollama_model
-    if settings.scheduler_timezone:
+    if "scheduler_timezone" in explicit_env_fields and settings.scheduler_timezone:
         settings.scheduler = SchedulerConfig(timezone=settings.scheduler_timezone)
 
     # ALLOWED_TELEGRAM_USERS CSV → security.allowed_users 리스트

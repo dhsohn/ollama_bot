@@ -91,3 +91,68 @@ def test_scheduler_timezone_invalid_raises(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="Invalid timezone"):
         load_config(config_path=str(config_path), env_file=str(env_path))
+
+
+def test_yaml_values_preserved_when_env_not_set(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    env_path = tmp_path / ".env"
+    config_path.write_text(
+        "\n".join(
+            [
+                "ollama:",
+                "  host: \"http://yaml-host:11434\"",
+                "  model: \"yaml-model\"",
+                "scheduler:",
+                "  timezone: \"UTC\"",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    env_path.write_text(
+        "\n".join(
+            [
+                "TELEGRAM_BOT_TOKEN=test_token",
+                "ALLOWED_TELEGRAM_USERS=123456789",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    settings = load_config(config_path=str(config_path), env_file=str(env_path))
+    assert settings.ollama.host == "http://yaml-host:11434"
+    assert settings.ollama.model == "yaml-model"
+    assert settings.scheduler.timezone == "UTC"
+
+
+def test_env_values_override_yaml_when_explicitly_set(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    env_path = tmp_path / ".env"
+    config_path.write_text(
+        "\n".join(
+            [
+                "ollama:",
+                "  host: \"http://yaml-host:11434\"",
+                "  model: \"yaml-model\"",
+                "scheduler:",
+                "  timezone: \"UTC\"",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    env_path.write_text(
+        "\n".join(
+            [
+                "TELEGRAM_BOT_TOKEN=test_token",
+                "ALLOWED_TELEGRAM_USERS=123456789",
+                "OLLAMA_HOST=http://env-host:11434",
+                "OLLAMA_MODEL=env-model",
+                "SCHEDULER_TIMEZONE=Asia/Seoul",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    settings = load_config(config_path=str(config_path), env_file=str(env_path))
+    assert settings.ollama.host == "http://env-host:11434"
+    assert settings.ollama.model == "env-model"
+    assert settings.scheduler.timezone == "Asia/Seoul"

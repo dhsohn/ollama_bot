@@ -297,7 +297,7 @@ class AutoScheduler:
         if output.send_to_telegram and self._telegram:
             for user_id in self._config.security.allowed_users:
                 try:
-                    header = f"⏰ *자동화: {auto.name}*\n\n"
+                    header = f"⏰ 자동화: {auto.name}\n\n"
                     await self._telegram.send_message(user_id, header + result)
                 except Exception as exc:
                     self._logger.error(
@@ -310,7 +310,7 @@ class AutoScheduler:
         if output.save_to_file:
             try:
                 # 날짜 플레이스홀더 치환
-                now = datetime.now(timezone.utc)
+                now = datetime.now(self._timezone)
                 file_path = output.save_to_file.replace(
                     "{date}", now.strftime("%Y%m%d")
                 )

@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 import textwrap
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -125,13 +125,16 @@ class TestAutoScheduler:
         await scheduler.load_automations()
         await scheduler._execute_automation("report")
 
-        today = datetime.now(timezone.utc).strftime("%Y%m%d")
+        today = datetime.now(scheduler._timezone).strftime("%Y%m%d")
         output_file = auto_dir / "reports" / f"report_{today}.md"
         assert output_file.exists()
         assert output_file.read_text(encoding="utf-8") == "자동화 결과"
 
         scheduler._engine.process_prompt.assert_awaited_once()  # type: ignore[attr-defined]
         scheduler._telegram.send_message.assert_awaited_once()  # type: ignore[attr-defined]
+        send_text = scheduler._telegram.send_message.call_args[0][1]  # type: ignore[attr-defined]
+        assert send_text.startswith("⏰ 자동화: report")
+        assert "*자동화:" not in send_text
 
     @pytest.mark.asyncio
     async def test_command_action_is_disabled(self, scheduler: AutoScheduler) -> None:
@@ -277,3 +280,45 @@ class TestAutoScheduler:
 
         scheduler._engine.process_prompt.assert_awaited_once()  # type: ignore[attr-defined]
         scheduler._telegram.send_message.assert_not_awaited()  # type: ignore[attr-defined]
+
+    @pytest.mark.asyncio
+    async def test_save_to_file_uses_scheduler_timezone_for_date(
+        self,
+        scheduler: AutoScheduler,
+        auto_dir: Path,
+    ) -> None:
+        _write_auto_yaml(
+            auto_dir / "custom" / "tz_date.yaml",
+            """
+            name: "tz_date"
+            description: "타임존 날짜 테스트"
+            enabled: true
+            schedule: "0 9 * * *"
+            action:
+              type: "prompt"
+              target: "테스트"
+            output:
+              send_to_telegram: false
+              save_to_file: "reports/tz_{date}.txt"
+            retry:
+              max_attempts: 1
+              delay_seconds: 1
+            timeout: 30
+            """,
+        )
+
+        class _FixedDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):  # type: ignore[override]
+                base = datetime(2026, 1, 1, 23, 30, tzinfo=timezone.utc)
+                if tz is None:
+                    return base.replace(tzinfo=None)
+                return base.astimezone(tz)
+
+        await scheduler.load_automations()
+        with patch("core.auto_scheduler.datetime", _FixedDateTime):
+            await scheduler._execute_automation("tz_date")
+
+        # Asia/Seoul 기준이면 UTC 23:30은 다음날(2026-01-02)
+        output_file = auto_dir / "reports" / "tz_20260102.txt"
+        assert output_file.exists()
