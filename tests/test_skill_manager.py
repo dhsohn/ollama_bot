@@ -165,3 +165,53 @@ class TestReload:
         count1 = await skill_manager.load_skills()
         count2 = await skill_manager.reload_skills()
         assert count1 == count2
+
+
+class TestSkillConflicts:
+    @pytest.mark.asyncio
+    async def test_duplicate_skill_name_raises(
+        self,
+        skill_manager: SkillManager,
+        skills_dir: Path,
+    ) -> None:
+        (skills_dir / "custom" / "dup_name.yaml").write_text(
+            """
+name: "summarize"
+description: "중복 이름"
+version: "1.0"
+triggers:
+  - "/dup_name"
+system_prompt: "Duplicate name."
+allowed_tools: []
+timeout: 30
+security_level: "safe"
+""",
+            encoding="utf-8",
+        )
+
+        with pytest.raises(ValueError, match="Duplicate skill name"):
+            await skill_manager.load_skills()
+
+    @pytest.mark.asyncio
+    async def test_duplicate_trigger_raises(
+        self,
+        skill_manager: SkillManager,
+        skills_dir: Path,
+    ) -> None:
+        (skills_dir / "custom" / "dup_trigger.yaml").write_text(
+            """
+name: "another_skill"
+description: "중복 트리거"
+version: "1.0"
+triggers:
+  - "/summarize"
+system_prompt: "Duplicate trigger."
+allowed_tools: []
+timeout: 30
+security_level: "safe"
+""",
+            encoding="utf-8",
+        )
+
+        with pytest.raises(ValueError, match="Duplicate trigger"):
+            await skill_manager.load_skills()

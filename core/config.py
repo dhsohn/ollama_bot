@@ -7,9 +7,18 @@
 from __future__ import annotations
 
 from pathlib import Path
+from datetime import timedelta, timezone
+
+try:
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+except ImportError:
+    ZoneInfo = None
+
+    class ZoneInfoNotFoundError(Exception):
+        """zoneinfo 미지원 환경에서의 대체 예외."""
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings
 
 
@@ -51,6 +60,29 @@ class MemoryConfig(BaseModel):
     conversation_retention_days: int = 30
 
 
+class SchedulerConfig(BaseModel):
+    timezone: str = "Asia/Seoul"
+
+    @field_validator("timezone")
+    @classmethod
+    def validate_timezone(cls, value: str) -> str:
+        if ZoneInfo is not None:
+            try:
+                ZoneInfo(value)
+            except ZoneInfoNotFoundError as exc:
+                raise ValueError(f"Invalid timezone: {value}") from exc
+            return value
+
+        # zoneinfo 미지원(Python 3.8 등) 환경 최소 지원
+        fallback_timezones = {
+            "UTC": timezone.utc,
+            "Asia/Seoul": timezone(timedelta(hours=9), name="Asia/Seoul"),
+        }
+        if value not in fallback_timezones:
+            raise ValueError(f"Invalid timezone: {value}")
+        return value
+
+
 class AppSettings(BaseSettings):
     """루트 설정. .env에서 시크릿을, config.yaml에서 나머지를 로드한다."""
 
@@ -58,6 +90,7 @@ class AppSettings(BaseSettings):
     allowed_telegram_users: str = ""
     ollama_host: str = "http://host.docker.internal:11434"
     ollama_model: str = "gpt-oss:20b"
+    scheduler_timezone: str = "Asia/Seoul"
     log_level: str = "INFO"
     data_dir: str = "/app/data"
 
@@ -66,6 +99,7 @@ class AppSettings(BaseSettings):
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
     security: SecurityConfig = Field(default_factory=SecurityConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
+    scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
@@ -99,12 +133,16 @@ def load_config(
         settings.security = SecurityConfig(**yaml_data["security"])
     if "memory" in yaml_data:
         settings.memory = MemoryConfig(**yaml_data["memory"])
+    if "scheduler" in yaml_data:
+        settings.scheduler = SchedulerConfig(**yaml_data["scheduler"])
 
     # .env의 OLLAMA_HOST/OLLAMA_MODEL이 YAML보다 우선
     if settings.ollama_host:
         settings.ollama.host = settings.ollama_host
     if settings.ollama_model:
         settings.ollama.model = settings.ollama_model
+    if settings.scheduler_timezone:
+        settings.scheduler = SchedulerConfig(timezone=settings.scheduler_timezone)
 
     # ALLOWED_TELEGRAM_USERS CSV → security.allowed_users 리스트
     if settings.allowed_telegram_users:

@@ -1,0 +1,20 @@
+name: "preference_extraction"
+description: "대화에서 사용자 선호도와 고정 정보를 추출하여 장기 메모리에 저장합니다"
+version: "1.0"
+enabled: true
+schedule: "0 0 * * *"
+action:
+  type: "callable"
+  target: "extract_preferences"
+  parameters:
+    days_ago: 1
+    timezone_name: "Asia/Seoul"
+    max_messages_per_user: 300
+    max_chars_per_message: 500
+output:
+  send_to_telegram: false
+  save_to_file: "reports/preference_extraction_{date}.md"
+retry:
+  max_attempts: 2
+  delay_seconds: 30
+timeout: 180

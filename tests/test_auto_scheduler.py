@@ -64,6 +64,13 @@ def scheduler(
 
 
 class TestAutoScheduler:
+    def test_scheduler_uses_configured_timezone(
+        self,
+        scheduler: AutoScheduler,
+        app_settings: AppSettings,
+    ) -> None:
+        assert str(scheduler._scheduler.timezone) == app_settings.scheduler.timezone
+
     @pytest.mark.asyncio
     async def test_load_and_list_automations(self, scheduler: AutoScheduler, auto_dir: Path) -> None:
         _write_auto_yaml(
@@ -203,3 +210,70 @@ class TestAutoScheduler:
     def test_register_callable_non_callable_raises(self, scheduler: AutoScheduler) -> None:
         with pytest.raises(TypeError, match="expects a callable"):
             scheduler.register_callable("bad", "not a function")  # type: ignore[arg-type]
+
+    @pytest.mark.asyncio
+    async def test_duplicate_automation_name_raises(
+        self,
+        scheduler: AutoScheduler,
+        auto_dir: Path,
+    ) -> None:
+        _write_auto_yaml(
+            auto_dir / "_builtin" / "same_name.yaml",
+            """
+            name: "dup_auto"
+            description: "builtin"
+            enabled: true
+            schedule: "0 9 * * *"
+            action:
+              type: "prompt"
+              target: "A"
+            """,
+        )
+        _write_auto_yaml(
+            auto_dir / "custom" / "same_name.yaml",
+            """
+            name: "dup_auto"
+            description: "custom"
+            enabled: true
+            schedule: "0 10 * * *"
+            action:
+              type: "prompt"
+              target: "B"
+            """,
+        )
+
+        with pytest.raises(ValueError, match="Duplicate automation name"):
+            await scheduler.load_automations()
+
+    @pytest.mark.asyncio
+    async def test_empty_result_is_success_without_retry(
+        self,
+        scheduler: AutoScheduler,
+        auto_dir: Path,
+    ) -> None:
+        scheduler._engine.process_prompt = AsyncMock(return_value="")  # type: ignore[attr-defined]
+
+        _write_auto_yaml(
+            auto_dir / "custom" / "empty_result.yaml",
+            """
+            name: "empty_result"
+            description: "빈 결과 테스트"
+            enabled: true
+            schedule: "0 9 * * *"
+            action:
+              type: "prompt"
+              target: "빈 문자열을 반환"
+            output:
+              send_to_telegram: true
+            retry:
+              max_attempts: 3
+              delay_seconds: 1
+            timeout: 30
+            """,
+        )
+
+        await scheduler.load_automations()
+        await scheduler._execute_automation("empty_result")
+
+        scheduler._engine.process_prompt.assert_awaited_once()  # type: ignore[attr-defined]
+        scheduler._telegram.send_message.assert_not_awaited()  # type: ignore[attr-defined]

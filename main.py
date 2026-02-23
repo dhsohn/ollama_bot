@@ -11,6 +11,7 @@ import signal
 import sys
 from pathlib import Path
 
+from core.automation_callables import register_builtin_callables
 from core.auto_scheduler import AutoScheduler
 from core.config import load_config
 from core.engine import Engine
@@ -73,7 +74,8 @@ async def async_main() -> None:
         )
         sys.exit(1)
 
-    setup_logging(config.log_level)
+    log_dir = str(Path(config.data_dir) / "logs")
+    setup_logging(config.log_level, log_dir=log_dir)
     logger = get_logger("main")
     logger.info("starting", version="0.1.0")
 
@@ -131,7 +133,18 @@ async def async_main() -> None:
 
     # 4. 스킬 매니저 (security 의존)
     skills = SkillManager(security=security, skills_dir="skills")
-    skill_count = await skills.load_skills()
+    try:
+        skill_count = await skills.load_skills()
+    except Exception as exc:
+        logger.error("skills_init_failed", error=str(exc))
+        await memory.close()
+        await ollama.close()
+        print(
+            f"오류: 스킬 로드 실패\n{exc}\n"
+            "중복 이름/트리거 또는 YAML 형식을 확인하세요.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     logger.info("skills_loaded", count=skill_count)
 
     # 5. 엔진 (ollama, memory, skills 의존)
@@ -150,14 +163,44 @@ async def async_main() -> None:
     )
 
     # 7. 자동화 스케줄러 (engine, telegram 의존)
-    scheduler = AutoScheduler(
-        config=config,
-        security=security,
-        auto_dir="auto",
-    )
+    try:
+        scheduler = AutoScheduler(
+            config=config,
+            security=security,
+            auto_dir="auto",
+        )
+    except Exception as exc:
+        logger.error("scheduler_init_failed", error=str(exc))
+        await memory.close()
+        await ollama.close()
+        print(
+            f"오류: 자동화 스케줄러 초기화 실패\n{exc}\n"
+            "SCHEDULER_TIMEZONE 설정을 확인하세요.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     scheduler.set_dependencies(engine=engine, telegram=telegram)
+    register_builtin_callables(
+        scheduler=scheduler,
+        engine=engine,
+        memory=memory,
+        allowed_users=config.security.allowed_users,
+        data_dir=config.data_dir,
+    )
     telegram.set_scheduler(scheduler)
-    auto_count = await scheduler.load_automations()
+    try:
+        auto_count = await scheduler.load_automations()
+    except Exception as exc:
+        logger.error("automations_init_failed", error=str(exc))
+        await memory.close()
+        await ollama.close()
+        print(
+            f"오류: 자동화 로드 실패\n{exc}\n"
+            "중복 이름 또는 YAML 형식을 확인하세요.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     logger.info("automations_loaded", count=auto_count)
 
     # ── 텔레그램 Application 초기화 ──
@@ -178,39 +221,76 @@ async def async_main() -> None:
             # Windows에서는 signal handler가 제한적
             pass
 
+    memory_maintenance_task: asyncio.Task | None = None
+    scheduler_started = False
+    app_started = False
+    updater_started = False
+
     async with app:
-        await app.start()
-        scheduler.start()
-        memory_maintenance_task = asyncio.create_task(
-            _memory_maintenance_loop(memory, logger),
-            name="memory_maintenance",
-        )
+        try:
+            await app.start()
+            app_started = True
 
-        logger.info(
-            "bot_running",
-            model=config.ollama.model,
-            skills=skill_count,
-            automations=auto_count,
-        )
+            scheduler.start()
+            scheduler_started = True
 
-        await app.updater.start_polling(
-            poll_interval=config.telegram.polling_interval,
-            drop_pending_updates=True,
-        )
+            memory_maintenance_task = asyncio.create_task(
+                _memory_maintenance_loop(memory, logger),
+                name="memory_maintenance",
+            )
 
-        # 종료 시그널 대기
-        await stop_event.wait()
+            logger.info(
+                "bot_running",
+                model=config.ollama.model,
+                skills=skill_count,
+                automations=auto_count,
+            )
 
-        # ── 정리 (역순) ──
-        logger.info("shutting_down")
-        scheduler.stop()
-        memory_maintenance_task.cancel()
-        await asyncio.gather(memory_maintenance_task, return_exceptions=True)
-        await app.updater.stop()
-        await app.stop()
-        await memory.close()
-        await ollama.close()
-        logger.info("shutdown_complete")
+            await app.updater.start_polling(
+                poll_interval=config.telegram.polling_interval,
+                drop_pending_updates=True,
+            )
+            updater_started = True
+
+            # 종료 시그널 대기
+            await stop_event.wait()
+        finally:
+            # ── 정리 (역순) ──
+            logger.info("shutting_down")
+
+            if scheduler_started:
+                try:
+                    scheduler.stop()
+                except Exception as exc:
+                    logger.error("scheduler_stop_failed", error=str(exc))
+
+            if memory_maintenance_task is not None:
+                memory_maintenance_task.cancel()
+                await asyncio.gather(memory_maintenance_task, return_exceptions=True)
+
+            if updater_started:
+                try:
+                    await app.updater.stop()
+                except Exception as exc:
+                    logger.error("updater_stop_failed", error=str(exc))
+
+            if app_started:
+                try:
+                    await app.stop()
+                except Exception as exc:
+                    logger.error("app_stop_failed", error=str(exc))
+
+            try:
+                await memory.close()
+            except Exception as exc:
+                logger.error("memory_close_failed", error=str(exc))
+
+            try:
+                await ollama.close()
+            except Exception as exc:
+                logger.error("ollama_close_failed", error=str(exc))
+
+            logger.info("shutdown_complete")
 
 
 def main() -> None:

@@ -41,19 +41,20 @@ def mock_engine() -> AsyncMock:
         "skills_loaded": 3,
         "current_model": "test-model",
     })
-    engine._skills = MagicMock()
-    engine._skills.list_skills.return_value = [
+    engine.list_skills = MagicMock(return_value=[
         {"name": "summarize", "description": "요약", "triggers": ["/summarize"], "security_level": "safe"}
-    ]
-    engine._ollama = MagicMock()
-    engine._ollama.default_model = "test-model"
-    engine._memory = AsyncMock()
-    engine._memory.get_memory_stats = AsyncMock(return_value={
+    ])
+    engine.reload_skills = AsyncMock(return_value=5)
+    engine.list_models = AsyncMock(return_value=[{"name": "test-model", "size": 1024}])
+    engine.get_current_model = MagicMock(return_value="test-model")
+    engine.get_memory_stats = AsyncMock(return_value={
         "chat_id": 111,
         "conversation_count": 10,
         "memory_count": 5,
         "oldest_conversation": "2026-01-01",
     })
+    engine.clear_conversation = AsyncMock(return_value=0)
+    engine.export_conversation_markdown = AsyncMock()
     return engine
 
 
@@ -140,7 +141,7 @@ class TestPrivateChatOnly:
 class TestModelCommand:
     @pytest.mark.asyncio
     async def test_model_list_error_returns_message(self, telegram_handler: TelegramHandler) -> None:
-        telegram_handler._engine._ollama.list_models = AsyncMock(side_effect=RuntimeError("down"))
+        telegram_handler._engine.list_models = AsyncMock(side_effect=RuntimeError("down"))
 
         chat = MagicMock()
         chat.id = 111
@@ -192,7 +193,7 @@ class TestReloadCommands:
     async def test_skills_reload_command(
         self, telegram_handler: TelegramHandler
     ) -> None:
-        telegram_handler._engine._skills.reload_skills = AsyncMock(return_value=5)
+        telegram_handler._engine.reload_skills = AsyncMock(return_value=5)
 
         chat = MagicMock()
         chat.id = 111
@@ -210,7 +211,7 @@ class TestReloadCommands:
 
         await telegram_handler._cmd_skills(update, context)
 
-        telegram_handler._engine._skills.reload_skills.assert_awaited_once()
+        telegram_handler._engine.reload_skills.assert_awaited_once()
         message.reply_text.assert_awaited_once_with("스킬을 다시 로드했습니다: 5개")
 
     @pytest.mark.asyncio

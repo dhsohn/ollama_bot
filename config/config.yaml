@@ -31,3 +31,6 @@ memory:
   backend: "sqlite"
   max_long_term_entries: 1000
   conversation_retention_days: 30
+
+scheduler:
+  timezone: "Asia/Seoul"

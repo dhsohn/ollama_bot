@@ -116,12 +116,16 @@ class OllamaClient:
         messages: list[dict[str, str]],
         model: str | None = None,
         temperature: float | None = None,
+        max_tokens: int | None = None,
         timeout: int = 60,
     ) -> AsyncGenerator[str, None]:
         """스트리밍 채팅 요청. 청크를 순차적으로 반환한다."""
         assert self._client is not None
         model = model or self._default_model
-        options = {"temperature": self._temperature if temperature is None else temperature}
+        options = {
+            "temperature": self._temperature if temperature is None else temperature,
+            "num_predict": self._max_tokens if max_tokens is None else max_tokens,
+        }
 
         try:
             response = await asyncio.wait_for(

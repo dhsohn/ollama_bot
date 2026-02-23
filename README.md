@@ -44,6 +44,7 @@ TELEGRAM_BOT_TOKEN=your_bot_token_here
 ALLOWED_TELEGRAM_USERS=your_telegram_chat_id_here
 OLLAMA_HOST=http://localhost:11434  # Ollama 서버 주소
 OLLAMA_MODEL=gpt-oss:20b           # 사용할 모델
+SCHEDULER_TIMEZONE=Asia/Seoul      # 자동화 cron 기준 타임존
 ```
 
 > `ALLOWED_TELEGRAM_USERS`를 placeholder 그대로 두거나 형식이 잘못되면 봇은 시작되지 않습니다(fail-fast).
@@ -162,6 +163,8 @@ security_level: "safe"
 
 파일 변경 후 `/skills reload`로 다시 로드하고 `/skills`로 확인할 수 있습니다.
 
+> 스킬 `name` 또는 `triggers`가 기존 스킬과 중복되면 로드가 실패합니다(오류 처리).
+
 ---
 
 ## 커스텀 자동화 추가
@@ -175,7 +178,7 @@ description: "매일 아침 인사"
 enabled: true
 schedule: "0 8 * * *"          # cron 표현식: 매일 08:00
 action:
-  type: "prompt"               # skill | prompt
+  type: "prompt"               # skill | prompt | callable
   target: "오늘의 동기부여 명언을 알려줘"
 output:
   send_to_telegram: true
@@ -186,6 +189,8 @@ timeout: 60
 ```
 
 파일 변경 후 `/auto reload`로 다시 로드할 수 있습니다.
+
+> 자동화 `name`이 기존 자동화와 중복되면 로드가 실패합니다(오류 처리).
 
 ---
 
@@ -238,6 +243,9 @@ ollama:
 
 security:
   rate_limit: 30                 # 분당 최대 요청 수
+
+scheduler:
+  timezone: "Asia/Seoul"         # 자동화 cron 실행 기준 타임존
 ```
 
 ### 환경변수 (.env)
@@ -248,6 +256,7 @@ security:
 | `ALLOWED_TELEGRAM_USERS` | 허용 사용자 ID (쉼표 구분) | O |
 | `OLLAMA_HOST` | Ollama 서버 주소 | X |
 | `OLLAMA_MODEL` | 기본 모델 | X |
+| `SCHEDULER_TIMEZONE` | 자동화 스케줄 타임존 (IANA, 예: `Asia/Seoul`) | X |
 | `LOG_LEVEL` | 로그 레벨 (DEBUG/INFO/WARNING) | X |
 
 ---

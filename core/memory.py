@@ -95,7 +95,10 @@ class MemoryManager:
         content: str,
         metadata: dict | None = None,
     ) -> None:
-        """대화 턴을 저장한다. 오래된 항목은 자동 정리된다."""
+        """대화 턴을 저장한다. 오래된 항목은 자동 정리된다.
+
+        INSERT와 정리를 같은 트랜잭션으로 묶어 디스크 I/O를 줄인다.
+        """
         assert self._db is not None
         meta_json = json.dumps(metadata, ensure_ascii=False) if metadata else None
         await self._db.execute(
@@ -103,26 +106,22 @@ class MemoryManager:
             "VALUES (?, ?, ?, ?)",
             (chat_id, role, content, meta_json),
         )
-        await self._db.commit()
-
-        # 대화 버퍼 초과 시 오래된 항목 삭제
-        async with self._db.execute(
-            "SELECT COUNT(*) FROM conversations WHERE chat_id = ?",
-            (chat_id,),
-        ) as cursor:
-            row = await cursor.fetchone()
-            count = row[0] if row else 0
 
         limit = self._max_conversation * 2
-        if count > limit:
+        if limit > 0:
             await self._db.execute(
-                "DELETE FROM conversations WHERE id IN ("
+                "DELETE FROM conversations WHERE chat_id = ? AND id IN ("
                 "  SELECT id FROM conversations WHERE chat_id = ? "
-                "  ORDER BY id ASC LIMIT ?"
+                "  ORDER BY id DESC LIMIT -1 OFFSET ?"
                 ")",
-                (chat_id, count - limit),
+                (chat_id, chat_id, limit),
             )
-            await self._db.commit()
+        else:
+            await self._db.execute(
+                "DELETE FROM conversations WHERE chat_id = ?",
+                (chat_id,),
+            )
+        await self._db.commit()
 
     async def get_conversation(
         self,
@@ -141,6 +140,51 @@ class MemoryManager:
         ) as cursor:
             rows = await cursor.fetchall()
         return [{"role": row[0], "content": row[1]} for row in rows]
+
+    async def get_conversation_in_range(
+        self,
+        chat_id: int,
+        start_at: datetime,
+        end_at: datetime,
+        limit: int | None = None,
+    ) -> list[dict[str, str]]:
+        """주어진 시간 구간의 대화 메시지를 조회한다.
+
+        start_at/end_at은 timezone-aware datetime이어야 하며,
+        [start_at, end_at) 범위로 조회한다.
+        """
+        assert self._db is not None
+        if start_at.tzinfo is None or end_at.tzinfo is None:
+            raise ValueError("start_at and end_at must be timezone-aware datetimes")
+        if end_at <= start_at:
+            raise ValueError("end_at must be later than start_at")
+
+        start_text = start_at.astimezone(timezone.utc).strftime(_SQLITE_TIMESTAMP_FORMAT)
+        end_text = end_at.astimezone(timezone.utc).strftime(_SQLITE_TIMESTAMP_FORMAT)
+
+        query = (
+            "SELECT id, role, content, timestamp FROM conversations "
+            "WHERE chat_id = ? AND timestamp >= ? AND timestamp < ? "
+            "ORDER BY id ASC"
+        )
+        params: list = [chat_id, start_text, end_text]
+        if limit is not None:
+            if limit <= 0:
+                return []
+            query += " LIMIT ?"
+            params.append(limit)
+
+        async with self._db.execute(query, params) as cursor:
+            rows = await cursor.fetchall()
+
+        return [
+            {
+                "role": row[1],
+                "content": row[2],
+                "timestamp": row[3],
+            }
+            for row in rows
+        ]
 
     async def clear_conversation(self, chat_id: int) -> int:
         """특정 채팅의 대화 기록을 삭제한다."""
@@ -307,7 +351,7 @@ class MemoryManager:
 
         async with self._db.execute(
             "SELECT role, content, timestamp FROM conversations "
-            "WHERE chat_id = ? ORDER BY timestamp ASC",
+            "WHERE chat_id = ? ORDER BY id ASC",
             (chat_id,),
         ) as cursor:
             rows = await cursor.fetchall()

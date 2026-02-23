@@ -8,9 +8,17 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+
+try:
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+except ImportError:
+    ZoneInfo = None
+
+    class ZoneInfoNotFoundError(Exception):
+        """zoneinfo 미지원 환경에서의 대체 예외."""
 
 import yaml
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -23,7 +31,7 @@ from core.security import SecurityManager
 
 
 class AutoAction(BaseModel):
-    type: str  # "skill" | "command" | "prompt"
+    type: str  # "skill" | "command" | "prompt" | "callable"
     target: str
     parameters: dict = Field(default_factory=dict)
 
@@ -60,6 +68,10 @@ class AutoDefinition(BaseModel):
         return v
 
 
+class DuplicateAutomationError(ValueError):
+    """자동화 이름 충돌."""
+
+
 class AutoScheduler:
     """자동화 작업을 스케줄링하고 실행한다."""
 
@@ -72,13 +84,32 @@ class AutoScheduler:
         self._config = config
         self._security = security
         self._auto_dir = Path(auto_dir)
-        self._scheduler = AsyncIOScheduler()
+        self._timezone = self._resolve_timezone(config.scheduler.timezone)
+        self._scheduler = AsyncIOScheduler(timezone=self._timezone)
         self._automations: dict[str, AutoDefinition] = {}
         self._logger = get_logger("auto_scheduler")
         # engine과 telegram은 순환 의존 방지를 위해 나중에 주입
         self._engine = None
         self._telegram = None
         self._callables: dict[str, Callable[..., Any]] = {}
+
+    @staticmethod
+    def _resolve_timezone(name: str):
+        """실행 환경에서 사용 가능한 tzinfo를 반환한다."""
+        if ZoneInfo is not None:
+            try:
+                return ZoneInfo(name)
+            except ZoneInfoNotFoundError as exc:
+                raise ValueError(f"Invalid timezone: {name}") from exc
+
+        if name == "UTC":
+            return timezone.utc
+        if name == "Asia/Seoul":
+            return timezone(timedelta(hours=9), name="Asia/Seoul")
+        raise ValueError(
+            f"Invalid timezone on this Python runtime: {name}. "
+            "Use UTC or Asia/Seoul."
+        )
 
     def set_dependencies(self, engine, telegram) -> None:
         """engine과 telegram 참조를 주입한다."""
@@ -94,7 +125,8 @@ class AutoScheduler:
 
     async def load_automations(self) -> int:
         """_builtin/ 및 custom/ 디렉토리에서 자동화 YAML을 로드한다."""
-        self._automations.clear()
+        new_automations: dict[str, AutoDefinition] = {}
+        name_sources: dict[str, Path] = {}
         loaded = 0
 
         for sub_dir in ["_builtin", "custom"]:
@@ -106,9 +138,14 @@ class AutoScheduler:
                 try:
                     auto = self._load_auto_file(yaml_file)
                     if auto:
-                        self._automations[auto.name] = auto
-                        if auto.enabled:
-                            self._register_job(auto)
+                        existing_source = name_sources.get(auto.name)
+                        if existing_source is not None:
+                            raise DuplicateAutomationError(
+                                f"Duplicate automation name '{auto.name}' "
+                                f"({existing_source} vs {yaml_file})"
+                            )
+                        name_sources[auto.name] = yaml_file
+                        new_automations[auto.name] = auto
                         loaded += 1
                         self._logger.info(
                             "automation_loaded",
@@ -116,12 +153,25 @@ class AutoScheduler:
                             enabled=auto.enabled,
                             schedule=auto.schedule,
                         )
+                except DuplicateAutomationError:
+                    raise
                 except Exception as exc:
                     self._logger.error(
                         "automation_load_failed",
                         file=str(yaml_file),
                         error=str(exc),
                     )
+
+        # 새 자동화 로드가 성공했을 때만 기존 상태를 교체한다.
+        for name in list(self._automations.keys()):
+            job_id = f"auto_{name}"
+            if self._scheduler.get_job(job_id):
+                self._scheduler.remove_job(job_id)
+
+        self._automations = new_automations
+        for auto in self._automations.values():
+            if auto.enabled:
+                self._register_job(auto)
 
         self._logger.info("automations_loaded_total", count=loaded)
         return loaded
@@ -145,6 +195,7 @@ class AutoScheduler:
             day=parts[2],
             month=parts[3],
             day_of_week=parts[4],
+            timezone=self._timezone,
         )
 
         self._scheduler.add_job(
@@ -166,6 +217,7 @@ class AutoScheduler:
 
         last_error: Exception | None = None
         result: str | None = None
+        succeeded = False
 
         for attempt in range(auto.retry.max_attempts):
             try:
@@ -173,6 +225,7 @@ class AutoScheduler:
                     self._run_action(auto),
                     timeout=auto.timeout,
                 )
+                succeeded = True
                 break
             except Exception as exc:
                 last_error = exc
@@ -185,9 +238,12 @@ class AutoScheduler:
                 if attempt < auto.retry.max_attempts - 1:
                     await asyncio.sleep(auto.retry.delay_seconds)
 
-        if result:
-            self._logger.info("automation_completed", name=auto_name)
-            await self._deliver_output(auto, result)
+        if succeeded:
+            if result:
+                self._logger.info("automation_completed", name=auto_name)
+                await self._deliver_output(auto, result)
+            else:
+                self._logger.info("automation_completed_no_output", name=auto_name)
         else:
             self._logger.error(
                 "automation_failed",
@@ -218,8 +274,10 @@ class AutoScheduler:
                     f"Available: {list(self._callables.keys())}"
                 )
             if asyncio.iscoroutinefunction(func):
-                return await func(**action.parameters)
-            return func(**action.parameters)
+                output = await func(**action.parameters)
+            else:
+                output = func(**action.parameters)
+            return "" if output is None else str(output)
         elif action.type == "command":
             # v0.1에서는 보안상 시스템 명령 실행 비활성화
             self._logger.warning(
@@ -328,8 +386,4 @@ class AutoScheduler:
 
     async def reload_automations(self) -> int:
         """모든 작업을 제거하고 다시 로드한다."""
-        for auto in self._automations.values():
-            job_id = f"auto_{auto.name}"
-            if self._scheduler.get_job(job_id):
-                self._scheduler.remove_job(job_id)
         return await self.load_automations()

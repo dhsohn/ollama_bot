@@ -51,6 +51,14 @@ class SkillDefinition(BaseModel):
         return v
 
 
+class DuplicateSkillNameError(ValueError):
+    """스킬 이름 충돌."""
+
+
+class DuplicateSkillTriggerError(ValueError):
+    """스킬 트리거 충돌."""
+
+
 class SkillManager:
     """스킬을 로드, 매칭, 관리한다."""
 
@@ -67,8 +75,10 @@ class SkillManager:
 
     async def load_skills(self) -> int:
         """_builtin/ 및 custom/ 디렉토리에서 스킬 YAML을 로드한다."""
-        self._skills.clear()
-        self._trigger_map.clear()
+        new_skills: dict[str, SkillDefinition] = {}
+        new_trigger_map: dict[str, str] = {}
+        name_sources: dict[str, Path] = {}
+        trigger_sources: dict[str, Path] = {}
         loaded = 0
 
         for sub_dir in ["_builtin", "custom"]:
@@ -80,9 +90,30 @@ class SkillManager:
                 try:
                     skill = self._load_skill_file(yaml_file)
                     if skill:
-                        self._skills[skill.name] = skill
+                        existing_source = name_sources.get(skill.name)
+                        if existing_source is not None:
+                            raise DuplicateSkillNameError(
+                                f"Duplicate skill name '{skill.name}' "
+                                f"({existing_source} vs {yaml_file})"
+                            )
+
                         for trigger in skill.triggers:
-                            self._trigger_map[trigger.lower()] = skill.name
+                            trigger_key = trigger.lower()
+                            existing_skill = new_trigger_map.get(trigger_key)
+                            if existing_skill and existing_skill != skill.name:
+                                existing_trigger_source = trigger_sources.get(trigger_key)
+                                raise DuplicateSkillTriggerError(
+                                    f"Duplicate trigger '{trigger}' for skills "
+                                    f"'{existing_skill}' and '{skill.name}' "
+                                    f"({existing_trigger_source} vs {yaml_file})"
+                                )
+
+                        new_skills[skill.name] = skill
+                        name_sources[skill.name] = yaml_file
+                        for trigger in skill.triggers:
+                            trigger_key = trigger.lower()
+                            new_trigger_map[trigger_key] = skill.name
+                            trigger_sources[trigger_key] = yaml_file
                         loaded += 1
                         self._logger.info(
                             "skill_loaded",
@@ -90,6 +121,8 @@ class SkillManager:
                             triggers=skill.triggers,
                             source=str(yaml_file),
                         )
+                except (DuplicateSkillNameError, DuplicateSkillTriggerError):
+                    raise
                 except Exception as exc:
                     self._logger.error(
                         "skill_load_failed",
@@ -97,6 +130,9 @@ class SkillManager:
                         error=str(exc),
                     )
 
+        # 전체 로드가 성공했을 때만 활성 스킬 상태를 교체한다.
+        self._skills = new_skills
+        self._trigger_map = new_trigger_map
         self._logger.info("skills_loaded_total", count=loaded)
         return loaded
 

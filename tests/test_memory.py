@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -58,6 +59,46 @@ class TestConversationOrder:
         history = await memory_manager.get_conversation(chat_id, limit=10)
         # max_conversation_length=2 => 최대 4개(user/assistant 2쌍) 유지
         assert [m["content"] for m in history] == ["m2", "m3", "m4", "m5"]
+
+    @pytest.mark.asyncio
+    async def test_get_conversation_in_range_filters_time_window(
+        self,
+        memory_manager: MemoryManager,
+    ) -> None:
+        chat_id = 404
+        await memory_manager.add_message(chat_id, "user", "yesterday-message")
+        await memory_manager.add_message(chat_id, "assistant", "today-message")
+
+        assert memory_manager._db is not None
+        now = datetime.now(timezone.utc)
+        yesterday = now - timedelta(days=1)
+        today = now
+
+        await memory_manager._db.execute(
+            "UPDATE conversations SET timestamp = ? WHERE chat_id = ? AND content = ?",
+            (yesterday.strftime("%Y-%m-%d %H:%M:%S"), chat_id, "yesterday-message"),
+        )
+        await memory_manager._db.execute(
+            "UPDATE conversations SET timestamp = ? WHERE chat_id = ? AND content = ?",
+            (today.strftime("%Y-%m-%d %H:%M:%S"), chat_id, "today-message"),
+        )
+        await memory_manager._db.commit()
+
+        start_at = datetime(
+            year=yesterday.year,
+            month=yesterday.month,
+            day=yesterday.day,
+            tzinfo=timezone.utc,
+        )
+        end_at = start_at + timedelta(days=1)
+        rows = await memory_manager.get_conversation_in_range(
+            chat_id=chat_id,
+            start_at=start_at,
+            end_at=end_at,
+        )
+
+        assert len(rows) == 1
+        assert rows[0]["content"] == "yesterday-message"
 
 
 class TestRetentionPrune:

@@ -10,6 +10,7 @@ import asyncio
 import functools
 import time
 from collections.abc import Callable
+from html import escape
 from pathlib import Path
 
 from telegram import BotCommand, Update
@@ -176,24 +177,34 @@ class TelegramHandler:
     async def _cmd_skills(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         args = context.args or []
         if args and args[0] == "reload":
-            count = await self._engine._skills.reload_skills()
-            await update.effective_message.reply_text(  # type: ignore[union-attr]
-                f"스킬을 다시 로드했습니다: {count}개"
-            )
+            try:
+                count = await self._engine.reload_skills()
+                await update.effective_message.reply_text(  # type: ignore[union-attr]
+                    f"스킬을 다시 로드했습니다: {count}개"
+                )
+            except Exception as exc:
+                self._logger.error("skills_reload_failed", error=str(exc))
+                await update.effective_message.reply_text(  # type: ignore[union-attr]
+                    "스킬 로드 중 오류가 발생했습니다. YAML 중복/형식을 확인하세요."
+                )
             return
 
-        skills = self._engine._skills.list_skills()
+        skills = self._engine.list_skills()
         if not skills:
             await update.effective_message.reply_text("등록된 스킬이 없습니다.")  # type: ignore[union-attr]
             return
 
-        lines = ["🔧 *사용 가능한 스킬*\n"]
+        lines = ["🔧 <b>사용 가능한 스킬</b>\n"]
         for s in skills:
-            triggers = ", ".join(f"`{t}`" for t in s["triggers"])
-            lines.append(f"• *{s['name']}* — {s['description']}\n  트리거: {triggers}")
+            triggers = ", ".join(f"<code>{self._escape_html(t)}</code>" for t in s["triggers"])
+            lines.append(
+                f"• <b>{self._escape_html(s['name'])}</b> — "
+                f"{self._escape_html(s['description'])}\n"
+                f"  트리거: {triggers}"
+            )
 
         await update.effective_message.reply_text(  # type: ignore[union-attr]
-            "\n".join(lines), parse_mode=ParseMode.MARKDOWN
+            "\n".join(lines), parse_mode=ParseMode.HTML
         )
 
     @_auth_required
@@ -209,15 +220,16 @@ class TelegramHandler:
                 await update.effective_message.reply_text("등록된 자동화가 없습니다.")  # type: ignore[union-attr]
                 return
 
-            lines = ["⏰ *자동화 목록*\n"]
+            lines = ["⏰ <b>자동화 목록</b>\n"]
             for a in automations:
                 status = "✅" if a["enabled"] else "❌"
                 lines.append(
-                    f"{status} *{a['name']}* — {a['description']}\n"
-                    f"  스케줄: `{a['schedule']}`"
+                    f"{status} <b>{self._escape_html(a['name'])}</b> — "
+                    f"{self._escape_html(a['description'])}\n"
+                    f"  스케줄: <code>{self._escape_html(a['schedule'])}</code>"
                 )
             await update.effective_message.reply_text(  # type: ignore[union-attr]
-                "\n".join(lines), parse_mode=ParseMode.MARKDOWN
+                "\n".join(lines), parse_mode=ParseMode.HTML
             )
 
         elif len(args) >= 2 and args[0] == "enable":
@@ -231,10 +243,16 @@ class TelegramHandler:
             await update.effective_message.reply_text(msg)  # type: ignore[union-attr]
 
         elif args[0] == "reload":
-            count = await self._scheduler.reload_automations()
-            await update.effective_message.reply_text(  # type: ignore[union-attr]
-                f"자동화를 다시 로드했습니다: {count}개"
-            )
+            try:
+                count = await self._scheduler.reload_automations()
+                await update.effective_message.reply_text(  # type: ignore[union-attr]
+                    f"자동화를 다시 로드했습니다: {count}개"
+                )
+            except Exception as exc:
+                self._logger.error("auto_reload_failed", error=str(exc))
+                await update.effective_message.reply_text(  # type: ignore[union-attr]
+                    "자동화 로드 중 오류가 발생했습니다. YAML 중복/형식을 확인하세요."
+                )
 
         else:
             await update.effective_message.reply_text(  # type: ignore[union-attr]
@@ -246,16 +264,16 @@ class TelegramHandler:
         chat_id = update.effective_chat.id  # type: ignore[union-attr]
         args = context.args or []
         if not args:
-            current = self._engine._ollama.default_model
+            current = self._engine.get_current_model()
             await update.effective_message.reply_text(  # type: ignore[union-attr]
-                f"현재 모델: `{current}`\n\n"
-                "모델 변경: `/model <모델명>`\n"
-                "모델 목록: `/model list`",
-                parse_mode=ParseMode.MARKDOWN,
+                f"현재 모델: <code>{self._escape_html(current)}</code>\n\n"
+                "모델 변경: <code>/model &lt;모델명&gt;</code>\n"
+                "모델 목록: <code>/model list</code>",
+                parse_mode=ParseMode.HTML,
             )
         elif args[0] == "list":
             try:
-                models = await self._engine._ollama.list_models()
+                models = await self._engine.list_models()
             except Exception as exc:
                 self._logger.error(
                     "model_list_failed",
@@ -270,12 +288,14 @@ class TelegramHandler:
             if not models:
                 await update.effective_message.reply_text("설치된 모델이 없습니다.")  # type: ignore[union-attr]
                 return
-            lines = ["📦 *설치된 모델*\n"]
+            lines = ["📦 <b>설치된 모델</b>\n"]
             for m in models:
                 size_mb = m["size"] / (1024 * 1024) if m["size"] else 0
-                lines.append(f"• `{m['name']}` ({size_mb:.0f}MB)")
+                lines.append(
+                    f"• <code>{self._escape_html(m['name'])}</code> ({size_mb:.0f}MB)"
+                )
             await update.effective_message.reply_text(  # type: ignore[union-attr]
-                "\n".join(lines), parse_mode=ParseMode.MARKDOWN
+                "\n".join(lines), parse_mode=ParseMode.HTML
             )
         else:
             try:
@@ -294,8 +314,10 @@ class TelegramHandler:
 
             if result["success"]:
                 await update.effective_message.reply_text(  # type: ignore[union-attr]
-                    f"모델 변경: `{result['old_model']}` → `{result['new_model']}`",
-                    parse_mode=ParseMode.MARKDOWN,
+                    "모델 변경: "
+                    f"<code>{self._escape_html(result['old_model'])}</code> → "
+                    f"<code>{self._escape_html(result['new_model'])}</code>",
+                    parse_mode=ParseMode.HTML,
                 )
             else:
                 await update.effective_message.reply_text(  # type: ignore[union-attr]
@@ -308,27 +330,29 @@ class TelegramHandler:
         args = context.args or []
 
         if not args:
-            stats = await self._engine._memory.get_memory_stats(chat_id)
+            stats = await self._engine.get_memory_stats(chat_id)
             await update.effective_message.reply_text(  # type: ignore[union-attr]
-                f"🧠 *메모리 상태*\n\n"
+                f"🧠 <b>메모리 상태</b>\n\n"
                 f"대화 기록: {stats['conversation_count']}건\n"
                 f"장기 메모리: {stats['memory_count']}건\n"
-                f"가장 오래된 대화: {stats['oldest_conversation'] or '없음'}",
-                parse_mode=ParseMode.MARKDOWN,
+                f"가장 오래된 대화: "
+                f"{self._escape_html(stats['oldest_conversation'] or '없음')}",
+                parse_mode=ParseMode.HTML,
             )
         elif args[0] == "clear":
-            deleted = await self._engine._memory.clear_conversation(chat_id)
+            deleted = await self._engine.clear_conversation(chat_id)
             await update.effective_message.reply_text(  # type: ignore[union-attr]
                 f"대화 기록 {deleted}건이 삭제되었습니다."
             )
         elif args[0] == "export":
             output_dir = Path(self._config.data_dir) / "conversations"
-            filepath = await self._engine._memory.export_conversation_markdown(
+            filepath = await self._engine.export_conversation_markdown(
                 chat_id, output_dir
             )
             await update.effective_message.reply_text(  # type: ignore[union-attr]
-                f"대화 기록이 내보내기되었습니다: `{filepath.name}`",
-                parse_mode=ParseMode.MARKDOWN,
+                "대화 기록이 내보내기되었습니다: "
+                f"<code>{self._escape_html(filepath.name)}</code>",
+                parse_mode=ParseMode.HTML,
             )
         else:
             await update.effective_message.reply_text(  # type: ignore[union-attr]
@@ -342,10 +366,10 @@ class TelegramHandler:
         ollama_status = "🟢 정상" if ollama.get("status") == "ok" else "🔴 오류"
 
         text = (
-            f"📊 *시스템 상태*\n\n"
+            f"📊 <b>시스템 상태</b>\n\n"
             f"가동 시간: {status['uptime_human']}\n"
             f"Ollama: {ollama_status}\n"
-            f"모델: `{status['current_model']}`\n"
+            f"모델: <code>{self._escape_html(status['current_model'])}</code>\n"
             f"로드된 스킬: {status['skills_loaded']}개"
         )
 
@@ -355,7 +379,7 @@ class TelegramHandler:
             text += f"\n자동화: {enabled}/{len(autos)}개 활성"
 
         await update.effective_message.reply_text(  # type: ignore[union-attr]
-            text, parse_mode=ParseMode.MARKDOWN
+            text, parse_mode=ParseMode.HTML
         )
 
     # ── 일반 메시지 핸들러 (스트리밍) ──
@@ -444,6 +468,11 @@ class TelegramHandler:
         assert self._app is not None
         for part in self._split_message(text):
             await self._app.bot.send_message(chat_id=chat_id, text=part)
+
+    @staticmethod
+    def _escape_html(value: object) -> str:
+        """HTML parse mode용 최소 이스케이프."""
+        return escape(str(value), quote=False)
 
     def _split_message(
         self, text: str, max_length: int = 4096

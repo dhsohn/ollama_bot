@@ -164,6 +164,31 @@ class TestChatStream:
             ):
                 pass
 
+    @pytest.mark.asyncio
+    async def test_chat_stream_uses_explicit_zero_options(self, ollama_client: OllamaClient) -> None:
+        class _ChunkStream:
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                raise StopAsyncIteration
+
+        mock_async_client = AsyncMock()
+        mock_async_client.chat = AsyncMock(return_value=_ChunkStream())
+        ollama_client._client = mock_async_client
+
+        async for _ in ollama_client.chat_stream(
+            messages=[{"role": "user", "content": "Hi"}],
+            temperature=0.0,
+            max_tokens=0,
+            timeout=1,
+        ):
+            pass
+
+        call_kwargs = mock_async_client.chat.call_args.kwargs
+        assert call_kwargs["options"]["temperature"] == 0.0
+        assert call_kwargs["options"]["num_predict"] == 0
+
 
 class TestHealthCheck:
     @pytest.mark.asyncio

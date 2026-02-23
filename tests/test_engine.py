@@ -196,6 +196,38 @@ class TestChangeModel:
         assert result["success"] is False
 
 
+class TestPreferenceInjection:
+    @pytest.mark.asyncio
+    async def test_preferences_injected_into_system_prompt(
+        self, engine: Engine, memory: MemoryManager, mock_ollama,
+    ) -> None:
+        """장기 메모리에 선호도가 있으면 시스템 프롬프트에 포함된다."""
+        await memory.store_memory(111, "preferred_language", "한국어", category="preferences")
+        await memory.store_memory(111, "response_style", "간결", category="preferences")
+
+        await engine.process_message(111, "안녕")
+
+        call_args = mock_ollama.chat.call_args
+        messages = call_args.kwargs.get("messages") or call_args[1].get("messages")
+        system_content = messages[0]["content"]
+        assert "사용자 고정 정보 및 선호도" in system_content
+        assert "preferred_language" in system_content
+        assert "한국어" in system_content
+        assert "response_style" in system_content
+
+    @pytest.mark.asyncio
+    async def test_no_preferences_no_injection(
+        self, engine: Engine, memory: MemoryManager, mock_ollama,
+    ) -> None:
+        """선호도가 없으면 시스템 프롬프트가 변경되지 않는다."""
+        await engine.process_message(111, "안녕")
+
+        call_args = mock_ollama.chat.call_args
+        messages = call_args.kwargs.get("messages") or call_args[1].get("messages")
+        system_content = messages[0]["content"]
+        assert "사용자 고정 정보 및 선호도" not in system_content
+
+
 class TestGetStatus:
     @pytest.mark.asyncio
     async def test_get_status(self, engine: Engine) -> None:

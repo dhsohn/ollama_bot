@@ -51,3 +51,43 @@ def test_allowed_telegram_users_invalid_value_raises(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="ALLOWED_TELEGRAM_USERS"):
         load_config(config_path=str(config_path), env_file=str(env_path))
+
+
+def test_scheduler_timezone_loaded_from_env(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    env_path = tmp_path / ".env"
+    _write_minimal_yaml(config_path)
+
+    env_path.write_text(
+        "\n".join(
+            [
+                "TELEGRAM_BOT_TOKEN=test_token",
+                "ALLOWED_TELEGRAM_USERS=123456789",
+                "SCHEDULER_TIMEZONE=Asia/Seoul",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    settings = load_config(config_path=str(config_path), env_file=str(env_path))
+    assert settings.scheduler.timezone == "Asia/Seoul"
+
+
+def test_scheduler_timezone_invalid_raises(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    env_path = tmp_path / ".env"
+    _write_minimal_yaml(config_path)
+
+    env_path.write_text(
+        "\n".join(
+            [
+                "TELEGRAM_BOT_TOKEN=test_token",
+                "ALLOWED_TELEGRAM_USERS=123456789",
+                "SCHEDULER_TIMEZONE=Invalid/Timezone",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="Invalid timezone"):
+        load_config(config_path=str(config_path), env_file=str(env_path))

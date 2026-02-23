@@ -1,0 +1,18 @@
+name: "error_log_triage"
+description: "애플리케이션 오류 로그를 분석하고 원인/심각도/조치를 보고합니다"
+version: "1.0"
+enabled: true
+schedule: "0 */6 * * *"
+action:
+  type: "callable"
+  target: "error_log_triage"
+  parameters:
+    hours_back: 6
+    max_errors: 50
+output:
+  send_to_telegram: true
+  save_to_file: "reports/error_triage_{date}.md"
+retry:
+  max_attempts: 2
+  delay_seconds: 30
+timeout: 120

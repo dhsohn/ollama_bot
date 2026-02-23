@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import AsyncGenerator
+from pathlib import Path
 
 from core.config import AppSettings
 from core.logging_setup import get_logger
@@ -128,6 +129,16 @@ class Engine:
                 chat_id, limit=self._max_conversation_length
             )
 
+        # 사용자 선호도를 시스템 프롬프트에 추가
+        preferences = await self._memory.recall_memory(chat_id, category="preferences")
+        if preferences:
+            pref_lines = [f"- {p['key']}: {p['value']}" for p in preferences]
+            system += (
+                "\n\n[사용자 고정 정보 및 선호도]\n"
+                "아래 정보를 참고하여 일관된 응답을 제공하세요:\n"
+                + "\n".join(pref_lines)
+            )
+
         messages: list[dict[str, str]] = [
             {"role": "system", "content": system},
         ]
@@ -207,6 +218,38 @@ class Engine:
             "model_changed", old_model=old_model, new_model=model
         )
         return {"success": True, "old_model": old_model, "new_model": model}
+
+    async def list_models(self) -> list[dict]:
+        """설치된 모델 목록을 반환한다."""
+        return await self._ollama.list_models()
+
+    def get_current_model(self) -> str:
+        """현재 기본 모델 이름을 반환한다."""
+        return self._ollama.default_model
+
+    async def reload_skills(self) -> int:
+        """스킬 정의를 다시 로드한다."""
+        return await self._skills.reload_skills()
+
+    def list_skills(self) -> list[dict]:
+        """로드된 스킬 목록을 반환한다."""
+        return self._skills.list_skills()
+
+    async def get_memory_stats(self, chat_id: int) -> dict:
+        """채팅 메모리 통계를 조회한다."""
+        return await self._memory.get_memory_stats(chat_id)
+
+    async def clear_conversation(self, chat_id: int) -> int:
+        """채팅 대화 기록을 삭제한다."""
+        return await self._memory.clear_conversation(chat_id)
+
+    async def export_conversation_markdown(
+        self,
+        chat_id: int,
+        output_dir: Path,
+    ) -> Path:
+        """채팅 대화 기록을 마크다운으로 내보낸다."""
+        return await self._memory.export_conversation_markdown(chat_id, output_dir)
 
     async def get_status(self) -> dict:
         """시스템 전체 상태를 반환한다."""
