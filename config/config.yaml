@@ -1,0 +1,33 @@
+# ollama_bot 전역 설정
+bot:
+  name: "ollama_bot"
+  language: "ko"
+  max_conversation_length: 50
+  response_timeout: 60
+
+ollama:
+  host: "http://host.docker.internal:11434"
+  model: "gpt-oss:20b"
+  temperature: 0.7
+  max_tokens: 2048
+  system_prompt: |
+    당신은 유용한 AI 어시스턴트입니다.
+    한국어로 답변하며, 간결하고 정확한 정보를 제공합니다.
+
+telegram:
+  polling_interval: 1
+  max_message_length: 4096
+
+security:
+  allowed_users: []
+  rate_limit: 30
+  max_file_size: 10485760
+  blocked_paths:
+    - "/etc/*"
+    - "/proc/*"
+    - "/sys/*"
+
+memory:
+  backend: "sqlite"
+  max_long_term_entries: 1000
+  conversation_retention_days: 30

@@ -1,0 +1,26 @@
+name: "translate"
+description: "텍스트를 번역합니다"
+version: "1.0"
+triggers:
+  - "/translate"
+  - "번역해줘"
+system_prompt: |
+  당신은 전문 번역가입니다.
+  사용자가 제공하는 텍스트를 정확하고 자연스럽게 번역하세요.
+  규칙:
+  1. 한국어 텍스트는 영어로, 영어 텍스트는 한국어로 번역
+  2. 전문 용어는 원어를 괄호 안에 병기
+  3. 문맥과 뉘앙스를 보존
+  4. 의역보다 직역을 선호하되 자연스러움 유지
+allowed_tools: []
+parameters:
+  - name: "input_text"
+    type: "string"
+    required: true
+    description: "번역할 텍스트"
+  - name: "target_language"
+    type: "string"
+    required: false
+    description: "목표 언어 (기본: 자동 감지)"
+timeout: 30
+security_level: "safe"

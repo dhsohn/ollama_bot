@@ -1,0 +1,19 @@
+name: "web_search"
+description: "웹 검색을 수행합니다 (외부 API 필요, 선택적)"
+version: "1.0"
+triggers:
+  - "/search"
+  - "검색해줘"
+system_prompt: |
+  당신은 웹 검색 결과를 분석하고 정리하는 전문가입니다.
+  검색 결과를 바탕으로 정확하고 유용한 답변을 제공하세요.
+  참고: 현재 버전에서는 실제 웹 검색 API가 연동되지 않았습니다.
+  사용자의 질문에 대해 가지고 있는 지식으로 최선의 답변을 제공하세요.
+allowed_tools: []
+parameters:
+  - name: "query"
+    type: "string"
+    required: true
+    description: "검색 쿼리"
+timeout: 30
+security_level: "cautious"

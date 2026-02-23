@@ -1,0 +1,33 @@
+services:
+  ollama_bot:
+    build: .
+    container_name: ollama_bot
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+      - ./skills/custom:/app/skills/custom
+      - ./auto/custom:/app/auto/custom
+      - ./config:/app/config
+      - ${ORCA_RUNS_HOST_DIR:-./orca_runs}:/orca_runs:ro
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    user: "botuser"
+    healthcheck:
+      test: ["CMD", "bash", "scripts/healthcheck.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - bot_network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+networks:
+  bot_network:
+    driver: bridge

@@ -1,0 +1,232 @@
+"""메인 엔진 — 대화 오케스트레이션, 컨텍스트 관리, 라우팅.
+
+모든 사용자 메시지 처리의 중앙 허브.
+텔레그램 핸들러로부터 입력을 받아 적절한 처리 후 응답을 반환한다.
+"""
+
+from __future__ import annotations
+
+import time
+from collections.abc import AsyncGenerator
+
+from core.config import AppSettings
+from core.logging_setup import get_logger
+from core.memory import MemoryManager
+from core.ollama_client import OllamaClient
+from core.skill_manager import SkillDefinition, SkillManager
+
+
+class Engine:
+    """대화 처리 엔진. 스킬 트리거, 컨텍스트 관리, LLM 호출을 오케스트레이션한다."""
+
+    def __init__(
+        self,
+        config: AppSettings,
+        ollama: OllamaClient,
+        memory: MemoryManager,
+        skills: SkillManager,
+    ) -> None:
+        self._config = config
+        self._ollama = ollama
+        self._memory = memory
+        self._skills = skills
+        self._system_prompt = config.ollama.system_prompt
+        self._max_conversation_length = config.bot.max_conversation_length
+        self._start_time = time.monotonic()
+        self._logger = get_logger("engine")
+
+    async def process_message(
+        self,
+        chat_id: int,
+        text: str,
+        model_override: str | None = None,
+    ) -> str:
+        """사용자 메시지를 처리하고 응답을 반환한다.
+
+        1. 스킬 트리거 매칭
+        2. 컨텍스트 빌드 (시스템 프롬프트 + 대화 기록 + 사용자 입력)
+        3. LLM 호출
+        4. 메모리 저장
+        """
+        skill = self._skills.match_trigger(text)
+
+        if skill:
+            self._logger.info(
+                "skill_triggered",
+                chat_id=chat_id,
+                skill=skill.name,
+            )
+            messages = await self._build_context(chat_id, text, skill=skill)
+            timeout = skill.timeout
+        else:
+            messages = await self._build_context(chat_id, text)
+            timeout = self._config.bot.response_timeout
+
+        response = await self._ollama.chat(
+            messages=messages,
+            model=model_override,
+            timeout=timeout,
+        )
+
+        # 메모리에 저장
+        metadata = {"skill": skill.name} if skill else None
+        await self._memory.add_message(chat_id, "user", text, metadata=metadata)
+        await self._memory.add_message(chat_id, "assistant", response)
+
+        return response
+
+    async def process_message_stream(
+        self,
+        chat_id: int,
+        text: str,
+        model_override: str | None = None,
+    ) -> AsyncGenerator[str, None]:
+        """스트리밍 방식으로 메시지를 처리한다. 청크를 순차 반환한다."""
+        skill = self._skills.match_trigger(text)
+
+        if skill:
+            self._logger.info(
+                "skill_triggered_stream",
+                chat_id=chat_id,
+                skill=skill.name,
+            )
+            messages = await self._build_context(chat_id, text, skill=skill)
+            timeout = skill.timeout
+        else:
+            messages = await self._build_context(chat_id, text)
+            timeout = self._config.bot.response_timeout
+
+        full_response = ""
+        async for chunk in self._ollama.chat_stream(
+            messages=messages,
+            model=model_override,
+            timeout=timeout,
+        ):
+            full_response += chunk
+            yield chunk
+
+        # 스트리밍 완료 후 메모리에 저장
+        metadata = {"skill": skill.name} if skill else None
+        await self._memory.add_message(chat_id, "user", text, metadata=metadata)
+        await self._memory.add_message(chat_id, "assistant", full_response)
+
+    async def _build_context(
+        self,
+        chat_id: int,
+        text: str,
+        skill: SkillDefinition | None = None,
+    ) -> list[dict[str, str]]:
+        """LLM에 전달할 메시지 목록을 조립한다."""
+        if skill:
+            # 스킬 모드: 스킬 시스템 프롬프트 사용
+            system = skill.system_prompt
+            # 스킬에서도 최근 대화 일부를 컨텍스트로 포함
+            history = await self._memory.get_conversation(chat_id, limit=5)
+        else:
+            system = self._system_prompt
+            history = await self._memory.get_conversation(
+                chat_id, limit=self._max_conversation_length
+            )
+
+        messages: list[dict[str, str]] = [
+            {"role": "system", "content": system},
+        ]
+        messages.extend(history)
+
+        # 스킬인 경우 트리거 명령어를 제거한 입력 사용
+        if skill:
+            clean_input = text
+            for trigger in skill.triggers:
+                if text.lower().startswith(trigger.lower()):
+                    clean_input = text[len(trigger):].strip()
+                    break
+            messages.append({"role": "user", "content": clean_input or text})
+        else:
+            messages.append({"role": "user", "content": text})
+
+        return messages
+
+    async def execute_skill(
+        self,
+        skill_name: str,
+        parameters: dict,
+        chat_id: int | None = None,
+    ) -> str:
+        """프로그래밍 방식으로 스킬을 실행한다 (auto_scheduler용)."""
+        skill = self._skills.get_skill(skill_name)
+        if not skill:
+            return f"스킬 '{skill_name}'을(를) 찾을 수 없습니다."
+
+        input_text = parameters.get("input_text", parameters.get("query", ""))
+        messages = [
+            {"role": "system", "content": skill.system_prompt},
+            {"role": "user", "content": input_text},
+        ]
+
+        response = await self._ollama.chat(
+            messages=messages,
+            timeout=skill.timeout,
+        )
+
+        # 채팅 ID가 있으면 메모리에 저장
+        if chat_id:
+            await self._memory.add_message(
+                chat_id, "assistant", response,
+                metadata={"skill": skill_name, "auto": True},
+            )
+
+        return response
+
+    async def process_prompt(
+        self,
+        prompt: str,
+        chat_id: int | None = None,
+    ) -> str:
+        """단순 프롬프트를 LLM에 전달한다 (auto_scheduler의 prompt 타입용)."""
+        messages = [
+            {"role": "system", "content": self._system_prompt},
+            {"role": "user", "content": prompt},
+        ]
+        return await self._ollama.chat(messages=messages)
+
+    async def change_model(self, model: str) -> dict:
+        """런타임 기본 모델을 변경한다."""
+        models = await self._ollama.list_models()
+        available_names = [m["name"] for m in models]
+
+        if model not in available_names:
+            return {
+                "success": False,
+                "error": f"모델 '{model}'을(를) 찾을 수 없습니다.",
+                "available": available_names,
+            }
+
+        old_model = self._ollama.default_model
+        self._ollama.default_model = model
+        self._logger.info(
+            "model_changed", old_model=old_model, new_model=model
+        )
+        return {"success": True, "old_model": old_model, "new_model": model}
+
+    async def get_status(self) -> dict:
+        """시스템 전체 상태를 반환한다."""
+        ollama_health = await self._ollama.health_check()
+        uptime_seconds = time.monotonic() - self._start_time
+
+        return {
+            "uptime_seconds": int(uptime_seconds),
+            "uptime_human": self._format_uptime(uptime_seconds),
+            "ollama": ollama_health,
+            "skills_loaded": self._skills.skill_count,
+            "current_model": self._ollama.default_model,
+        }
+
+    @staticmethod
+    def _format_uptime(seconds: float) -> str:
+        hours, remainder = divmod(int(seconds), 3600)
+        minutes, secs = divmod(remainder, 60)
+        if hours > 0:
+            return f"{hours}시간 {minutes}분 {secs}초"
+        if minutes > 0:
+            return f"{minutes}분 {secs}초"
+        return f"{secs}초"

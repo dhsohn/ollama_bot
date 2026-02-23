@@ -1,0 +1,16 @@
+name: "health_check"
+description: "시스템 상태를 정기적으로 점검합니다"
+version: "1.0"
+enabled: true
+schedule: "*/30 * * * *"
+action:
+  type: "prompt"
+  target: "시스템 상태를 점검하고 현재 상태를 간략히 보고해주세요."
+  parameters: {}
+output:
+  send_to_telegram: false
+  save_to_file: "logs/health_{date}.log"
+retry:
+  max_attempts: 1
+  delay_seconds: 30
+timeout: 30

@@ -1,0 +1,17 @@
+name: "daily_summary"
+description: "매일 아침 어제의 대화를 요약합니다"
+version: "1.0"
+enabled: true
+schedule: "0 9 * * *"
+action:
+  type: "skill"
+  target: "summarize"
+  parameters:
+    input_text: "어제 하루 동안의 대화 내용을 요약해주세요. 주요 주제, 결정 사항, 남은 작업 등을 정리해주세요."
+output:
+  send_to_telegram: true
+  save_to_file: "reports/daily_summary_{date}.md"
+retry:
+  max_attempts: 3
+  delay_seconds: 60
+timeout: 120

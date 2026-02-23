@@ -1,0 +1,22 @@
+name: "summarize"
+description: "텍스트를 요약합니다"
+version: "1.0"
+triggers:
+  - "/summarize"
+  - "요약해줘"
+system_prompt: |
+  당신은 텍스트 요약 전문가입니다.
+  사용자가 제공하는 텍스트를 핵심 포인트 위주로 간결하게 요약하세요.
+  규칙:
+  1. 원문의 핵심 정보를 보존하세요
+  2. 3-5개의 핵심 포인트로 정리하세요
+  3. 한국어로 답변하세요
+  4. 원문 길이의 20-30% 수준으로 요약하세요
+allowed_tools: []
+parameters:
+  - name: "input_text"
+    type: "string"
+    required: true
+    description: "요약할 텍스트"
+timeout: 30
+security_level: "safe"
