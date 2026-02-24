@@ -225,7 +225,7 @@ class TestReloadCommands:
 
         await telegram_handler._cmd_skills(update, context)
 
-        telegram_handler._engine.reload_skills.assert_awaited_once()
+        telegram_handler._engine.reload_skills.assert_awaited_once_with(strict=True)
         message.reply_text.assert_awaited_once_with("스킬을 다시 로드했습니다: 5개")
 
     @pytest.mark.asyncio
@@ -252,8 +252,68 @@ class TestReloadCommands:
 
         await telegram_handler._cmd_auto(update, context)
 
-        scheduler.reload_automations.assert_awaited_once()
+        scheduler.reload_automations.assert_awaited_once_with(strict=True)
         message.reply_text.assert_awaited_once_with("자동화를 다시 로드했습니다: 4개")
+
+    @pytest.mark.asyncio
+    async def test_skills_reload_command_shows_partial_load_warnings(
+        self, telegram_handler: TelegramHandler
+    ) -> None:
+        telegram_handler._engine.reload_skills = AsyncMock(return_value=2)
+        telegram_handler._engine.get_last_skill_load_errors = MagicMock(
+            return_value=["bad_skill.yaml: security violation"]
+        )
+
+        chat = MagicMock()
+        chat.id = 111
+        chat.type = "private"
+
+        message = MagicMock()
+        message.reply_text = AsyncMock()
+
+        update = MagicMock()
+        update.effective_chat = chat
+        update.effective_message = message
+
+        context = MagicMock()
+        context.args = ["reload"]
+
+        await telegram_handler._cmd_skills(update, context)
+
+        reply = message.reply_text.await_args[0][0]
+        assert "스킬을 다시 로드했습니다: 2개" in reply
+        assert "일부 항목 로드 실패" in reply
+        assert "bad_skill.yaml" in reply
+
+    @pytest.mark.asyncio
+    async def test_auto_reload_command_shows_partial_load_warnings(
+        self, telegram_handler: TelegramHandler
+    ) -> None:
+        scheduler = MagicMock()
+        scheduler.reload_automations = AsyncMock(return_value=1)
+        scheduler.get_last_load_errors = MagicMock(return_value=["bad.yaml: Invalid cron"])
+        telegram_handler.set_scheduler(scheduler)
+
+        chat = MagicMock()
+        chat.id = 111
+        chat.type = "private"
+
+        message = MagicMock()
+        message.reply_text = AsyncMock()
+
+        update = MagicMock()
+        update.effective_chat = chat
+        update.effective_message = message
+
+        context = MagicMock()
+        context.args = ["reload"]
+
+        await telegram_handler._cmd_auto(update, context)
+
+        reply = message.reply_text.await_args[0][0]
+        assert "자동화를 다시 로드했습니다: 1개" in reply
+        assert "일부 항목 로드 실패" in reply
+        assert "bad.yaml" in reply
 
 
 class TestHandleMessage:
@@ -637,3 +697,14 @@ class TestFeedbackButtons:
         call_text = message.reply_text.await_args[0][0]
         assert "피드백" in call_text
         assert "20건" in call_text
+
+
+class TestApplicationGuards:
+    def test_application_before_initialize_raises(self, telegram_handler: TelegramHandler) -> None:
+        with pytest.raises(RuntimeError, match="초기화"):
+            _ = telegram_handler.application
+
+    @pytest.mark.asyncio
+    async def test_send_message_before_initialize_raises(self, telegram_handler: TelegramHandler) -> None:
+        with pytest.raises(RuntimeError, match="초기화"):
+            await telegram_handler.send_message(111, "hello")

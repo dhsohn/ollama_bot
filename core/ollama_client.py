@@ -52,7 +52,7 @@ class OllamaClient:
         self._client = AsyncClient(host=self._host)
         try:
             response = await self._client.list()
-            available = [m.model for m in response.models]
+            available = [m.model for m in response.models if m.model is not None]
             self._logger.info(
                 "ollama_connected",
                 host=self._host,
@@ -82,6 +82,11 @@ class OllamaClient:
         """클라이언트 리소스를 정리한다."""
         self._client = None
 
+    def _require_client(self) -> AsyncClient:
+        if self._client is None:
+            raise RuntimeError("OllamaClient가 아직 초기화되지 않았습니다.")
+        return self._client
+
     async def chat(
         self,
         messages: list[dict[str, str]],
@@ -92,7 +97,7 @@ class OllamaClient:
         format: str | dict | None = None,
     ) -> str:
         """비스트리밍 채팅 요청. 재시도 포함."""
-        assert self._client is not None
+        client = self._require_client()
         model = model or self._default_model
         options = {
             "temperature": self._temperature if temperature is None else temperature,
@@ -108,10 +113,10 @@ class OllamaClient:
             if format is not None:
                 kwargs["format"] = format
             response = await asyncio.wait_for(
-                self._client.chat(**kwargs),  # type: ignore[union-attr]
+                client.chat(**kwargs),
                 timeout=timeout,
             )
-            return response.message.content  # type: ignore[union-attr]
+            return response.message.content
 
         return await self._retry_with_backoff(_do_chat)
 
@@ -124,7 +129,7 @@ class OllamaClient:
         timeout: int = 60,
     ) -> AsyncGenerator[str, None]:
         """스트리밍 채팅 요청. 청크를 순차적으로 반환한다."""
-        assert self._client is not None
+        client = self._require_client()
         model = model or self._default_model
         options = {
             "temperature": self._temperature if temperature is None else temperature,
@@ -133,7 +138,7 @@ class OllamaClient:
 
         try:
             response = await asyncio.wait_for(
-                self._client.chat(
+                client.chat(
                     model=model,
                     messages=messages,
                     options=options,
@@ -157,8 +162,8 @@ class OllamaClient:
 
     async def list_models(self) -> list[dict]:
         """로컬에 설치된 모델 목록을 반환한다."""
-        assert self._client is not None
-        response = await self._client.list()
+        client = self._require_client()
+        response = await client.list()
         return [
             {
                 "name": m.model,
@@ -170,9 +175,9 @@ class OllamaClient:
 
     async def get_model_info(self, model: str) -> dict:
         """특정 모델의 상세 정보를 반환한다."""
-        assert self._client is not None
+        client = self._require_client()
         try:
-            response = await self._client.show(model)
+            response = await client.show(model)
             return {
                 "model": model,
                 "modelfile": response.modelfile if hasattr(response, "modelfile") else None,
@@ -183,9 +188,9 @@ class OllamaClient:
 
     async def health_check(self) -> dict:
         """Ollama 서버 상태를 확인한다."""
-        assert self._client is not None
+        client = self._require_client()
         try:
-            response = await self._client.list()
+            response = await client.list()
             models = [m.model for m in response.models]
             return {
                 "status": "ok",

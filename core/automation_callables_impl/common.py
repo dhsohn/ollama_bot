@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import functools
 import json
 import re
 from datetime import datetime, timedelta, timezone
@@ -9,13 +11,18 @@ from datetime import tzinfo
 from pathlib import Path
 from typing import Any
 
+_ZoneInfo: Any
+_ZoneInfoNotFoundError: type[Exception]
 try:
-    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+    from zoneinfo import ZoneInfo as _ZoneInfo
+    from zoneinfo import ZoneInfoNotFoundError as _ZoneInfoNotFoundError
 except ImportError:
-    ZoneInfo = None
+    _ZoneInfo = None
 
-    class ZoneInfoNotFoundError(Exception):
+    class _ZoneInfoNotFoundErrorFallback(Exception):
         """zoneinfo 미지원 환경에서의 대체 예외."""
+
+    _ZoneInfoNotFoundError = _ZoneInfoNotFoundErrorFallback
 
 
 ROLE_LABELS = {
@@ -141,16 +148,16 @@ SQLITE_TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 def safe_timezone(name: str, logger: Any) -> tzinfo:
     """설정값에서 안전한 타임존 객체를 반환한다."""
-    if ZoneInfo is not None:
+    if _ZoneInfo is not None:
         try:
-            return ZoneInfo(name)
-        except ZoneInfoNotFoundError:
+            return _ZoneInfo(name)
+        except _ZoneInfoNotFoundError:
             logger.warning(
                 "invalid_timezone_fallback",
                 timezone=name,
                 fallback="UTC",
             )
-            return ZoneInfo("UTC")
+            return _ZoneInfo("UTC")
 
     # Python 3.8 등 zoneinfo 미지원 환경용 최소 폴백
     if name == "UTC":
@@ -262,3 +269,21 @@ def count_recent_errors(
                     return entries, error_count, warning_count
 
     return entries, error_count, warning_count
+
+
+async def count_recent_errors_async(
+    log_path: Path,
+    hours_back: int,
+    max_entries: int = 0,
+) -> tuple[list[dict], int, int]:
+    """count_recent_errors를 스레드풀에서 실행해 이벤트루프를 보호한다."""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(
+        None,
+        functools.partial(
+            count_recent_errors,
+            log_path,
+            hours_back,
+            max_entries,
+        ),
+    )

@@ -5,6 +5,8 @@ SQLite(aiosqlite) 백엔드로 대화 히스토리와 장기 메모리를 관리
 
 from __future__ import annotations
 
+import asyncio
+import functools
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -325,13 +327,12 @@ class MemoryManager:
 
     async def delete_memories_by_category(self, chat_id: int, category: str) -> int:
         """지정된 chat_id/category에 해당하는 장기 메모리를 모두 삭제한다."""
-        if self._db is None:
-            return 0
-        cursor = await self._db.execute(
+        db = self._require_db()
+        cursor = await db.execute(
             "DELETE FROM long_term_memory WHERE chat_id = ? AND category = ?",
             (chat_id, category),
         )
-        await self._db.commit()
+        await db.commit()
         return cursor.rowcount
 
     async def get_memory_stats(self, chat_id: int) -> dict:
@@ -409,6 +410,10 @@ class MemoryManager:
             )
             lines.append(f"### {role_label} ({row[2]})\n{row[1]}\n\n")
 
-        filepath.write_text("".join(lines), encoding="utf-8")
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            None,
+            functools.partial(filepath.write_text, "".join(lines), encoding="utf-8"),
+        )
         self._logger.info("conversation_exported", path=str(filepath))
         return filepath

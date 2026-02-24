@@ -249,6 +249,136 @@ class TestAutoScheduler:
             await scheduler.load_automations()
 
     @pytest.mark.asyncio
+    async def test_invalid_cron_is_reported_and_skipped(
+        self,
+        scheduler: AutoScheduler,
+        auto_dir: Path,
+    ) -> None:
+        _write_auto_yaml(
+            auto_dir / "custom" / "ok.yaml",
+            """
+            name: "ok_auto"
+            description: "정상 자동화"
+            enabled: true
+            schedule: "0 9 * * *"
+            action:
+              type: "prompt"
+              target: "ok"
+            """,
+        )
+        _write_auto_yaml(
+            auto_dir / "custom" / "bad.yaml",
+            """
+            name: "bad_auto"
+            description: "잘못된 cron"
+            enabled: true
+            schedule: "61 9 * * *"
+            action:
+              type: "prompt"
+              target: "bad"
+            """,
+        )
+
+        count = await scheduler.load_automations()
+        assert count == 1
+        errors = scheduler.get_last_load_errors()
+        assert any("bad.yaml" in item for item in errors)
+
+    @pytest.mark.asyncio
+    async def test_invalid_cron_strict_mode_raises_and_keeps_previous_state(
+        self,
+        scheduler: AutoScheduler,
+        auto_dir: Path,
+    ) -> None:
+        _write_auto_yaml(
+            auto_dir / "custom" / "base.yaml",
+            """
+            name: "base_auto"
+            description: "기준 자동화"
+            enabled: true
+            schedule: "0 9 * * *"
+            action:
+              type: "prompt"
+              target: "base"
+            """,
+        )
+        await scheduler.load_automations()
+        assert scheduler._scheduler.get_job("auto_base_auto") is not None
+
+        _write_auto_yaml(
+            auto_dir / "custom" / "bad.yaml",
+            """
+            name: "bad_auto"
+            description: "잘못된 cron"
+            enabled: true
+            schedule: "99 9 * * *"
+            action:
+              type: "prompt"
+              target: "bad"
+            """,
+        )
+
+        with pytest.raises(ValueError, match="strict mode"):
+            await scheduler.load_automations(strict=True)
+
+        autos = scheduler.list_automations()
+        assert len(autos) == 1
+        assert autos[0]["name"] == "base_auto"
+        assert scheduler._scheduler.get_job("auto_base_auto") is not None
+
+    @pytest.mark.asyncio
+    async def test_load_automations_rolls_back_on_register_failure(
+        self,
+        scheduler: AutoScheduler,
+        auto_dir: Path,
+    ) -> None:
+        _write_auto_yaml(
+            auto_dir / "custom" / "base.yaml",
+            """
+            name: "base_auto"
+            description: "기준 자동화"
+            enabled: true
+            schedule: "0 9 * * *"
+            action:
+              type: "prompt"
+              target: "base"
+            """,
+        )
+        await scheduler.load_automations()
+        assert scheduler._scheduler.get_job("auto_base_auto") is not None
+
+        (auto_dir / "custom" / "base.yaml").unlink()
+        _write_auto_yaml(
+            auto_dir / "custom" / "new.yaml",
+            """
+            name: "new_auto"
+            description: "새 자동화"
+            enabled: true
+            schedule: "5 10 * * *"
+            action:
+              type: "prompt"
+              target: "new"
+            """,
+        )
+
+        original_register = scheduler._register_job
+
+        def flaky_register(auto, trigger=None):
+            if auto.name == "new_auto":
+                raise RuntimeError("register boom")
+            return original_register(auto, trigger=trigger)
+
+        with patch.object(scheduler, "_register_job", side_effect=flaky_register):
+            with pytest.raises(RuntimeError, match="register boom"):
+                await scheduler.load_automations()
+
+        autos = scheduler.list_automations()
+        assert len(autos) == 1
+        assert autos[0]["name"] == "base_auto"
+        assert scheduler._scheduler.get_job("auto_base_auto") is not None
+        assert scheduler._scheduler.get_job("auto_new_auto") is None
+
+    @pytest.mark.asyncio
     async def test_empty_result_is_success_without_retry(
         self,
         scheduler: AutoScheduler,

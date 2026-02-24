@@ -142,3 +142,27 @@ class TestRetentionPrune:
         assert deleted >= 1
         history = await memory_manager.get_conversation(chat_id, limit=10)
         assert history == []
+
+
+class TestDeleteMemoriesByCategory:
+    @pytest.mark.asyncio
+    async def test_delete_by_category(self, memory_manager: MemoryManager) -> None:
+        chat_id = 505
+        await memory_manager.store_memory(chat_id, "k1", "v1", category="preferences")
+        await memory_manager.store_memory(chat_id, "k2", "v2", category="general")
+
+        deleted = await memory_manager.delete_memories_by_category(chat_id, "preferences")
+        assert deleted == 1
+        remaining = await memory_manager.recall_memory(chat_id)
+        assert len(remaining) == 1
+        assert remaining[0]["key"] == "k2"
+
+    @pytest.mark.asyncio
+    async def test_delete_by_category_fails_before_initialize(self) -> None:
+        manager = MemoryManager(
+            config=MemoryConfig(),
+            data_dir="/tmp/nonexistent",
+            max_conversation_length=10,
+        )
+        with pytest.raises(RuntimeError):
+            await manager.delete_memories_by_category(1, "preferences")

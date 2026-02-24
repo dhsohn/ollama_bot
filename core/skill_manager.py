@@ -77,14 +77,16 @@ class SkillManager:
         self._ac_goto: list[dict[str, int]] = [{}]
         self._ac_fail: list[int] = [0]
         self._ac_output: list[list[int]] = [[]]
+        self._last_load_errors: list[str] = []
         self._logger = get_logger("skill_manager")
 
-    async def load_skills(self) -> int:
+    async def load_skills(self, *, strict: bool = False) -> int:
         """_builtin/ 및 custom/ 디렉토리에서 스킬 YAML을 로드한다."""
         new_skills: dict[str, SkillDefinition] = {}
         new_trigger_map: dict[str, str] = {}
         name_sources: dict[str, Path] = {}
         trigger_sources: dict[str, Path] = {}
+        self._last_load_errors = []
         loaded = 0
 
         for sub_dir in ["_builtin", "custom"]:
@@ -133,16 +135,26 @@ class SkillManager:
                 except (DuplicateSkillNameError, DuplicateSkillTriggerError):
                     raise
                 except Exception as exc:
+                    self._last_load_errors.append(f"{yaml_file.name}: {exc}")
                     self._logger.error(
                         "skill_load_failed",
                         file=str(yaml_file),
                         error=str(exc),
                     )
 
+        if strict and self._last_load_errors:
+            raise ValueError(self._format_load_error_summary(self._last_load_errors))
+
         # 전체 로드가 성공했을 때만 활성 스킬 상태를 교체한다.
         self._skills = new_skills
         self._trigger_map = new_trigger_map
         self._rebuild_matcher_index()
+        if self._last_load_errors:
+            self._logger.warning(
+                "skills_loaded_with_errors",
+                loaded=loaded,
+                error_count=len(self._last_load_errors),
+            )
         self._logger.info("skills_loaded_total", count=loaded)
         return loaded
 
@@ -162,6 +174,7 @@ class SkillManager:
                 skill.security_level.value, skill.allowed_tools
             )
         except SecurityViolationError as exc:
+            self._last_load_errors.append(f"{path.name}: {exc}")
             self._logger.warning(
                 "skill_security_rejected",
                 name=skill.name,
@@ -287,9 +300,24 @@ class SkillManager:
             for s in self._skills.values()
         ]
 
-    async def reload_skills(self) -> int:
+    def get_last_load_errors(self) -> list[str]:
+        """가장 최근 load_skills에서 수집된 오류를 반환한다."""
+        return list(self._last_load_errors)
+
+    @staticmethod
+    def _format_load_error_summary(errors: list[str], max_items: int = 3) -> str:
+        preview = errors[:max_items]
+        message = (
+            f"Skill loading failed in strict mode "
+            f"({len(errors)} error(s)): {'; '.join(preview)}"
+        )
+        if len(errors) > max_items:
+            message += f"; ... and {len(errors) - max_items} more"
+        return message
+
+    async def reload_skills(self, *, strict: bool = False) -> int:
         """스킬을 다시 로드한다."""
-        return await self.load_skills()
+        return await self.load_skills(strict=strict)
 
     def get_skill_context(
         self,

@@ -112,6 +112,27 @@ class TestGetRecentFeedback:
         positives = await fm.get_recent_feedback(111, rating=1, limit=3)
         assert len(positives) == 3
 
+    @pytest.mark.asyncio
+    async def test_sorted_by_updated_at(self, feedback_db) -> None:
+        fm, db = feedback_db
+        await fm.store_feedback(111, 1, 1, "q1", "a1")
+        await fm.store_feedback(111, 2, 1, "q2", "a2")
+
+        await db.execute(
+            "UPDATE message_feedback SET updated_at = datetime('now', '-10 minutes') "
+            "WHERE chat_id = 111 AND bot_message_id = 1"
+        )
+        await db.execute(
+            "UPDATE message_feedback SET updated_at = datetime('now', '-5 minutes') "
+            "WHERE chat_id = 111 AND bot_message_id = 2"
+        )
+        await db.commit()
+
+        await fm.store_feedback(111, 1, 1)
+        positives = await fm.get_recent_feedback(111, rating=1, limit=2)
+        assert len(positives) == 2
+        assert positives[0]["bot_message_id"] == 1
+
 
 class TestCountFeedback:
     @pytest.mark.asyncio

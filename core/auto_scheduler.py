@@ -7,6 +7,7 @@ APScheduler cron 작업으로 등록하고 실행한다.
 from __future__ import annotations
 
 import asyncio
+import functools
 import inspect
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
@@ -14,13 +15,18 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Protocol
 
+_ZoneInfo: Any
+_ZoneInfoNotFoundError: type[Exception]
 try:
-    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+    from zoneinfo import ZoneInfo as _ZoneInfo
+    from zoneinfo import ZoneInfoNotFoundError as _ZoneInfoNotFoundError
 except ImportError:
-    ZoneInfo = None
+    _ZoneInfo = None
 
-    class ZoneInfoNotFoundError(Exception):
+    class _ZoneInfoNotFoundErrorFallback(Exception):
         """zoneinfo 미지원 환경에서의 대체 예외."""
+
+    _ZoneInfoNotFoundError = _ZoneInfoNotFoundErrorFallback
 
 import yaml
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -71,14 +77,18 @@ class AutoDefinition(BaseModel):
     @field_validator("schedule")
     @classmethod
     def validate_cron(cls, v: str) -> str:
-        parts = v.strip().split()
-        if len(parts) != 5:
-            raise ValueError(f"Invalid cron expression (need 5 fields): {v}")
+        normalized = v.strip()
+        try:
+            # 필드 개수뿐 아니라 값 범위/문법까지 검증한다.
+            CronTrigger.from_crontab(normalized, timezone=timezone.utc)
+        except ValueError as exc:
+            raise ValueError(f"Invalid cron expression: {v}") from exc
         return v
 
 
 class DuplicateAutomationError(ValueError):
     """자동화 이름 충돌."""
+
 
 class EngineInterface(Protocol):
     async def execute_skill(
@@ -122,6 +132,7 @@ class AutoScheduler:
         self._engine: EngineInterface | None = None
         self._telegram: TelegramInterface | None = None
         self._callables: dict[str, Callable[..., Any]] = {}
+        self._last_load_errors: list[str] = []
         self._action_handlers: dict[ActionType, Callable[[AutoDefinition], Any]] = {
             ActionType.SKILL: self._run_skill_action,
             ActionType.PROMPT: self._run_prompt_action,
@@ -132,10 +143,10 @@ class AutoScheduler:
     @staticmethod
     def _resolve_timezone(name: str):
         """실행 환경에서 사용 가능한 tzinfo를 반환한다."""
-        if ZoneInfo is not None:
+        if _ZoneInfo is not None:
             try:
-                return ZoneInfo(name)
-            except ZoneInfoNotFoundError as exc:
+                return _ZoneInfo(name)
+            except _ZoneInfoNotFoundError as exc:
                 raise ValueError(f"Invalid timezone: {name}") from exc
 
         if name == "UTC":
@@ -163,10 +174,13 @@ class AutoScheduler:
         self._callables[name] = func
         self._logger.info("callable_registered", name=name)
 
-    async def load_automations(self) -> int:
+    async def load_automations(self, *, strict: bool = False) -> int:
         """_builtin/ 및 custom/ 디렉토리에서 자동화 YAML을 로드한다."""
+        old_automations = self._automations
         new_automations: dict[str, AutoDefinition] = {}
+        new_triggers: dict[str, CronTrigger] = {}
         name_sources: dict[str, Path] = {}
+        self._last_load_errors = []
         loaded = 0
 
         for sub_dir in ["_builtin", "custom"]:
@@ -184,8 +198,10 @@ class AutoScheduler:
                                 f"Duplicate automation name '{auto.name}' "
                                 f"({existing_source} vs {yaml_file})"
                             )
+                        trigger = self._build_cron_trigger(auto.schedule)
                         name_sources[auto.name] = yaml_file
                         new_automations[auto.name] = auto
+                        new_triggers[auto.name] = trigger
                         loaded += 1
                         self._logger.info(
                             "automation_loaded",
@@ -196,22 +212,27 @@ class AutoScheduler:
                 except DuplicateAutomationError:
                     raise
                 except Exception as exc:
+                    self._last_load_errors.append(f"{yaml_file.name}: {exc}")
                     self._logger.error(
                         "automation_load_failed",
                         file=str(yaml_file),
                         error=str(exc),
                     )
 
-        # 새 자동화 로드가 성공했을 때만 기존 상태를 교체한다.
-        for name in list(self._automations.keys()):
-            job_id = f"auto_{name}"
-            if self._scheduler.get_job(job_id):
-                self._scheduler.remove_job(job_id)
+        if strict and self._last_load_errors:
+            raise ValueError(self._format_load_error_summary(self._last_load_errors))
 
-        self._automations = new_automations
-        for auto in self._automations.values():
-            if auto.enabled:
-                self._register_job(auto)
+        self._swap_automations(
+            old_automations=old_automations,
+            new_automations=new_automations,
+            new_triggers=new_triggers,
+        )
+        if self._last_load_errors:
+            self._logger.warning(
+                "automations_loaded_with_errors",
+                loaded=loaded,
+                error_count=len(self._last_load_errors),
+            )
 
         self._logger.info("automations_loaded_total", count=loaded)
         return loaded
@@ -226,17 +247,64 @@ class AutoScheduler:
 
         return AutoDefinition(**data)
 
-    def _register_job(self, auto: AutoDefinition) -> None:
+    def _build_cron_trigger(self, schedule: str) -> CronTrigger:
+        """설정된 타임존 기준으로 cron 트리거를 생성/검증한다."""
+        try:
+            return CronTrigger.from_crontab(schedule.strip(), timezone=self._timezone)
+        except ValueError as exc:
+            raise ValueError(f"Invalid cron expression: {schedule}") from exc
+
+    def _remove_job(self, job_id: str) -> None:
+        if self._scheduler.get_job(job_id):
+            self._scheduler.remove_job(job_id)
+
+    def _swap_automations(
+        self,
+        *,
+        old_automations: dict[str, AutoDefinition],
+        new_automations: dict[str, AutoDefinition],
+        new_triggers: dict[str, CronTrigger],
+    ) -> None:
+        """자동화 상태를 원자적으로 교체한다. 실패 시 기존 상태로 롤백한다."""
+        old_enabled = [auto for auto in old_automations.values() if auto.enabled]
+        added_job_ids: list[str] = []
+        try:
+            for name in old_automations:
+                self._remove_job(f"auto_{name}")
+
+            self._automations = new_automations
+            for auto in self._automations.values():
+                if not auto.enabled:
+                    continue
+                trigger = new_triggers.get(auto.name)
+                if trigger is None:
+                    trigger = self._build_cron_trigger(auto.schedule)
+                self._register_job(auto, trigger=trigger)
+                added_job_ids.append(f"auto_{auto.name}")
+        except Exception as exc:
+            for job_id in added_job_ids:
+                self._remove_job(job_id)
+            self._automations = old_automations
+            for auto in old_enabled:
+                try:
+                    self._register_job(auto)
+                except Exception as rollback_exc:
+                    self._logger.error(
+                        "automation_rollback_register_failed",
+                        name=auto.name,
+                        error=str(rollback_exc),
+                    )
+            self._logger.error("automations_swap_failed", error=str(exc))
+            raise
+
+    def _register_job(
+        self,
+        auto: AutoDefinition,
+        trigger: CronTrigger | None = None,
+    ) -> None:
         """자동화를 APScheduler cron 작업으로 등록한다."""
-        parts = auto.schedule.strip().split()
-        trigger = CronTrigger(
-            minute=parts[0],
-            hour=parts[1],
-            day=parts[2],
-            month=parts[3],
-            day_of_week=parts[4],
-            timezone=self._timezone,
-        )
+        if trigger is None:
+            trigger = self._build_cron_trigger(auto.schedule)
 
         self._scheduler.add_job(
             self._execute_automation,
@@ -370,7 +438,11 @@ class AutoScheduler:
                     file_path, base_dir=self._config.data_dir
                 )
                 validated_path.parent.mkdir(parents=True, exist_ok=True)
-                validated_path.write_text(result, encoding="utf-8")
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(
+                    None,
+                    functools.partial(validated_path.write_text, result, encoding="utf-8"),
+                )
                 self._logger.info(
                     "auto_output_saved", path=str(validated_path)
                 )
@@ -410,6 +482,21 @@ class AutoScheduler:
             })
         return result
 
+    def get_last_load_errors(self) -> list[str]:
+        """가장 최근 load_automations에서 수집된 오류를 반환한다."""
+        return list(self._last_load_errors)
+
+    @staticmethod
+    def _format_load_error_summary(errors: list[str], max_items: int = 3) -> str:
+        preview = errors[:max_items]
+        message = (
+            f"Automation loading failed in strict mode "
+            f"({len(errors)} error(s)): {'; '.join(preview)}"
+        )
+        if len(errors) > max_items:
+            message += f"; ... and {len(errors) - max_items} more"
+        return message
+
     async def enable_automation(self, name: str) -> bool:
         """자동화를 활성화하고 작업을 등록한다."""
         auto = self._automations.get(name)
@@ -434,6 +521,6 @@ class AutoScheduler:
         self._logger.info("automation_disabled", name=name)
         return True
 
-    async def reload_automations(self) -> int:
+    async def reload_automations(self, *, strict: bool = False) -> int:
         """모든 작업을 제거하고 다시 로드한다."""
-        return await self.load_automations()
+        return await self.load_automations(strict=strict)

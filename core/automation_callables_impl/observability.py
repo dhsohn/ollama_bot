@@ -13,7 +13,7 @@ from core.memory import MemoryManager
 from .common import (
     SEVERITY_ICONS,
     TRIAGE_SCHEMA,
-    count_recent_errors,
+    count_recent_errors_async,
 )
 
 
@@ -38,7 +38,7 @@ def build_error_log_triage_callable(
             logger.warning("error_log_triage_no_log_dir", path=str(log_path))
             return ""
 
-        error_entries, total_errors, total_warnings = count_recent_errors(
+        error_entries, total_errors, total_warnings = await count_recent_errors_async(
             log_path, hours_back, max_entries=max_errors,
         )
 
@@ -197,7 +197,7 @@ def build_health_check_callable(
             lines.append(f"🔴 디스크: 확인 실패 ({exc})")
 
         log_path = Path(data_dir) / "logs"
-        _, error_count, _ = count_recent_errors(
+        _, error_count, _ = await count_recent_errors_async(
             log_path, error_hours_back, max_entries=0,
         )
         if error_count > 0:

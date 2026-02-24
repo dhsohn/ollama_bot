@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import functools
+import inspect
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -104,15 +105,11 @@ class TelegramHandler:
         """auto_scheduler 참조를 설정한다 (순환 의존 방지)."""
         self._scheduler = scheduler
 
-    async def initialize(self) -> Application:
-        """텔레그램 Application을 생성하고 핸들러를 등록한다."""
-        self._app = (
-            ApplicationBuilder()
-            .token(self._config.telegram_bot_token)
-            .build()
-        )
+    @property
+    def _feedback_enabled(self) -> bool:
+        return self._feedback is not None and self._config.feedback.enabled
 
-        # 명령어 핸들러 등록
+    def _build_command_handlers(self) -> list:
         handlers = [
             CommandHandler("start", self._cmd_start),
             CommandHandler("help", self._cmd_help),
@@ -122,13 +119,39 @@ class TelegramHandler:
             CommandHandler("memory", self._cmd_memory),
             CommandHandler("status", self._cmd_status),
         ]
-        if self._feedback and self._config.feedback.enabled:
+        if self._feedback_enabled:
             handlers.append(CommandHandler("feedback", self._cmd_feedback))
+        return handlers
+
+    def _build_bot_commands(self) -> list[BotCommand]:
+        commands = [
+            BotCommand("start", "봇 시작"),
+            BotCommand("help", "도움말"),
+            BotCommand("skills", "스킬 목록"),
+            BotCommand("auto", "자동화 관리"),
+            BotCommand("model", "모델 관리"),
+            BotCommand("memory", "메모리 관리"),
+            BotCommand("status", "시스템 상태"),
+        ]
+        if self._feedback_enabled:
+            commands.append(BotCommand("feedback", "피드백 통계"))
+        return commands
+
+    async def initialize(self) -> Application:
+        """텔레그램 Application을 생성하고 핸들러를 등록한다."""
+        self._app = (
+            ApplicationBuilder()
+            .token(self._config.telegram_bot_token)
+            .build()
+        )
+
+        # 명령어 핸들러 등록
+        handlers = self._build_command_handlers()
         for handler in handlers:
             self._app.add_handler(handler)
 
         # 피드백 콜백 핸들러
-        if self._feedback and self._config.feedback.enabled:
+        if self._feedback_enabled:
             self._app.add_handler(
                 CallbackQueryHandler(self._handle_feedback_callback, pattern=r"^fb:")
             )
@@ -142,17 +165,7 @@ class TelegramHandler:
         self._app.add_error_handler(self._error_handler)
 
         # 봇 명령어 목록 설정
-        commands = [
-            BotCommand("start", "봇 시작"),
-            BotCommand("help", "도움말"),
-            BotCommand("skills", "스킬 목록"),
-            BotCommand("auto", "자동화 관리"),
-            BotCommand("model", "모델 관리"),
-            BotCommand("memory", "메모리 관리"),
-            BotCommand("status", "시스템 상태"),
-        ]
-        if self._feedback and self._config.feedback.enabled:
-            commands.append(BotCommand("feedback", "피드백 통계"))
+        commands = self._build_bot_commands()
         await self._app.bot.set_my_commands(commands)
 
         self._logger.info("telegram_handler_initialized")
@@ -180,7 +193,7 @@ class TelegramHandler:
             "/memory — 메모리 관리",
             "/status — 시스템 상태",
         ]
-        if self._feedback and self._config.feedback.enabled:
+        if self._feedback_enabled:
             command_lines.insert(6, "/feedback — 피드백 통계")
 
         help_text = (
@@ -202,14 +215,18 @@ class TelegramHandler:
         args = context.args or []
         if args and args[0] == "reload":
             try:
-                count = await self._engine.reload_skills()
+                count = await self._engine.reload_skills(strict=True)
+                errors = self._get_skill_reload_errors()
+                message = f"스킬을 다시 로드했습니다: {count}개"
+                if errors:
+                    message += self._format_reload_warnings(errors)
                 await update.effective_message.reply_text(  # type: ignore[union-attr]
-                    f"스킬을 다시 로드했습니다: {count}개"
+                    message
                 )
             except Exception as exc:
                 self._logger.error("skills_reload_failed", error=str(exc))
                 await update.effective_message.reply_text(  # type: ignore[union-attr]
-                    "스킬 로드 중 오류가 발생했습니다. YAML 중복/형식을 확인하세요."
+                    f"스킬 로드 실패: {exc}"
                 )
             return
 
@@ -239,48 +256,75 @@ class TelegramHandler:
 
         args = context.args or []
         if not args or args[0] == "list":
-            automations = self._scheduler.list_automations()
-            if not automations:
-                await update.effective_message.reply_text("등록된 자동화가 없습니다.")  # type: ignore[union-attr]
-                return
+            await self._handle_auto_list(update)
+            return
 
-            lines = ["⏰ <b>자동화 목록</b>\n"]
-            for a in automations:
-                status = "✅" if a["enabled"] else "❌"
-                lines.append(
-                    f"{status} <b>{self._escape_html(a['name'])}</b> — "
-                    f"{self._escape_html(a['description'])}\n"
-                    f"  스케줄: <code>{self._escape_html(a['schedule'])}</code>"
-                )
-            await update.effective_message.reply_text(  # type: ignore[union-attr]
-                "\n".join(lines), parse_mode=ParseMode.HTML
+        if len(args) >= 2 and args[0] == "enable":
+            await self._handle_auto_toggle(update, name=args[1], enable=True)
+            return
+
+        if len(args) >= 2 and args[0] == "disable":
+            await self._handle_auto_toggle(update, name=args[1], enable=False)
+            return
+
+        if args[0] == "reload":
+            await self._handle_auto_reload(update)
+            return
+
+        await update.effective_message.reply_text(
+            "사용법: /auto [list|enable <이름>|disable <이름>|reload]"
+        )
+
+    async def _handle_auto_list(self, update: Update) -> None:
+        if self._scheduler is None:
+            await update.effective_message.reply_text("자동화 스케줄러가 초기화되지 않았습니다.")  # type: ignore[union-attr]
+            return
+        automations = self._scheduler.list_automations()
+        if not automations:
+            await update.effective_message.reply_text("등록된 자동화가 없습니다.")
+            return
+
+        lines = ["⏰ <b>자동화 목록</b>\n"]
+        for auto in automations:
+            status = "✅" if auto["enabled"] else "❌"
+            lines.append(
+                f"{status} <b>{self._escape_html(auto['name'])}</b> — "
+                f"{self._escape_html(auto['description'])}\n"
+                f"  스케줄: <code>{self._escape_html(auto['schedule'])}</code>"
             )
+        await update.effective_message.reply_text(
+            "\n".join(lines), parse_mode=ParseMode.HTML
+        )
 
-        elif len(args) >= 2 and args[0] == "enable":
-            result = await self._scheduler.enable_automation(args[1])
-            msg = f"'{args[1]}' 자동화가 활성화되었습니다." if result else f"'{args[1]}' 자동화를 찾을 수 없습니다."
-            await update.effective_message.reply_text(msg)  # type: ignore[union-attr]
-
-        elif len(args) >= 2 and args[0] == "disable":
-            result = await self._scheduler.disable_automation(args[1])
-            msg = f"'{args[1]}' 자동화가 비활성화되었습니다." if result else f"'{args[1]}' 자동화를 찾을 수 없습니다."
-            await update.effective_message.reply_text(msg)  # type: ignore[union-attr]
-
-        elif args[0] == "reload":
-            try:
-                count = await self._scheduler.reload_automations()
-                await update.effective_message.reply_text(  # type: ignore[union-attr]
-                    f"자동화를 다시 로드했습니다: {count}개"
-                )
-            except Exception as exc:
-                self._logger.error("auto_reload_failed", error=str(exc))
-                await update.effective_message.reply_text(  # type: ignore[union-attr]
-                    "자동화 로드 중 오류가 발생했습니다. YAML 중복/형식을 확인하세요."
-                )
-
+    async def _handle_auto_toggle(self, update: Update, name: str, *, enable: bool) -> None:
+        if self._scheduler is None:
+            await update.effective_message.reply_text("자동화 스케줄러가 초기화되지 않았습니다.")  # type: ignore[union-attr]
+            return
+        if enable:
+            result = await self._scheduler.enable_automation(name)
+            message = f"'{name}' 자동화가 활성화되었습니다." if result else f"'{name}' 자동화를 찾을 수 없습니다."
         else:
-            await update.effective_message.reply_text(  # type: ignore[union-attr]
-                "사용법: /auto [list|enable <이름>|disable <이름>|reload]"
+            result = await self._scheduler.disable_automation(name)
+            message = f"'{name}' 자동화가 비활성화되었습니다." if result else f"'{name}' 자동화를 찾을 수 없습니다."
+        await update.effective_message.reply_text(message)
+
+    async def _handle_auto_reload(self, update: Update) -> None:
+        if self._scheduler is None:
+            await update.effective_message.reply_text("자동화 스케줄러가 초기화되지 않았습니다.")  # type: ignore[union-attr]
+            return
+        try:
+            count = await self._scheduler.reload_automations(strict=True)
+            errors = self._get_auto_reload_errors()
+            message = f"자동화를 다시 로드했습니다: {count}개"
+            if errors:
+                message += self._format_reload_warnings(errors)
+            await update.effective_message.reply_text(
+                message
+            )
+        except Exception as exc:
+            self._logger.error("auto_reload_failed", error=str(exc))
+            await update.effective_message.reply_text(
+                f"자동화 로드 실패: {exc}"
             )
 
     @_auth_required
@@ -288,65 +332,78 @@ class TelegramHandler:
         chat_id = update.effective_chat.id  # type: ignore[union-attr]
         args = context.args or []
         if not args:
-            current = self._engine.get_current_model()
+            await self._show_current_model(update)
+            return
+
+        if args[0] == "list":
+            await self._show_available_models(update, chat_id)
+            return
+
+        await self._change_model(update, chat_id, args[0])
+
+    async def _show_current_model(self, update: Update) -> None:
+        current = self._engine.get_current_model()
+        await update.effective_message.reply_text(  # type: ignore[union-attr]
+            f"현재 모델: <code>{self._escape_html(current)}</code>\n\n"
+            "모델 변경: <code>/model &lt;모델명&gt;</code>\n"
+            "모델 목록: <code>/model list</code>",
+            parse_mode=ParseMode.HTML,
+        )
+
+    async def _show_available_models(self, update: Update, chat_id: int) -> None:
+        try:
+            models = await self._engine.list_models()
+        except Exception as exc:
+            self._logger.error(
+                "model_list_failed",
+                chat_id=chat_id,
+                error=str(exc),
+            )
             await update.effective_message.reply_text(  # type: ignore[union-attr]
-                f"현재 모델: <code>{self._escape_html(current)}</code>\n\n"
-                "모델 변경: <code>/model &lt;모델명&gt;</code>\n"
-                "모델 목록: <code>/model list</code>",
+                "모델 목록을 가져오지 못했습니다. Ollama 상태를 확인해주세요."
+            )
+            return
+
+        if not models:
+            await update.effective_message.reply_text("설치된 모델이 없습니다.")  # type: ignore[union-attr]
+            return
+        lines = ["📦 <b>설치된 모델</b>\n"]
+        for model in models:
+            size_mb = model["size"] / (1024 * 1024) if model["size"] else 0
+            lines.append(
+                f"• <code>{self._escape_html(model['name'])}</code> ({size_mb:.0f}MB)"
+            )
+        await update.effective_message.reply_text(  # type: ignore[union-attr]
+            "\n".join(lines), parse_mode=ParseMode.HTML
+        )
+
+    async def _change_model(self, update: Update, chat_id: int, requested_model: str) -> None:
+        try:
+            result = await self._engine.change_model(requested_model)
+        except Exception as exc:
+            self._logger.error(
+                "model_change_failed",
+                chat_id=chat_id,
+                requested_model=requested_model,
+                error=str(exc),
+            )
+            await update.effective_message.reply_text(  # type: ignore[union-attr]
+                "모델 변경 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요."
+            )
+            return
+
+        if result["success"]:
+            await update.effective_message.reply_text(  # type: ignore[union-attr]
+                "모델 변경: "
+                f"<code>{self._escape_html(result['old_model'])}</code> → "
+                f"<code>{self._escape_html(result['new_model'])}</code>",
                 parse_mode=ParseMode.HTML,
             )
-        elif args[0] == "list":
-            try:
-                models = await self._engine.list_models()
-            except Exception as exc:
-                self._logger.error(
-                    "model_list_failed",
-                    chat_id=chat_id,
-                    error=str(exc),
-                )
-                await update.effective_message.reply_text(  # type: ignore[union-attr]
-                    "모델 목록을 가져오지 못했습니다. Ollama 상태를 확인해주세요."
-                )
-                return
+            return
 
-            if not models:
-                await update.effective_message.reply_text("설치된 모델이 없습니다.")  # type: ignore[union-attr]
-                return
-            lines = ["📦 <b>설치된 모델</b>\n"]
-            for m in models:
-                size_mb = m["size"] / (1024 * 1024) if m["size"] else 0
-                lines.append(
-                    f"• <code>{self._escape_html(m['name'])}</code> ({size_mb:.0f}MB)"
-                )
-            await update.effective_message.reply_text(  # type: ignore[union-attr]
-                "\n".join(lines), parse_mode=ParseMode.HTML
-            )
-        else:
-            try:
-                result = await self._engine.change_model(args[0])
-            except Exception as exc:
-                self._logger.error(
-                    "model_change_failed",
-                    chat_id=chat_id,
-                    requested_model=args[0],
-                    error=str(exc),
-                )
-                await update.effective_message.reply_text(  # type: ignore[union-attr]
-                    "모델 변경 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요."
-                )
-                return
-
-            if result["success"]:
-                await update.effective_message.reply_text(  # type: ignore[union-attr]
-                    "모델 변경: "
-                    f"<code>{self._escape_html(result['old_model'])}</code> → "
-                    f"<code>{self._escape_html(result['new_model'])}</code>",
-                    parse_mode=ParseMode.HTML,
-                )
-            else:
-                await update.effective_message.reply_text(  # type: ignore[union-attr]
-                    f"모델 변경 실패: {result['error']}"
-                )
+        await update.effective_message.reply_text(  # type: ignore[union-attr]
+            f"모델 변경 실패: {result['error']}"
+        )
 
     @_auth_required
     async def _cmd_memory(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -420,6 +477,8 @@ class TelegramHandler:
         """자유 텍스트 메시지를 처리한다. 스트리밍 UX를 제공한다."""
         chat_id = update.effective_chat.id  # type: ignore[union-attr]
         text = update.effective_message.text  # type: ignore[union-attr]
+        if text is None:
+            return
 
         # 입력 정제
         text = self._security.sanitize_input(text)
@@ -445,8 +504,7 @@ class TelegramHandler:
 
             # 피드백 버튼 부착
             if (
-                self._feedback
-                and self._config.feedback.enabled
+                self._feedback_enabled
                 and self._config.feedback.show_buttons
                 and result.full_response.strip()
                 and result.last_message
@@ -502,6 +560,28 @@ class TelegramHandler:
             "ts": now,
         }
 
+    @staticmethod
+    def _parse_feedback_callback_data(data: str | None) -> tuple[int, int] | None:
+        if not data:
+            return None
+        try:
+            _, rating_str, msg_id_str = data.split(":")
+            return int(rating_str), int(msg_id_str)
+        except (ValueError, AttributeError):
+            return None
+
+    async def _authorize_feedback_callback(self, chat_id: int, query) -> bool:
+        try:
+            self._security.authenticate(chat_id)
+            self._security.check_rate_limit(chat_id)
+        except AuthenticationError:
+            await query.answer()
+            return False
+        except RateLimitError:
+            await query.answer("요청이 너무 많습니다. 잠시 후 다시 시도해주세요.", show_alert=True)
+            return False
+        return True
+
     async def _handle_feedback_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """인라인 피드백 버튼 콜백을 처리한다."""
         query = update.callback_query
@@ -514,23 +594,14 @@ class TelegramHandler:
             await query.answer("private chat에서만 사용할 수 있습니다.", show_alert=False)
             return
 
-        try:
-            _, rating_str, msg_id_str = query.data.split(":")
-            rating = int(rating_str)
-            bot_message_id = int(msg_id_str)
-        except (ValueError, AttributeError):
+        parsed = self._parse_feedback_callback_data(query.data)
+        if parsed is None:
             await query.answer("잘못된 피드백 요청입니다.", show_alert=True)
             return
+        rating, bot_message_id = parsed
 
         chat_id = update.effective_chat.id
-        try:
-            self._security.authenticate(chat_id)
-            self._security.check_rate_limit(chat_id)
-        except AuthenticationError:
-            await query.answer()
-            return
-        except RateLimitError:
-            await query.answer("요청이 너무 많습니다. 잠시 후 다시 시도해주세요.", show_alert=True)
+        if not await self._authorize_feedback_callback(chat_id, query):
             return
 
         if rating not in (-1, 1):
@@ -554,6 +625,9 @@ class TelegramHandler:
     @_auth_required
     async def _cmd_feedback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """피드백 통계를 표시한다."""
+        if self._feedback is None:
+            await update.effective_message.reply_text("피드백 기능이 비활성화되어 있습니다.")  # type: ignore[union-attr]
+            return
         chat_id = update.effective_chat.id  # type: ignore[union-attr]
         stats = await self._feedback.get_user_stats(chat_id)
         text = (
@@ -580,7 +654,8 @@ class TelegramHandler:
 
     async def send_message(self, chat_id: int, text: str) -> None:
         """능동적으로 메시지를 전송한다 (auto_scheduler용)."""
-        assert self._app is not None
+        if self._app is None:
+            raise RuntimeError("TelegramHandler가 아직 초기화되지 않았습니다.")
         for part in self._split_message(text):
             await self._app.bot.send_message(chat_id=chat_id, text=part)
 
@@ -588,6 +663,55 @@ class TelegramHandler:
     def _escape_html(value: object) -> str:
         """HTML parse mode용 최소 이스케이프."""
         return escape_html(value)
+
+    def _get_skill_reload_errors(self) -> list[str]:
+        if (
+            "get_last_skill_load_errors" not in getattr(self._engine, "__dict__", {})
+            and not hasattr(type(self._engine), "get_last_skill_load_errors")
+        ):
+            return []
+        getter = getattr(self._engine, "get_last_skill_load_errors", None)
+        if not callable(getter) or inspect.iscoroutinefunction(getter):
+            return []
+        try:
+            errors = getter()
+        except Exception:
+            return []
+        if inspect.isawaitable(errors):
+            return []
+        if isinstance(errors, list):
+            return [str(item) for item in errors]
+        return []
+
+    def _get_auto_reload_errors(self) -> list[str]:
+        if self._scheduler is None:
+            return []
+        if (
+            "get_last_load_errors" not in getattr(self._scheduler, "__dict__", {})
+            and not hasattr(type(self._scheduler), "get_last_load_errors")
+        ):
+            return []
+        getter = getattr(self._scheduler, "get_last_load_errors", None)
+        if not callable(getter) or inspect.iscoroutinefunction(getter):
+            return []
+        try:
+            errors = getter()
+        except Exception:
+            return []
+        if inspect.isawaitable(errors):
+            return []
+        if isinstance(errors, list):
+            return [str(item) for item in errors]
+        return []
+
+    @staticmethod
+    def _format_reload_warnings(errors: list[str], max_items: int = 3) -> str:
+        preview = errors[:max_items]
+        lines = [f"\n\n⚠️ 일부 항목 로드 실패({len(errors)}건)"]
+        lines.extend(f"- {item}" for item in preview)
+        if len(errors) > max_items:
+            lines.append(f"- ... 외 {len(errors) - max_items}건")
+        return "\n".join(lines)
 
     def _split_message(
         self,
@@ -600,5 +724,6 @@ class TelegramHandler:
 
     @property
     def application(self) -> Application:
-        assert self._app is not None
+        if self._app is None:
+            raise RuntimeError("TelegramHandler가 아직 초기화되지 않았습니다.")
         return self._app

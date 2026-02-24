@@ -286,3 +286,17 @@ class TestListModels:
         models = await ollama_client.list_models()
         assert len(models) == 1
         assert models[0]["name"] == "test-model"
+
+
+class TestInitializationGuards:
+    @pytest.mark.asyncio
+    async def test_chat_before_initialize_raises(self, ollama_client: OllamaClient) -> None:
+        with pytest.raises(RuntimeError, match="초기화"):
+            await ollama_client.chat(messages=[{"role": "user", "content": "hi"}])
+
+    @pytest.mark.asyncio
+    async def test_health_check_before_initialize_raises(
+        self, ollama_client: OllamaClient
+    ) -> None:
+        with pytest.raises(RuntimeError, match="초기화"):
+            await ollama_client.health_check()

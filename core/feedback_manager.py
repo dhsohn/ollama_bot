@@ -94,38 +94,44 @@ class FeedbackManager:
 
     async def get_user_stats(self, chat_id: int) -> dict:
         """사용자별 피드백 통계를 반환한다."""
-        async with self._db.execute(
-            "SELECT "
-            "  COUNT(*) AS total, "
-            "  SUM(CASE WHEN rating = 1 THEN 1 ELSE 0 END) AS positive, "
-            "  SUM(CASE WHEN rating = -1 THEN 1 ELSE 0 END) AS negative "
-            "FROM message_feedback WHERE chat_id = ?",
-            (chat_id,),
-        ) as cursor:
-            row = await cursor.fetchone()
-
-        total = row[0] if row else 0
-        positive = row[1] if row and row[1] else 0
-        negative = row[2] if row and row[2] else 0
-        rate = positive / total if total > 0 else 0.0
-        return {
-            "total": total,
-            "positive": positive,
-            "negative": negative,
-            "satisfaction_rate": rate,
-        }
+        return await self._fetch_stats(chat_id=chat_id)
 
     async def get_global_stats(self) -> dict:
         """전체 피드백 통계를 반환한다."""
+        return await self._fetch_stats(chat_id=None)
+
+    async def _fetch_stats(self, chat_id: int | None) -> dict:
+        """피드백 통계를 조회한다."""
+        if chat_id is None:
+            query = (
+                "SELECT "
+                "  COUNT(*) AS total, "
+                "  SUM(CASE WHEN rating = 1 THEN 1 ELSE 0 END) AS positive, "
+                "  SUM(CASE WHEN rating = -1 THEN 1 ELSE 0 END) AS negative "
+                "FROM message_feedback"
+            )
+            params: tuple = ()
+        else:
+            query = (
+                "SELECT "
+                "  COUNT(*) AS total, "
+                "  SUM(CASE WHEN rating = 1 THEN 1 ELSE 0 END) AS positive, "
+                "  SUM(CASE WHEN rating = -1 THEN 1 ELSE 0 END) AS negative "
+                "FROM message_feedback WHERE chat_id = ?"
+            )
+            params = (chat_id,)
+
         async with self._db.execute(
-            "SELECT "
-            "  COUNT(*) AS total, "
-            "  SUM(CASE WHEN rating = 1 THEN 1 ELSE 0 END) AS positive, "
-            "  SUM(CASE WHEN rating = -1 THEN 1 ELSE 0 END) AS negative "
-            "FROM message_feedback",
+            query,
+            params,
         ) as cursor:
             row = await cursor.fetchone()
 
+        return self._row_to_stats(row)
+
+    @staticmethod
+    def _row_to_stats(row) -> dict:
+        """집계 row를 통계 dict로 변환한다."""
         total = row[0] if row else 0
         positive = row[1] if row and row[1] else 0
         negative = row[2] if row and row[2] else 0
@@ -148,7 +154,7 @@ class FeedbackManager:
             "SELECT bot_message_id, rating, user_message_preview, bot_response_preview, created_at "
             "FROM message_feedback "
             "WHERE chat_id = ? AND rating = ? "
-            "ORDER BY created_at DESC LIMIT ?",
+            "ORDER BY updated_at DESC LIMIT ?",
             (chat_id, rating, limit),
         ) as cursor:
             rows = await cursor.fetchall()

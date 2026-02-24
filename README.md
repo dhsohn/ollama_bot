@@ -164,6 +164,7 @@ security_level: "safe"
 파일 변경 후 `/skills reload`로 다시 로드하고 `/skills`로 확인할 수 있습니다.
 
 > 스킬 `name` 또는 `triggers`가 기존 스킬과 중복되면 로드가 실패합니다(오류 처리).
+> `/skills reload`는 strict 모드로 동작하며, YAML 오류/보안 위반이 1건이라도 있으면 전체 리로드를 실패 처리합니다.
 
 ---
 
@@ -191,6 +192,29 @@ timeout: 60
 파일 변경 후 `/auto reload`로 다시 로드할 수 있습니다.
 
 > 자동화 `name`이 기존 자동화와 중복되면 로드가 실패합니다(오류 처리).
+> `/auto reload`는 strict 모드로 동작하며, cron/YAML 오류가 있으면 전체 리로드를 실패 처리합니다.
+
+---
+
+## 품질/운영 검증
+
+로컬에서 코드 품질 게이트를 먼저 통과시키세요:
+
+```bash
+ruff check .
+mypy
+pytest -q
+```
+
+장시간 운영 안정성(soak) 검증:
+
+```bash
+# 기본: 3시간, 60초 간격
+bash scripts/soak_monitor.sh
+
+# 예시: 6시간, 재시작 0회, 구간 오류라인 0건 허용
+bash scripts/soak_monitor.sh --minutes 360 --max-restarts 0 --max-error-lines 0
+```
 
 ---
 

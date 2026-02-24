@@ -95,12 +95,37 @@ class TestSkillLoading:
     async def test_security_violation_skipped(self, skill_manager: SkillManager) -> None:
         await skill_manager.load_skills()
         assert skill_manager.get_skill("bad_skill") is None
+        errors = skill_manager.get_last_load_errors()
+        assert any("bad_skill.yaml" in item for item in errors)
 
     @pytest.mark.asyncio
     async def test_builtin_and_custom_both_loaded(self, skill_manager: SkillManager) -> None:
         await skill_manager.load_skills()
         assert skill_manager.get_skill("summarize") is not None
         assert skill_manager.get_skill("custom_skill") is not None
+
+    @pytest.mark.asyncio
+    async def test_invalid_yaml_is_reported(
+        self,
+        skill_manager: SkillManager,
+        skills_dir: Path,
+    ) -> None:
+        (skills_dir / "custom" / "broken.yaml").write_text(
+            "name: [",
+            encoding="utf-8",
+        )
+        count = await skill_manager.load_skills()
+        assert count == 2  # summarize + custom_skill
+        errors = skill_manager.get_last_load_errors()
+        assert any("broken.yaml" in item for item in errors)
+
+    @pytest.mark.asyncio
+    async def test_strict_mode_raises_on_load_errors(
+        self,
+        skill_manager: SkillManager,
+    ) -> None:
+        with pytest.raises(ValueError, match="strict mode"):
+            await skill_manager.load_skills(strict=True)
 
 
 class TestTriggerMatching:

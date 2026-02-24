@@ -275,13 +275,17 @@ class Engine:
         """현재 기본 모델 이름을 반환한다."""
         return self._ollama.default_model
 
-    async def reload_skills(self) -> int:
+    async def reload_skills(self, *, strict: bool = False) -> int:
         """스킬 정의를 다시 로드한다."""
-        return await self._skills.reload_skills()
+        return await self._skills.reload_skills(strict=strict)
 
     def list_skills(self) -> list[dict]:
         """로드된 스킬 목록을 반환한다."""
         return self._skills.list_skills()
+
+    def get_last_skill_load_errors(self) -> list[str]:
+        """최근 스킬 로드 중 발생한 오류 목록을 반환한다."""
+        return self._skills.get_last_load_errors()
 
     async def get_memory_stats(self, chat_id: int) -> dict:
         """채팅 메모리 통계를 조회한다."""

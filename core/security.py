@@ -10,7 +10,7 @@ import fnmatch
 import re
 import time
 import unicodedata
-from collections import defaultdict
+from collections import defaultdict, deque
 from pathlib import Path
 
 from core.config import SecurityConfig
@@ -48,7 +48,7 @@ class SecurityManager:
         self._rate_limit: int = config.rate_limit
         self._max_file_size: int = config.max_file_size
         self._blocked_paths: list[str] = config.blocked_paths
-        self._request_log: dict[int, list[float]] = defaultdict(list)
+        self._request_log: dict[int, deque[float]] = defaultdict(deque)
         self._logger = get_logger("security")
 
     # ── 인증 ──
@@ -82,8 +82,8 @@ class SecurityManager:
         window = self._request_log[chat_id]
 
         # 60초 이전 항목 제거
-        self._request_log[chat_id] = [t for t in window if now - t < 60.0]
-        window = self._request_log[chat_id]
+        while window and now - window[0] >= 60.0:
+            window.popleft()
 
         if len(window) >= self._rate_limit:
             self._logger.warning(

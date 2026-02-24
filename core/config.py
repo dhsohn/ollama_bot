@@ -8,14 +8,20 @@ from __future__ import annotations
 
 from pathlib import Path
 from datetime import timedelta, timezone
+from typing import Any
 
+_ZoneInfo: Any
+_ZoneInfoNotFoundError: type[Exception]
 try:
-    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+    from zoneinfo import ZoneInfo as _ZoneInfo
+    from zoneinfo import ZoneInfoNotFoundError as _ZoneInfoNotFoundError
 except ImportError:
-    ZoneInfo = None
+    _ZoneInfo = None
 
-    class ZoneInfoNotFoundError(Exception):
+    class _ZoneInfoNotFoundErrorFallback(Exception):
         """zoneinfo 미지원 환경에서의 대체 예외."""
+
+    _ZoneInfoNotFoundError = _ZoneInfoNotFoundErrorFallback
 
 import yaml
 from pydantic import BaseModel, Field, field_validator
@@ -91,10 +97,10 @@ class SchedulerConfig(BaseModel):
     @field_validator("timezone")
     @classmethod
     def validate_timezone(cls, value: str) -> str:
-        if ZoneInfo is not None:
+        if _ZoneInfo is not None:
             try:
-                ZoneInfo(value)
-            except ZoneInfoNotFoundError as exc:
+                _ZoneInfo(value)
+            except _ZoneInfoNotFoundError as exc:
                 raise ValueError(f"Invalid timezone: {value}") from exc
             return value
 

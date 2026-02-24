@@ -164,7 +164,7 @@ async def _build_runtime(config: AppSettings, logger: Any) -> RuntimeState:
         # 4. 스킬 매니저
         skills = SkillManager(security=security, skills_dir="skills")
         try:
-            skill_count = await skills.load_skills()
+            skill_count = await skills.load_skills(strict=True)
         except Exception as exc:
             logger.error("skills_init_failed", error=str(exc))
             raise StartupError(
@@ -172,6 +172,13 @@ async def _build_runtime(config: AppSettings, logger: Any) -> RuntimeState:
                 "중복 이름/트리거 또는 YAML 형식을 확인하세요."
             ) from exc
         logger.info("skills_loaded", count=skill_count)
+        skill_load_errors = skills.get_last_load_errors()
+        if skill_load_errors:
+            logger.warning(
+                "skills_loaded_with_partial_failures",
+                error_count=len(skill_load_errors),
+                sample=skill_load_errors[:3],
+            )
 
         # 5. 엔진
         engine = Engine(
@@ -215,7 +222,7 @@ async def _build_runtime(config: AppSettings, logger: Any) -> RuntimeState:
         telegram.set_scheduler(scheduler)
 
         try:
-            auto_count = await scheduler.load_automations()
+            auto_count = await scheduler.load_automations(strict=True)
         except Exception as exc:
             logger.error("automations_init_failed", error=str(exc))
             raise StartupError(
@@ -223,6 +230,13 @@ async def _build_runtime(config: AppSettings, logger: Any) -> RuntimeState:
                 "중복 이름 또는 YAML 형식을 확인하세요."
             ) from exc
         logger.info("automations_loaded", count=auto_count)
+        auto_load_errors = scheduler.get_last_load_errors()
+        if auto_load_errors:
+            logger.warning(
+                "automations_loaded_with_partial_failures",
+                error_count=len(auto_load_errors),
+                sample=auto_load_errors[:3],
+            )
 
         app = await telegram.initialize()
 
