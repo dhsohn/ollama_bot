@@ -1,0 +1,18 @@
+name: "memory_hygiene"
+description: "장기 메모리의 중복, 충돌, 오래된 항목을 정리합니다"
+version: "1.0"
+enabled: true
+schedule: "30 3 * * *"
+action:
+  type: "callable"
+  target: "memory_hygiene"
+  parameters:
+    stale_days: 90
+    max_llm_calls: 3
+output:
+  send_to_telegram: true
+  save_to_file: "reports/memory_hygiene_{date}.md"
+retry:
+  max_attempts: 2
+  delay_seconds: 60
+timeout: 180

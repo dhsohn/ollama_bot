@@ -58,6 +58,57 @@ class TestChat:
         assert mock_async_client.chat.call_count == 3
 
     @pytest.mark.asyncio
+    async def test_chat_passes_format_json(self, ollama_client: OllamaClient) -> None:
+        mock_response = MagicMock()
+        mock_response.message.content = '{"key": "value"}'
+
+        mock_async_client = AsyncMock()
+        mock_async_client.chat = AsyncMock(return_value=mock_response)
+        ollama_client._client = mock_async_client
+
+        await ollama_client.chat(
+            messages=[{"role": "user", "content": "Hi"}],
+            format="json",
+        )
+
+        call_kwargs = mock_async_client.chat.call_args.kwargs
+        assert call_kwargs["format"] == "json"
+
+    @pytest.mark.asyncio
+    async def test_chat_passes_format_schema_dict(self, ollama_client: OllamaClient) -> None:
+        schema = {"type": "object", "properties": {"name": {"type": "string"}}}
+        mock_response = MagicMock()
+        mock_response.message.content = '{"name": "test"}'
+
+        mock_async_client = AsyncMock()
+        mock_async_client.chat = AsyncMock(return_value=mock_response)
+        ollama_client._client = mock_async_client
+
+        await ollama_client.chat(
+            messages=[{"role": "user", "content": "Hi"}],
+            format=schema,
+        )
+
+        call_kwargs = mock_async_client.chat.call_args.kwargs
+        assert call_kwargs["format"] is schema
+
+    @pytest.mark.asyncio
+    async def test_chat_omits_format_when_none(self, ollama_client: OllamaClient) -> None:
+        mock_response = MagicMock()
+        mock_response.message.content = "Hello!"
+
+        mock_async_client = AsyncMock()
+        mock_async_client.chat = AsyncMock(return_value=mock_response)
+        ollama_client._client = mock_async_client
+
+        await ollama_client.chat(
+            messages=[{"role": "user", "content": "Hi"}],
+        )
+
+        call_kwargs = mock_async_client.chat.call_args.kwargs
+        assert "format" not in call_kwargs
+
+    @pytest.mark.asyncio
     async def test_chat_uses_explicit_zero_options(self, ollama_client: OllamaClient) -> None:
         mock_response = MagicMock()
         mock_response.message.content = "Hello!"

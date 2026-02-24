@@ -7,10 +7,12 @@ APScheduler cron 작업으로 등록하고 실행한다.
 from __future__ import annotations
 
 import asyncio
+import inspect
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
+from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 try:
     from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -30,8 +32,15 @@ from core.logging_setup import get_logger
 from core.security import SecurityManager
 
 
+class ActionType(str, Enum):
+    SKILL = "skill"
+    COMMAND = "command"
+    PROMPT = "prompt"
+    CALLABLE = "callable"
+
+
 class AutoAction(BaseModel):
-    type: str  # "skill" | "command" | "prompt" | "callable"
+    type: ActionType
     target: str
     parameters: dict = Field(default_factory=dict)
 
@@ -71,6 +80,27 @@ class AutoDefinition(BaseModel):
 class DuplicateAutomationError(ValueError):
     """자동화 이름 충돌."""
 
+class EngineInterface(Protocol):
+    async def execute_skill(
+        self,
+        skill_name: str,
+        parameters: dict,
+        chat_id: int | None = None,
+    ) -> str: ...
+
+    async def process_prompt(
+        self,
+        prompt: str,
+        chat_id: int | None = None,
+        format: str | dict | None = None,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+    ) -> str: ...
+
+
+class TelegramInterface(Protocol):
+    async def send_message(self, chat_id: int, text: str) -> None: ...
+
 
 class AutoScheduler:
     """자동화 작업을 스케줄링하고 실행한다."""
@@ -89,9 +119,15 @@ class AutoScheduler:
         self._automations: dict[str, AutoDefinition] = {}
         self._logger = get_logger("auto_scheduler")
         # engine과 telegram은 순환 의존 방지를 위해 나중에 주입
-        self._engine = None
-        self._telegram = None
+        self._engine: EngineInterface | None = None
+        self._telegram: TelegramInterface | None = None
         self._callables: dict[str, Callable[..., Any]] = {}
+        self._action_handlers: dict[ActionType, Callable[[AutoDefinition], Any]] = {
+            ActionType.SKILL: self._run_skill_action,
+            ActionType.PROMPT: self._run_prompt_action,
+            ActionType.CALLABLE: self._run_callable_action,
+            ActionType.COMMAND: self._run_command_action,
+        }
 
     @staticmethod
     def _resolve_timezone(name: str):
@@ -111,7 +147,11 @@ class AutoScheduler:
             "Use UTC or Asia/Seoul."
         )
 
-    def set_dependencies(self, engine, telegram) -> None:
+    def set_dependencies(
+        self,
+        engine: EngineInterface,
+        telegram: TelegramInterface,
+    ) -> None:
         """engine과 telegram 참조를 주입한다."""
         self._engine = engine
         self._telegram = telegram
@@ -254,40 +294,50 @@ class AutoScheduler:
     async def _run_action(self, auto: AutoDefinition) -> str:
         """액션 타입에 따라 적절한 처리를 수행한다."""
         action = auto.action
-
-        if action.type == "skill":
-            if self._engine is None:
-                raise RuntimeError("Engine not set")
-            return await self._engine.execute_skill(
-                skill_name=action.target,
-                parameters=action.parameters,
-            )
-        elif action.type == "prompt":
-            if self._engine is None:
-                raise RuntimeError("Engine not set")
-            return await self._engine.process_prompt(prompt=action.target)
-        elif action.type == "callable":
-            func = self._callables.get(action.target)
-            if func is None:
-                raise ValueError(
-                    f"Callable '{action.target}' not registered. "
-                    f"Available: {list(self._callables.keys())}"
-                )
-            if asyncio.iscoroutinefunction(func):
-                output = await func(**action.parameters)
-            else:
-                output = func(**action.parameters)
-            return "" if output is None else str(output)
-        elif action.type == "command":
-            # v0.1에서는 보안상 시스템 명령 실행 비활성화
-            self._logger.warning(
-                "command_action_disabled",
-                name=auto.name,
-                target=action.target,
-            )
-            return f"[보안 제한] 'command' 타입은 v0.1에서 비활성화되어 있습니다."
-        else:
+        handler = self._action_handlers.get(action.type)
+        if handler is None:
             raise ValueError(f"Unknown action type: {action.type}")
+        result = handler(auto)
+        if inspect.isawaitable(result):
+            return await result
+        return str(result)
+
+    async def _run_skill_action(self, auto: AutoDefinition) -> str:
+        if self._engine is None:
+            raise RuntimeError("Engine not set")
+        action = auto.action
+        return await self._engine.execute_skill(
+            skill_name=action.target,
+            parameters=action.parameters,
+        )
+
+    async def _run_prompt_action(self, auto: AutoDefinition) -> str:
+        if self._engine is None:
+            raise RuntimeError("Engine not set")
+        action = auto.action
+        return await self._engine.process_prompt(prompt=action.target)
+
+    async def _run_callable_action(self, auto: AutoDefinition) -> str:
+        action = auto.action
+        func = self._callables.get(action.target)
+        if func is None:
+            raise ValueError(
+                f"Callable '{action.target}' not registered. "
+                f"Available: {list(self._callables.keys())}"
+            )
+        output = func(**action.parameters)
+        if inspect.isawaitable(output):
+            output = await output
+        return "" if output is None else str(output)
+
+    def _run_command_action(self, auto: AutoDefinition) -> str:
+        # v0.1에서는 보안상 시스템 명령 실행 비활성화
+        self._logger.warning(
+            "command_action_disabled",
+            name=auto.name,
+            target=auto.action.target,
+        )
+        return "[보안 제한] 'command' 타입은 v0.1에서 비활성화되어 있습니다."
 
     async def _deliver_output(self, auto: AutoDefinition, result: str) -> None:
         """실행 결과를 텔레그램 전송 및/또는 파일 저장한다."""

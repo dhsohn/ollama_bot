@@ -136,7 +136,6 @@ ollama_bot/
 │   │   ├── summarize.yaml   # 텍스트 요약
 │   │   ├── translate.yaml   # 번역
 │   │   ├── code_review.yaml # 코드 리뷰
-│   │   └── web_search.yaml  # 웹 검색 (선택적)
 │   └── custom/              # 사용자 정의 스킬
 │       └── .gitkeep
 ├── auto/                    # 사용자 커스텀 자동화 (AUTO 디렉토리)
@@ -263,7 +262,6 @@ security_level: "safe"
 | summarize | 텍스트/URL 요약 | `/summarize`, `요약해줘` |
 | translate | 다국어 번역 | `/translate`, `번역해줘` |
 | code_review | 코드 리뷰 및 개선 제안 | `/review`, `코드 리뷰` |
-| web_search | 웹 검색 (선택적, 외부 API 필요) | `/search`, `검색해줘` |
 
 ### 5.3 스킬 보안
 - 각 스킬에 `security_level` 지정

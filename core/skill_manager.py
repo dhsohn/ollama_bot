@@ -7,6 +7,7 @@ skills/_builtin/ 및 skills/custom/ 디렉토리의 YAML 파일을 로드하고,
 
 from __future__ import annotations
 
+from collections import deque
 from enum import Enum
 from pathlib import Path
 
@@ -71,6 +72,11 @@ class SkillManager:
         self._skills_dir = Path(skills_dir)
         self._skills: dict[str, SkillDefinition] = {}
         self._trigger_map: dict[str, str] = {}  # trigger → skill name
+        self._command_trigger_map: dict[str, str] = {}
+        self._keyword_trigger_order: list[tuple[str, str]] = []
+        self._ac_goto: list[dict[str, int]] = [{}]
+        self._ac_fail: list[int] = [0]
+        self._ac_output: list[list[int]] = [[]]
         self._logger = get_logger("skill_manager")
 
     async def load_skills(self) -> int:
@@ -112,6 +118,9 @@ class SkillManager:
                         name_sources[skill.name] = yaml_file
                         for trigger in skill.triggers:
                             trigger_key = trigger.lower()
+                            if trigger_key in new_trigger_map:
+                                # 동일 스킬 내 중복 트리거는 첫 항목을 유지한다.
+                                continue
                             new_trigger_map[trigger_key] = skill.name
                             trigger_sources[trigger_key] = yaml_file
                         loaded += 1
@@ -133,6 +142,7 @@ class SkillManager:
         # 전체 로드가 성공했을 때만 활성 스킬 상태를 교체한다.
         self._skills = new_skills
         self._trigger_map = new_trigger_map
+        self._rebuild_matcher_index()
         self._logger.info("skills_loaded_total", count=loaded)
         return loaded
 
@@ -175,16 +185,95 @@ class SkillManager:
         # 1. /command 트리거 (정확한 접두사 매칭)
         first_word = text_lower.split()[0] if text_lower else ""
         if first_word.startswith("/"):
-            skill_name = self._trigger_map.get(first_word)
+            skill_name = self._command_trigger_map.get(first_word)
             if skill_name:
                 return self._skills.get(skill_name)
 
-        # 2. 키워드 트리거 (포함 여부 매칭)
-        for trigger, skill_name in self._trigger_map.items():
-            if not trigger.startswith("/") and trigger in text_lower:
-                return self._skills.get(skill_name)
+        # 2. 키워드 트리거 (Aho-Corasick 매칭)
+        skill_name = self._match_keyword_trigger(text_lower)
+        if skill_name:
+            return self._skills.get(skill_name)
 
         return None
+
+    def _rebuild_matcher_index(self) -> None:
+        """트리거 인덱스를 재생성한다."""
+        self._command_trigger_map = {}
+        self._keyword_trigger_order = []
+
+        for trigger, skill_name in self._trigger_map.items():
+            if trigger.startswith("/"):
+                self._command_trigger_map[trigger] = skill_name
+            else:
+                self._keyword_trigger_order.append((trigger, skill_name))
+
+        self._build_keyword_automaton()
+
+    def _build_keyword_automaton(self) -> None:
+        """키워드 트리거용 Aho-Corasick 오토마톤을 생성한다."""
+        self._ac_goto = [{}]
+        self._ac_fail = [0]
+        self._ac_output = [[]]
+
+        for order_idx, (trigger, _) in enumerate(self._keyword_trigger_order):
+            state = 0
+            for ch in trigger:
+                next_state = self._ac_goto[state].get(ch)
+                if next_state is None:
+                    next_state = len(self._ac_goto)
+                    self._ac_goto[state][ch] = next_state
+                    self._ac_goto.append({})
+                    self._ac_fail.append(0)
+                    self._ac_output.append([])
+                state = next_state
+            self._ac_output[state].append(order_idx)
+
+        queue: deque[int] = deque()
+        for next_state in self._ac_goto[0].values():
+            queue.append(next_state)
+            self._ac_fail[next_state] = 0
+
+        while queue:
+            state = queue.popleft()
+            for ch, next_state in self._ac_goto[state].items():
+                queue.append(next_state)
+                fail_state = self._ac_fail[state]
+                while fail_state and ch not in self._ac_goto[fail_state]:
+                    fail_state = self._ac_fail[fail_state]
+                self._ac_fail[next_state] = self._ac_goto[fail_state].get(ch, 0)
+                self._ac_output[next_state].extend(
+                    self._ac_output[self._ac_fail[next_state]]
+                )
+
+    def _match_keyword_trigger(self, text_lower: str) -> str | None:
+        """본문 키워드 트리거를 검색한다.
+
+        기존 동작(로드 순서상 먼저 등록된 트리거 우선)을 유지하기 위해
+        매칭 위치와 무관하게 최소 order 인덱스를 선택한다.
+        """
+        if not self._keyword_trigger_order:
+            return None
+
+        state = 0
+        best_order: int | None = None
+        for ch in text_lower:
+            while state and ch not in self._ac_goto[state]:
+                state = self._ac_fail[state]
+            state = self._ac_goto[state].get(ch, 0)
+
+            outputs = self._ac_output[state]
+            if not outputs:
+                continue
+
+            current_best = min(outputs)
+            if best_order is None or current_best < best_order:
+                best_order = current_best
+                if best_order == 0:
+                    break
+
+        if best_order is None:
+            return None
+        return self._keyword_trigger_order[best_order][1]
 
     def list_skills(self) -> list[dict]:
         """로드된 스킬 목록을 반환한다."""

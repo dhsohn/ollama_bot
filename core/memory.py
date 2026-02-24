@@ -76,6 +76,19 @@ class MemoryManager:
         self._db.row_factory = aiosqlite.Row
         await self._db.execute("PRAGMA journal_mode=WAL")
         await self._db.executescript(_SCHEMA_SQL)
+        # 과거 버전에서 생성된 중복 (chat_id, key) 레코드를 최신(updated_at, id) 기준으로 정리.
+        await self._db.execute(
+            "DELETE FROM long_term_memory AS target WHERE EXISTS ("
+            "  SELECT 1 FROM long_term_memory AS newer "
+            "  WHERE newer.chat_id = target.chat_id AND newer.key = target.key "
+            "    AND (newer.updated_at > target.updated_at "
+            "      OR (newer.updated_at = target.updated_at AND newer.id > target.id))"
+            ")"
+        )
+        await self._db.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_chat_key "
+            "ON long_term_memory(chat_id, key)"
+        )
         await self._db.commit()
         self._logger.info("memory_initialized", db_path=str(self._db_path))
 
@@ -209,48 +222,46 @@ class MemoryManager:
         """장기 메모리에 항목을 저장한다 (upsert)."""
         assert self._db is not None
         now = _utc_now_sql()
-
-        # 기존 항목이 있으면 업데이트
-        async with self._db.execute(
-            "SELECT id FROM long_term_memory "
-            "WHERE chat_id = ? AND key = ?",
-            (chat_id, key),
-        ) as cursor:
-            existing = await cursor.fetchone()
-
-        if existing:
-            await self._db.execute(
-                "UPDATE long_term_memory SET value = ?, category = ?, "
-                "updated_at = ? WHERE id = ?",
-                (value, category, now, existing[0]),
-            )
-        else:
-            # 최대 항목 수 체크
+        await self._db.execute("BEGIN IMMEDIATE")
+        try:
             async with self._db.execute(
-                "SELECT COUNT(*) FROM long_term_memory WHERE chat_id = ?",
-                (chat_id,),
+                "SELECT 1 FROM long_term_memory WHERE chat_id = ? AND key = ? LIMIT 1",
+                (chat_id, key),
             ) as cursor:
-                row = await cursor.fetchone()
-                count = row[0] if row else 0
+                exists = await cursor.fetchone() is not None
 
-            if count >= self._max_long_term:
-                # 가장 오래된 항목 삭제
-                await self._db.execute(
-                    "DELETE FROM long_term_memory WHERE id IN ("
-                    "  SELECT id FROM long_term_memory WHERE chat_id = ? "
-                    "  ORDER BY updated_at ASC LIMIT 1"
-                    ")",
+            if not exists and self._max_long_term > 0:
+                # 신규 키 삽입 전에 사용자별 최대 항목 수를 유지한다.
+                async with self._db.execute(
+                    "SELECT COUNT(*) FROM long_term_memory WHERE chat_id = ?",
                     (chat_id,),
-                )
+                ) as cursor:
+                    row = await cursor.fetchone()
+                    count = row[0] if row else 0
+
+                if count >= self._max_long_term:
+                    await self._db.execute(
+                        "DELETE FROM long_term_memory WHERE id IN ("
+                        "  SELECT id FROM long_term_memory WHERE chat_id = ? "
+                        "  ORDER BY updated_at ASC, id ASC LIMIT 1"
+                        ")",
+                        (chat_id,),
+                    )
 
             await self._db.execute(
                 "INSERT INTO long_term_memory "
                 "(chat_id, key, value, category, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(chat_id, key) DO UPDATE SET "
+                "value = excluded.value, "
+                "category = excluded.category, "
+                "updated_at = excluded.updated_at",
                 (chat_id, key, value, category, now, now),
             )
-
-        await self._db.commit()
+            await self._db.commit()
+        except Exception:
+            await self._db.rollback()
+            raise
 
     async def recall_memory(
         self,
@@ -322,6 +333,13 @@ class MemoryManager:
             stats["oldest_conversation"] = row[0] if row and row[0] else None
 
         return stats
+
+    async def ping(self) -> bool:
+        """DB 연결이 유효한지 확인한다."""
+        assert self._db is not None
+        async with self._db.execute("SELECT 1") as cursor:
+            row = await cursor.fetchone()
+        return row is not None and row[0] == 1
 
     # ── 유지보수 ──
 

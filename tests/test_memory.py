@@ -24,6 +24,26 @@ async def memory_manager(tmp_path: Path) -> MemoryManager:
     await manager.close()
 
 
+class TestPing:
+    @pytest.mark.asyncio
+    async def test_ping_returns_true(
+        self,
+        memory_manager: MemoryManager,
+    ) -> None:
+        result = await memory_manager.ping()
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_ping_fails_before_initialize(self) -> None:
+        manager = MemoryManager(
+            config=MemoryConfig(),
+            data_dir="/tmp/nonexistent",
+            max_conversation_length=10,
+        )
+        with pytest.raises(AssertionError):
+            await manager.ping()
+
+
 class TestConversationOrder:
     @pytest.mark.asyncio
     async def test_get_conversation_stays_in_insert_order_with_same_timestamp(

@@ -89,6 +89,7 @@ class OllamaClient:
         temperature: float | None = None,
         max_tokens: int | None = None,
         timeout: int = 60,
+        format: str | dict | None = None,
     ) -> str:
         """비스트리밍 채팅 요청. 재시도 포함."""
         assert self._client is not None
@@ -99,12 +100,15 @@ class OllamaClient:
         }
 
         async def _do_chat() -> str:
+            kwargs: dict = dict(
+                model=model,
+                messages=messages,
+                options=options,
+            )
+            if format is not None:
+                kwargs["format"] = format
             response = await asyncio.wait_for(
-                self._client.chat(  # type: ignore[union-attr]
-                    model=model,
-                    messages=messages,
-                    options=options,
-                ),
+                self._client.chat(**kwargs),  # type: ignore[union-attr]
                 timeout=timeout,
             )
             return response.message.content  # type: ignore[union-attr]

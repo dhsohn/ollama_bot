@@ -228,6 +228,26 @@ class TestPreferenceInjection:
         assert "사용자 고정 정보 및 선호도" not in system_content
 
 
+class TestProcessPrompt:
+    @pytest.mark.asyncio
+    async def test_process_prompt_forwards_format_and_options(
+        self, engine: Engine, mock_ollama,
+    ) -> None:
+        """format, max_tokens, temperature가 ollama.chat()에 전달된다."""
+        schema = {"type": "object", "properties": {"k": {"type": "string"}}}
+        await engine.process_prompt(
+            prompt="test",
+            format=schema,
+            max_tokens=256,
+            temperature=0.2,
+        )
+
+        call_kwargs = mock_ollama.chat.call_args.kwargs
+        assert call_kwargs["format"] is schema
+        assert call_kwargs["max_tokens"] == 256
+        assert call_kwargs["temperature"] == 0.2
+
+
 class TestGetStatus:
     @pytest.mark.asyncio
     async def test_get_status(self, engine: Engine) -> None:

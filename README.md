@@ -131,7 +131,6 @@ schtasks /Create /TN "WSL AutoStart" /SC ONLOGON /RU "$env:USERDOMAIN\$env:USERN
 | summarize | `/summarize`, `요약해줘` | 텍스트 요약 |
 | translate | `/translate`, `번역해줘` | 다국어 번역 |
 | code_review | `/review`, `코드 리뷰` | 코드 리뷰 및 개선 제안 |
-| web_search | `/search`, `검색해줘` | 웹 검색 (선택적) |
 
 사용 예시:
 ```

@@ -132,6 +132,17 @@ class TestTriggerMatching:
         assert skill is not None
         assert skill.name == "summarize"
 
+    @pytest.mark.asyncio
+    async def test_keyword_trigger_preserves_load_order_priority(
+        self, skill_manager: SkillManager
+    ) -> None:
+        """본문 내 위치보다 로드 순서상 앞선 키워드 트리거를 우선한다."""
+        await skill_manager.load_skills()
+        skill = skill_manager.match_trigger("커스텀 기능으로 이 텍스트를 요약해줘")
+        assert skill is not None
+        # summarize(요약해줘)가 custom_skill(커스텀)보다 먼저 로드된다.
+        assert skill.name == "summarize"
+
 
 class TestSkillContext:
     @pytest.mark.asyncio
@@ -215,3 +226,38 @@ security_level: "safe"
 
         with pytest.raises(ValueError, match="Duplicate trigger"):
             await skill_manager.load_skills()
+
+    @pytest.mark.asyncio
+    async def test_duplicate_trigger_within_same_skill_is_ignored(
+        self,
+        skill_manager: SkillManager,
+        skills_dir: Path,
+    ) -> None:
+        (skills_dir / "custom" / "same_skill_dup_trigger.yaml").write_text(
+            """
+name: "self_dup_trigger"
+description: "같은 스킬 내부 중복 트리거"
+version: "1.0"
+triggers:
+  - "/selfdup"
+  - "/selfdup"
+  - "중복키워드"
+  - "중복키워드"
+system_prompt: "Duplicate trigger in same skill."
+allowed_tools: []
+timeout: 30
+security_level: "safe"
+""",
+            encoding="utf-8",
+        )
+
+        count = await skill_manager.load_skills()
+        assert count == 3  # summarize + custom_skill + self_dup_trigger
+
+        skill = skill_manager.match_trigger("/selfdup test")
+        assert skill is not None
+        assert skill.name == "self_dup_trigger"
+
+        keyword_skill = skill_manager.match_trigger("중복키워드 테스트")
+        assert keyword_skill is not None
+        assert keyword_skill.name == "self_dup_trigger"

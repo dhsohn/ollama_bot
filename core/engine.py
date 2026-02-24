@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import AsyncGenerator
+from dataclasses import dataclass
 from pathlib import Path
 
 from core.config import AppSettings
@@ -15,6 +16,15 @@ from core.logging_setup import get_logger
 from core.memory import MemoryManager
 from core.ollama_client import OllamaClient
 from core.skill_manager import SkillDefinition, SkillManager
+
+
+@dataclass
+class _PreparedRequest:
+    """LLM 호출에 필요한 사전 계산 결과."""
+
+    skill: SkillDefinition | None
+    messages: list[dict[str, str]]
+    timeout: int
 
 
 class Engine:
@@ -49,30 +59,19 @@ class Engine:
         3. LLM 호출
         4. 메모리 저장
         """
-        skill = self._skills.match_trigger(text)
-
-        if skill:
-            self._logger.info(
-                "skill_triggered",
-                chat_id=chat_id,
-                skill=skill.name,
-            )
-            messages = await self._build_context(chat_id, text, skill=skill)
-            timeout = skill.timeout
-        else:
-            messages = await self._build_context(chat_id, text)
-            timeout = self._config.bot.response_timeout
+        prepared = await self._prepare_request(chat_id, text, stream=False)
 
         response = await self._ollama.chat(
-            messages=messages,
+            messages=prepared.messages,
             model=model_override,
-            timeout=timeout,
+            timeout=prepared.timeout,
         )
-
-        # 메모리에 저장
-        metadata = {"skill": skill.name} if skill else None
-        await self._memory.add_message(chat_id, "user", text, metadata=metadata)
-        await self._memory.add_message(chat_id, "assistant", response)
+        await self._persist_turn(
+            chat_id=chat_id,
+            user_text=text,
+            assistant_text=response,
+            skill=prepared.skill,
+        )
 
         return response
 
@@ -83,11 +82,36 @@ class Engine:
         model_override: str | None = None,
     ) -> AsyncGenerator[str, None]:
         """스트리밍 방식으로 메시지를 처리한다. 청크를 순차 반환한다."""
-        skill = self._skills.match_trigger(text)
+        prepared = await self._prepare_request(chat_id, text, stream=True)
 
+        full_response = ""
+        async for chunk in self._ollama.chat_stream(
+            messages=prepared.messages,
+            model=model_override,
+            timeout=prepared.timeout,
+        ):
+            full_response += chunk
+            yield chunk
+
+        await self._persist_turn(
+            chat_id=chat_id,
+            user_text=text,
+            assistant_text=full_response,
+            skill=prepared.skill,
+        )
+
+    async def _prepare_request(
+        self,
+        chat_id: int,
+        text: str,
+        *,
+        stream: bool,
+    ) -> _PreparedRequest:
+        """스킬 매칭과 컨텍스트 빌드를 공통 처리한다."""
+        skill = self._skills.match_trigger(text)
         if skill:
             self._logger.info(
-                "skill_triggered_stream",
+                "skill_triggered_stream" if stream else "skill_triggered",
                 chat_id=chat_id,
                 skill=skill.name,
             )
@@ -97,19 +121,23 @@ class Engine:
             messages = await self._build_context(chat_id, text)
             timeout = self._config.bot.response_timeout
 
-        full_response = ""
-        async for chunk in self._ollama.chat_stream(
+        return _PreparedRequest(
+            skill=skill,
             messages=messages,
-            model=model_override,
             timeout=timeout,
-        ):
-            full_response += chunk
-            yield chunk
+        )
 
-        # 스트리밍 완료 후 메모리에 저장
+    async def _persist_turn(
+        self,
+        chat_id: int,
+        user_text: str,
+        assistant_text: str,
+        skill: SkillDefinition | None = None,
+    ) -> None:
+        """사용자/어시스턴트 턴을 메모리에 일관되게 저장한다."""
         metadata = {"skill": skill.name} if skill else None
-        await self._memory.add_message(chat_id, "user", text, metadata=metadata)
-        await self._memory.add_message(chat_id, "assistant", full_response)
+        await self._memory.add_message(chat_id, "user", user_text, metadata=metadata)
+        await self._memory.add_message(chat_id, "assistant", assistant_text)
 
     async def _build_context(
         self,
@@ -192,13 +220,21 @@ class Engine:
         self,
         prompt: str,
         chat_id: int | None = None,
+        format: str | dict | None = None,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
     ) -> str:
         """단순 프롬프트를 LLM에 전달한다 (auto_scheduler의 prompt 타입용)."""
         messages = [
             {"role": "system", "content": self._system_prompt},
             {"role": "user", "content": prompt},
         ]
-        return await self._ollama.chat(messages=messages)
+        return await self._ollama.chat(
+            messages=messages,
+            format=format,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
 
     async def change_model(self, model: str) -> dict:
         """런타임 기본 모델을 변경한다."""

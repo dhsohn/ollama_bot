@@ -6,11 +6,8 @@
 
 from __future__ import annotations
 
-import asyncio
 import functools
-import time
 from collections.abc import Callable
-from html import escape
 from pathlib import Path
 
 from telegram import BotCommand, Update
@@ -28,6 +25,7 @@ from core.config import AppSettings
 from core.engine import Engine
 from core.logging_setup import get_logger
 from core.security import AuthenticationError, RateLimitError, SecurityManager
+from core.telegram_message_renderer import escape_html, split_message, stream_and_render
 
 # 메시지 편집 최소 간격 (초) — 텔레그램 API 제한 대응
 _EDIT_INTERVAL = 1.0
@@ -402,43 +400,14 @@ class TelegramHandler:
             # 초기 placeholder 메시지 전송
             sent_message = await update.effective_message.reply_text("...")  # type: ignore[union-attr]
 
-            full_response = ""
-            last_edit_time = time.monotonic()
-            last_edit_len = 0
-
-            async for chunk in self._engine.process_message_stream(chat_id, text):
-                full_response += chunk
-
-                # 일정 간격마다 메시지 편집 (API 제한 대응)
-                now = time.monotonic()
-                chars_since_edit = len(full_response) - last_edit_len
-                time_since_edit = now - last_edit_time
-
-                if (
-                    time_since_edit >= _EDIT_INTERVAL
-                    and chars_since_edit >= _EDIT_CHAR_THRESHOLD
-                ):
-                    try:
-                        display_text = full_response + " ▌"
-                        await sent_message.edit_text(display_text)
-                        last_edit_time = now
-                        last_edit_len = len(full_response)
-                    except Exception:
-                        pass  # 편집 실패는 무시 (최종 편집에서 복구)
-
-            # 최종 응답으로 메시지 편집
-            if full_response:
-                parts = self._split_message(full_response)
-                for idx, part in enumerate(parts):
-                    if idx == 0:
-                        try:
-                            await sent_message.edit_text(part)
-                        except Exception:
-                            await update.effective_message.reply_text(part)  # type: ignore[union-attr]
-                    else:
-                        await update.effective_message.reply_text(part)  # type: ignore[union-attr]
-            else:
-                await sent_message.edit_text("응답을 생성하지 못했습니다.")
+            await stream_and_render(
+                stream=self._engine.process_message_stream(chat_id, text),
+                sent_message=sent_message,
+                reply_text=update.effective_message.reply_text,  # type: ignore[union-attr]
+                split_message_fn=self._split_message,
+                edit_interval=_EDIT_INTERVAL,
+                edit_char_threshold=_EDIT_CHAR_THRESHOLD,
+            )
 
         except Exception as exc:
             self._logger.error(
@@ -472,34 +441,13 @@ class TelegramHandler:
     @staticmethod
     def _escape_html(value: object) -> str:
         """HTML parse mode용 최소 이스케이프."""
-        return escape(str(value), quote=False)
+        return escape_html(value)
 
     def _split_message(
         self, text: str, max_length: int = 4096
     ) -> list[str]:
         """긴 메시지를 단락 기준으로 분할한다."""
-        if len(text) <= max_length:
-            return [text]
-
-        parts: list[str] = []
-        while text:
-            if len(text) <= max_length:
-                parts.append(text)
-                break
-
-            # 단락 경계에서 분할 시도
-            split_at = text.rfind("\n\n", 0, max_length)
-            if split_at == -1:
-                split_at = text.rfind("\n", 0, max_length)
-            if split_at == -1:
-                split_at = text.rfind(" ", 0, max_length)
-            if split_at == -1:
-                split_at = max_length
-
-            parts.append(text[:split_at])
-            text = text[split_at:].lstrip()
-
-        return parts
+        return split_message(text, max_length=max_length)
 
     @property
     def application(self) -> Application:
