@@ -4,8 +4,17 @@ from __future__ import annotations
 
 import time
 from collections.abc import AsyncIterable, Awaitable, Callable
+from dataclasses import dataclass
 from html import escape
 from typing import Any
+
+
+@dataclass
+class StreamResult:
+    """stream_and_render의 반환 결과."""
+
+    full_response: str
+    last_message: Any  # telegram.Message
 
 
 def escape_html(value: object) -> str:
@@ -47,11 +56,12 @@ async def stream_and_render(
     edit_interval: float = 1.0,
     edit_char_threshold: int = 100,
     max_edit_length: int = 4096,
-) -> str:
+) -> StreamResult:
     """스트리밍 청크를 텔레그램 메시지 편집/분할 전송으로 렌더링한다."""
     full_response = ""
     last_edit_time = time.monotonic()
     last_edit_len = 0
+    last_msg = sent_message
 
     async for chunk in stream:
         full_response += chunk
@@ -83,11 +93,12 @@ async def stream_and_render(
             if idx == 0:
                 try:
                     await sent_message.edit_text(part)
+                    last_msg = sent_message
                 except Exception:
-                    await reply_text(part)
+                    last_msg = await reply_text(part)
             else:
-                await reply_text(part)
+                last_msg = await reply_text(part)
     else:
         await sent_message.edit_text("응답을 생성하지 못했습니다.")
 
-    return full_response
+    return StreamResult(full_response=full_response, last_message=last_msg)

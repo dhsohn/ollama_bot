@@ -167,6 +167,18 @@ class Engine:
                 + "\n".join(pref_lines)
             )
 
+        # 피드백 기반 가이드라인 주입
+        guidelines = await self._memory.recall_memory(chat_id, category="feedback_guidelines")
+        if guidelines:
+            max_guides = max(1, self._config.feedback.max_guidelines)
+            ordered = sorted(guidelines, key=lambda g: g["key"])
+            lines = [f"- {g['value']}" for g in ordered[:max_guides]]
+            system += (
+                "\n\n[응답 품질 가이드라인]\n"
+                "사용자 피드백 기반 권장사항:\n"
+                + "\n".join(lines)
+            )
+
         messages: list[dict[str, str]] = [
             {"role": "system", "content": system},
         ]

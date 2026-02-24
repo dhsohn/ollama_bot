@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
-from core.config import AppSettings, BotConfig, OllamaConfig, SecurityConfig, MemoryConfig, TelegramConfig
+from core.config import AppSettings, BotConfig, FeedbackConfig, OllamaConfig, SecurityConfig, MemoryConfig, TelegramConfig
 from core.security import SecurityManager, AuthenticationError, RateLimitError
 from core.telegram_handler import TelegramHandler
 
@@ -80,6 +81,19 @@ class TestMessageSplitting:
         assert len(parts) >= 3
         for part in parts:
             assert len(part) <= 4096
+
+    def test_default_split_uses_configured_max_message_length(
+        self,
+        app_config: AppSettings,
+        mock_engine: AsyncMock,
+        security: SecurityManager,
+    ) -> None:
+        app_config.telegram.max_message_length = 100
+        handler = TelegramHandler(config=app_config, engine=mock_engine, security=security)
+
+        parts = handler._split_message("A" * 250)
+        assert len(parts) == 3
+        assert all(len(part) <= 100 for part in parts)
 
 
 class TestAuthDecorator:
@@ -258,10 +272,17 @@ class TestHandleMessage:
 
         sent_message = MagicMock()
         sent_message.edit_text = AsyncMock()
+        sent_message.message_id = 42
+        sent_message.edit_reply_markup = AsyncMock()
 
+        reply_msg = MagicMock()
+        reply_msg.message_id = 43
+        reply_msg.edit_reply_markup = AsyncMock()
+
+        # reply_text는 처음에 sent_message("..."), 두 번째 파트에서 reply_msg를 반환
         message = MagicMock()
         message.text = "hello"
-        message.reply_text = AsyncMock(return_value=sent_message)
+        message.reply_text = AsyncMock(side_effect=[sent_message, reply_msg])
 
         update = MagicMock()
         update.effective_chat = chat
@@ -273,3 +294,346 @@ class TestHandleMessage:
         # 첫 파트는 edit_text, 두 번째 파트는 reply_text로 전송되어야 한다.
         sent_message.edit_text.assert_awaited_once_with("SAME")
         message.reply_text.assert_has_awaits([call("..."), call("SAME")])
+
+    @pytest.mark.asyncio
+    async def test_handle_message_passes_configured_max_edit_length(
+        self,
+        app_config: AppSettings,
+        mock_engine: AsyncMock,
+        security: SecurityManager,
+    ) -> None:
+        app_config.telegram.max_message_length = 123
+        handler = TelegramHandler(config=app_config, engine=mock_engine, security=security)
+        async def _stream():
+            if False:
+                yield ""
+        handler._engine.process_message_stream = MagicMock(return_value=_stream())
+
+        chat = MagicMock()
+        chat.id = 111
+        chat.type = "private"
+        chat.send_action = AsyncMock()
+
+        sent_message = MagicMock()
+        sent_message.edit_text = AsyncMock()
+        sent_message.message_id = 42
+        sent_message.edit_reply_markup = AsyncMock()
+
+        message = MagicMock()
+        message.text = "hello"
+        message.reply_text = AsyncMock(return_value=sent_message)
+
+        update = MagicMock()
+        update.effective_chat = chat
+        update.effective_message = message
+
+        captured: dict[str, int] = {}
+
+        async def fake_stream_and_render(**kwargs):
+            captured["max_edit_length"] = kwargs["max_edit_length"]
+            return SimpleNamespace(full_response="", last_message=None)
+
+        with patch("core.telegram_handler.stream_and_render", new=fake_stream_and_render):
+            await handler._handle_message(update, MagicMock())
+
+        assert captured["max_edit_length"] == 123
+
+
+class TestFeedbackButtons:
+    @pytest.fixture
+    def mock_feedback(self) -> AsyncMock:
+        fb = AsyncMock()
+        fb.store_feedback = AsyncMock(return_value=False)
+        fb.get_user_stats = AsyncMock(return_value={
+            "total": 10, "positive": 7, "negative": 3, "satisfaction_rate": 0.7,
+        })
+        fb.get_global_stats = AsyncMock(return_value={
+            "total": 20, "positive": 15, "negative": 5, "satisfaction_rate": 0.75,
+        })
+        return fb
+
+    @pytest.fixture
+    def feedback_handler(self, app_config, mock_engine, security, mock_feedback) -> TelegramHandler:
+        return TelegramHandler(
+            config=app_config, engine=mock_engine, security=security, feedback=mock_feedback,
+        )
+
+    @pytest.fixture
+    def no_feedback_handler(self, mock_engine, security) -> TelegramHandler:
+        """feedback=None인 핸들러."""
+        config = AppSettings(
+            telegram_bot_token="test_token",
+            data_dir="/tmp/test",
+            bot=BotConfig(),
+            ollama=OllamaConfig(),
+            security=SecurityConfig(allowed_users=[111, 222]),
+            memory=MemoryConfig(),
+            telegram=TelegramConfig(),
+            feedback=FeedbackConfig(enabled=False),
+        )
+        return TelegramHandler(config=config, engine=mock_engine, security=security, feedback=None)
+
+    @pytest.mark.asyncio
+    async def test_feedback_buttons_attached_after_response(self, feedback_handler: TelegramHandler) -> None:
+        """피드백 활성화 시 응답 후 버튼이 부착된다."""
+        async def _stream():
+            yield "response"
+
+        feedback_handler._engine.process_message_stream = MagicMock(return_value=_stream())
+
+        chat = MagicMock()
+        chat.id = 111
+        chat.type = "private"
+        chat.send_action = AsyncMock()
+
+        sent_message = MagicMock()
+        sent_message.edit_text = AsyncMock()
+        sent_message.message_id = 42
+        sent_message.edit_reply_markup = AsyncMock()
+
+        message = MagicMock()
+        message.text = "hello"
+        message.reply_text = AsyncMock(return_value=sent_message)
+
+        update = MagicMock()
+        update.effective_chat = chat
+        update.effective_message = message
+
+        context = MagicMock()
+        await feedback_handler._handle_message(update, context)
+
+        sent_message.edit_reply_markup.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_no_buttons_when_feedback_disabled(self, no_feedback_handler: TelegramHandler) -> None:
+        """피드백 비활성화 시 버튼이 부착되지 않는다."""
+        async def _stream():
+            yield "response"
+
+        no_feedback_handler._engine.process_message_stream = MagicMock(return_value=_stream())
+
+        chat = MagicMock()
+        chat.id = 111
+        chat.type = "private"
+        chat.send_action = AsyncMock()
+
+        sent_message = MagicMock()
+        sent_message.edit_text = AsyncMock()
+        sent_message.message_id = 42
+        sent_message.edit_reply_markup = AsyncMock()
+
+        message = MagicMock()
+        message.text = "hello"
+        message.reply_text = AsyncMock(return_value=sent_message)
+
+        update = MagicMock()
+        update.effective_chat = chat
+        update.effective_message = message
+
+        context = MagicMock()
+        await no_feedback_handler._handle_message(update, context)
+
+        sent_message.edit_reply_markup.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_buttons_when_response_empty(self, feedback_handler: TelegramHandler) -> None:
+        """응답 본문이 비어 있으면 피드백 버튼을 붙이지 않는다."""
+        async def _stream():
+            if False:
+                yield ""
+
+        feedback_handler._engine.process_message_stream = MagicMock(return_value=_stream())
+
+        chat = MagicMock()
+        chat.id = 111
+        chat.type = "private"
+        chat.send_action = AsyncMock()
+
+        sent_message = MagicMock()
+        sent_message.edit_text = AsyncMock()
+        sent_message.message_id = 42
+        sent_message.edit_reply_markup = AsyncMock()
+
+        message = MagicMock()
+        message.text = "hello"
+        message.reply_text = AsyncMock(return_value=sent_message)
+
+        update = MagicMock()
+        update.effective_chat = chat
+        update.effective_message = message
+
+        context = MagicMock()
+        await feedback_handler._handle_message(update, context)
+
+        sent_message.edit_reply_markup.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_callback_new_feedback(self, feedback_handler: TelegramHandler, mock_feedback) -> None:
+        """콜백으로 새 피드백이 저장된다."""
+        # 프리뷰 캐시에 항목 추가
+        feedback_handler._preview_cache[(111, 42)] = {"user": "q", "bot": "a", "ts": 0}
+
+        query = MagicMock()
+        query.data = "fb:1:42"
+        query.answer = AsyncMock()
+
+        chat = MagicMock()
+        chat.id = 111
+        chat.type = "private"
+
+        update = MagicMock()
+        update.callback_query = query
+        update.effective_chat = chat
+
+        context = MagicMock()
+        await feedback_handler._handle_feedback_callback(update, context)
+
+        mock_feedback.store_feedback.assert_awaited_once_with(
+            chat_id=111, bot_message_id=42, rating=1, user_preview="q", bot_preview="a",
+        )
+        query.answer.assert_awaited_once_with("피드백 감사합니다!", show_alert=False)
+
+    @pytest.mark.asyncio
+    async def test_callback_update_feedback(self, feedback_handler: TelegramHandler, mock_feedback) -> None:
+        """재평가 시 업데이트 메시지가 표시된다."""
+        mock_feedback.store_feedback = AsyncMock(return_value=True)
+
+        query = MagicMock()
+        query.data = "fb:-1:42"
+        query.answer = AsyncMock()
+
+        chat = MagicMock()
+        chat.id = 111
+        chat.type = "private"
+
+        update = MagicMock()
+        update.callback_query = query
+        update.effective_chat = chat
+
+        context = MagicMock()
+        await feedback_handler._handle_feedback_callback(update, context)
+
+        query.answer.assert_awaited_once_with("피드백을 업데이트했어요.", show_alert=False)
+
+    @pytest.mark.asyncio
+    async def test_callback_invalid_data(self, feedback_handler: TelegramHandler) -> None:
+        """잘못된 콜백 데이터는 에러 메시지를 표시한다."""
+        query = MagicMock()
+        query.data = "fb:invalid"
+        query.answer = AsyncMock()
+
+        chat = MagicMock()
+        chat.id = 111
+        chat.type = "private"
+
+        update = MagicMock()
+        update.callback_query = query
+        update.effective_chat = chat
+
+        context = MagicMock()
+        await feedback_handler._handle_feedback_callback(update, context)
+
+        query.answer.assert_awaited_once_with("잘못된 피드백 요청입니다.", show_alert=True)
+
+    @pytest.mark.asyncio
+    async def test_callback_invalid_rating(self, feedback_handler: TelegramHandler) -> None:
+        """지원하지 않는 rating 값은 에러 메시지를 표시한다."""
+        query = MagicMock()
+        query.data = "fb:5:42"
+        query.answer = AsyncMock()
+
+        chat = MagicMock()
+        chat.id = 111
+        chat.type = "private"
+
+        update = MagicMock()
+        update.callback_query = query
+        update.effective_chat = chat
+
+        context = MagicMock()
+        await feedback_handler._handle_feedback_callback(update, context)
+
+        query.answer.assert_awaited_once_with("지원하지 않는 피드백 값입니다.", show_alert=True)
+
+    @pytest.mark.asyncio
+    async def test_callback_non_private_answers(self, feedback_handler: TelegramHandler) -> None:
+        """private chat이 아니면 콜백을 종료하고 스피너를 해제한다."""
+        query = MagicMock()
+        query.data = "fb:1:42"
+        query.answer = AsyncMock()
+
+        chat = MagicMock()
+        chat.id = -100
+        chat.type = "group"
+
+        update = MagicMock()
+        update.callback_query = query
+        update.effective_chat = chat
+
+        context = MagicMock()
+        await feedback_handler._handle_feedback_callback(update, context)
+
+        query.answer.assert_awaited_once_with("private chat에서만 사용할 수 있습니다.", show_alert=False)
+
+    @pytest.mark.asyncio
+    async def test_callback_auth_failure_answers(self, feedback_handler: TelegramHandler) -> None:
+        """인증 실패 시에도 콜백 스피너가 남지 않도록 answer를 호출한다."""
+        query = MagicMock()
+        query.data = "fb:1:42"
+        query.answer = AsyncMock()
+
+        chat = MagicMock()
+        chat.id = 999  # allowed_users에 없음
+        chat.type = "private"
+
+        update = MagicMock()
+        update.callback_query = query
+        update.effective_chat = chat
+
+        context = MagicMock()
+        await feedback_handler._handle_feedback_callback(update, context)
+
+        query.answer.assert_awaited_once_with()
+
+    @pytest.mark.asyncio
+    async def test_cmd_feedback(self, feedback_handler: TelegramHandler) -> None:
+        """/feedback 명령이 통계를 표시한다."""
+        chat = MagicMock()
+        chat.id = 111
+        chat.type = "private"
+
+        message = MagicMock()
+        message.reply_text = AsyncMock()
+
+        update = MagicMock()
+        update.effective_chat = chat
+        update.effective_message = message
+
+        context = MagicMock()
+        await feedback_handler._cmd_feedback(update, context)
+
+        assert message.reply_text.await_count == 1
+        call_text = message.reply_text.await_args[0][0]
+        assert "피드백 통계" in call_text
+        assert "10건" in call_text
+
+    @pytest.mark.asyncio
+    async def test_status_includes_feedback(self, feedback_handler: TelegramHandler) -> None:
+        """/status에 피드백 현황이 포함된다."""
+        chat = MagicMock()
+        chat.id = 111
+        chat.type = "private"
+
+        message = MagicMock()
+        message.reply_text = AsyncMock()
+
+        update = MagicMock()
+        update.effective_chat = chat
+        update.effective_message = message
+
+        context = MagicMock()
+        await feedback_handler._cmd_status(update, context)
+
+        call_text = message.reply_text.await_args[0][0]
+        assert "피드백" in call_text
+        assert "20건" in call_text

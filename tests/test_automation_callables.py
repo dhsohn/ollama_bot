@@ -13,12 +13,14 @@ import pytest_asyncio
 from core.auto_scheduler import AutoAction, AutoDefinition, AutoScheduler
 from core.automation_callables import (
     _DAILY_SUMMARY_SCHEMA,
+    _FEEDBACK_ANALYSIS_SCHEMA,
     _MEMORY_HYGIENE_SCHEMA,
     _PREFERENCES_SCHEMA,
     _STALE_EVALUATION_SCHEMA,
     _TRIAGE_SCHEMA,
     register_builtin_callables,
 )
+from core.feedback_manager import FeedbackManager
 from core.config import (
     AppSettings,
     BotConfig,
@@ -1548,3 +1550,186 @@ class TestMemoryHygieneCallable:
         assert result == ""
         prefs = await memory_manager.recall_memory(111)
         assert len(prefs) == 1
+
+
+# ── feedback_analysis 테스트 ──
+
+
+@pytest_asyncio.fixture
+async def feedback_manager(memory_manager: MemoryManager) -> FeedbackManager:
+    fm = FeedbackManager(memory_manager.db)
+    await fm.initialize_schema()
+    return fm
+
+
+def _setup_callables_with_feedback(scheduler, engine, memory_manager, app_settings, feedback):
+    """feedback을 포함한 callable 등록 헬퍼."""
+    scheduler.set_dependencies(engine=engine, telegram=AsyncMock())
+    register_builtin_callables(
+        scheduler=scheduler,
+        engine=engine,
+        memory=memory_manager,
+        allowed_users=app_settings.security.allowed_users,
+        data_dir=app_settings.data_dir,
+        feedback=feedback,
+    )
+
+
+def _feedback_analysis_auto(**overrides) -> AutoDefinition:
+    """feedback_analysis AutoDefinition 생성 헬퍼."""
+    params = {
+        "min_feedback_count": 5,
+        "max_negative_samples": 15,
+        "max_positive_samples": 10,
+        "max_guidelines": 5,
+    }
+    params.update(overrides)
+    return AutoDefinition(
+        name="feedback_analysis",
+        description="피드백 분석",
+        schedule="0 2 * * *",
+        action=AutoAction(
+            type="callable",
+            target="feedback_analysis",
+            parameters=params,
+        ),
+    )
+
+
+class TestFeedbackAnalysisCallable:
+    @pytest.mark.asyncio
+    async def test_skip_when_below_min_feedback(
+        self,
+        scheduler: AutoScheduler,
+        app_settings: AppSettings,
+        memory_manager: MemoryManager,
+        feedback_manager: FeedbackManager,
+    ) -> None:
+        """최소 피드백 미달 시 빈 문자열을 반환한다."""
+        # 피드백 3건만 저장 (최소 5건 미달)
+        for i in range(3):
+            await feedback_manager.store_feedback(111, i, 1)
+
+        engine = AsyncMock()
+        _setup_callables_with_feedback(scheduler, engine, memory_manager, app_settings, feedback_manager)
+
+        result = await scheduler._run_action(_feedback_analysis_auto())
+
+        assert result == ""
+        engine.process_prompt.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_successful_analysis(
+        self,
+        scheduler: AutoScheduler,
+        app_settings: AppSettings,
+        memory_manager: MemoryManager,
+        feedback_manager: FeedbackManager,
+    ) -> None:
+        """피드백 분석이 성공하면 가이드라인이 저장된다."""
+        for i in range(5):
+            await feedback_manager.store_feedback(111, i, -1 if i < 3 else 1, f"q{i}", f"a{i}")
+
+        llm_response = json.dumps([
+            {"type": "avoid", "guideline": "너무 긴 응답을 피하세요"},
+            {"type": "prefer", "guideline": "예시를 포함하세요"},
+        ], ensure_ascii=False)
+        engine = AsyncMock()
+        engine.process_prompt = AsyncMock(return_value=llm_response)
+        _setup_callables_with_feedback(scheduler, engine, memory_manager, app_settings, feedback_manager)
+
+        result = await scheduler._run_action(_feedback_analysis_auto())
+
+        assert "피드백 분석 결과" in result
+        assert "2건 갱신" in result
+
+        guidelines = await memory_manager.recall_memory(111, category="feedback_guidelines")
+        assert len(guidelines) == 2
+
+    @pytest.mark.asyncio
+    async def test_json_parse_failure_graceful(
+        self,
+        scheduler: AutoScheduler,
+        app_settings: AppSettings,
+        memory_manager: MemoryManager,
+        feedback_manager: FeedbackManager,
+    ) -> None:
+        """JSON 파싱 실패 시 빈 문자열을 반환한다."""
+        for i in range(5):
+            await feedback_manager.store_feedback(111, i, -1)
+
+        engine = AsyncMock()
+        engine.process_prompt = AsyncMock(return_value="이것은 JSON이 아닙니다")
+        _setup_callables_with_feedback(scheduler, engine, memory_manager, app_settings, feedback_manager)
+
+        result = await scheduler._run_action(_feedback_analysis_auto())
+
+        assert result == ""
+
+    @pytest.mark.asyncio
+    async def test_max_guidelines_limit(
+        self,
+        scheduler: AutoScheduler,
+        app_settings: AppSettings,
+        memory_manager: MemoryManager,
+        feedback_manager: FeedbackManager,
+    ) -> None:
+        """max_guidelines 초과 시 잘린다."""
+        for i in range(6):
+            await feedback_manager.store_feedback(111, i, -1)
+
+        payload = [
+            {"type": "avoid", "guideline": f"가이드라인 {i}"}
+            for i in range(8)
+        ]
+        engine = AsyncMock()
+        engine.process_prompt = AsyncMock(return_value=json.dumps(payload, ensure_ascii=False))
+        _setup_callables_with_feedback(scheduler, engine, memory_manager, app_settings, feedback_manager)
+
+        result = await scheduler._run_action(_feedback_analysis_auto(max_guidelines=3))
+
+        guidelines = await memory_manager.recall_memory(111, category="feedback_guidelines")
+        assert len(guidelines) == 3
+
+    @pytest.mark.asyncio
+    async def test_existing_guidelines_replaced(
+        self,
+        scheduler: AutoScheduler,
+        app_settings: AppSettings,
+        memory_manager: MemoryManager,
+        feedback_manager: FeedbackManager,
+    ) -> None:
+        """기존 가이드라인이 삭제 후 재저장된다."""
+        # 기존 가이드라인 저장
+        await memory_manager.store_memory(111, "feedback_guideline_01", "old", category="feedback_guidelines")
+
+        for i in range(5):
+            await feedback_manager.store_feedback(111, i, -1)
+
+        llm_response = json.dumps([
+            {"type": "style", "guideline": "새 가이드라인"},
+        ], ensure_ascii=False)
+        engine = AsyncMock()
+        engine.process_prompt = AsyncMock(return_value=llm_response)
+        _setup_callables_with_feedback(scheduler, engine, memory_manager, app_settings, feedback_manager)
+
+        await scheduler._run_action(_feedback_analysis_auto())
+
+        guidelines = await memory_manager.recall_memory(111, category="feedback_guidelines")
+        assert len(guidelines) == 1
+        assert "새 가이드라인" in guidelines[0]["value"]
+
+    @pytest.mark.asyncio
+    async def test_noop_when_feedback_none(
+        self,
+        scheduler: AutoScheduler,
+        app_settings: AppSettings,
+        memory_manager: MemoryManager,
+    ) -> None:
+        """feedback=None 시 no-op callable이 빈 문자열을 반환한다."""
+        engine = AsyncMock()
+        _setup_callables(scheduler, engine, memory_manager, app_settings)
+
+        result = await scheduler._run_action(_feedback_analysis_auto())
+
+        assert result == ""

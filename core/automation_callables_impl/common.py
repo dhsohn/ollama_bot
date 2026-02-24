@@ -120,6 +120,22 @@ CONSOLIDATION_MERGE_SCHEMA: dict = {
     },
 }
 
+FEEDBACK_ANALYSIS_SCHEMA: dict = {
+    "type": "array",
+    "maxItems": 10,
+    "items": {
+        "type": "object",
+        "properties": {
+            "type": {
+                "type": "string",
+                "enum": ["avoid", "prefer", "style"],
+            },
+            "guideline": {"type": "string"},
+        },
+        "required": ["type", "guideline"],
+    },
+}
+
 SQLITE_TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 

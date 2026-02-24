@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from core.telegram_message_renderer import split_message, stream_and_render
+from core.telegram_message_renderer import StreamResult, split_message, stream_and_render
 
 
 class TestSplitMessage:
@@ -27,6 +27,9 @@ class TestStreamAndRender:
         sent_message.edit_text = AsyncMock()
         reply_text = AsyncMock()
 
+        reply_msg = AsyncMock()
+        reply_text = AsyncMock(return_value=reply_msg)
+
         result = await stream_and_render(
             stream=_stream(),
             sent_message=sent_message,
@@ -37,10 +40,13 @@ class TestStreamAndRender:
             max_edit_length=4096,
         )
 
-        assert len(result) == 5000
+        assert isinstance(result, StreamResult)
+        assert len(result.full_response) == 5000
         # 중간 편집은 길이 제한으로 건너뛰고 최종 편집/분할만 수행한다.
         sent_message.edit_text.assert_awaited_once_with("part-1")
         reply_text.assert_awaited_once_with("part-2")
+        # 분할 메시지 시 마지막 메시지가 reply_text의 반환값이어야 한다
+        assert result.last_message is reply_msg
 
     @pytest.mark.asyncio
     async def test_intermediate_cursor_edit_when_within_limit(self) -> None:
@@ -62,8 +68,11 @@ class TestStreamAndRender:
             max_edit_length=4096,
         )
 
-        assert result == "hello world"
+        assert isinstance(result, StreamResult)
+        assert result.full_response == "hello world"
         edit_text_calls = [call.args[0] for call in sent_message.edit_text.await_args_list]
         assert any(text.endswith(" ▌") for text in edit_text_calls)
         assert edit_text_calls[-1] == "hello world"
         reply_text.assert_not_awaited()
+        # 단일 메시지 시 last_message가 sent_message와 동일
+        assert result.last_message is sent_message

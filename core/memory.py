@@ -65,7 +65,7 @@ class MemoryManager:
         self._db_path = Path(data_dir) / "memory" / "ollama_bot.db"
         self._max_long_term = config.max_long_term_entries
         self._retention_days = config.conversation_retention_days
-        self._max_conversation = max_conversation_length
+        self._max_conversation_messages = max_conversation_length
         self._db: aiosqlite.Connection | None = None
         self._logger = get_logger("memory")
 
@@ -92,6 +92,19 @@ class MemoryManager:
         await self._db.commit()
         self._logger.info("memory_initialized", db_path=str(self._db_path))
 
+    @property
+    def db(self) -> aiosqlite.Connection:
+        """내부 DB 커넥션을 반환한다 (외부 모듈 공유용)."""
+        if self._db is None:
+            raise RuntimeError("MemoryManager가 아직 초기화되지 않았습니다.")
+        return self._db
+
+    def _require_db(self) -> aiosqlite.Connection:
+        """초기화된 DB 커넥션을 반환한다."""
+        if self._db is None:
+            raise RuntimeError("MemoryManager가 아직 초기화되지 않았습니다.")
+        return self._db
+
     async def close(self) -> None:
         """데이터베이스 연결을 닫는다."""
         if self._db:
@@ -112,17 +125,17 @@ class MemoryManager:
 
         INSERT와 정리를 같은 트랜잭션으로 묶어 디스크 I/O를 줄인다.
         """
-        assert self._db is not None
+        db = self._require_db()
         meta_json = json.dumps(metadata, ensure_ascii=False) if metadata else None
-        await self._db.execute(
+        await db.execute(
             "INSERT INTO conversations (chat_id, role, content, metadata) "
             "VALUES (?, ?, ?, ?)",
             (chat_id, role, content, meta_json),
         )
 
-        limit = self._max_conversation * 2
+        limit = self._max_conversation_messages
         if limit > 0:
-            await self._db.execute(
+            await db.execute(
                 "DELETE FROM conversations WHERE chat_id = ? AND id IN ("
                 "  SELECT id FROM conversations WHERE chat_id = ? "
                 "  ORDER BY id DESC LIMIT -1 OFFSET ?"
@@ -130,11 +143,11 @@ class MemoryManager:
                 (chat_id, chat_id, limit),
             )
         else:
-            await self._db.execute(
+            await db.execute(
                 "DELETE FROM conversations WHERE chat_id = ?",
                 (chat_id,),
             )
-        await self._db.commit()
+        await db.commit()
 
     async def get_conversation(
         self,
@@ -142,9 +155,13 @@ class MemoryManager:
         limit: int | None = None,
     ) -> list[dict[str, str]]:
         """최근 대화 메시지를 시간순으로 반환한다."""
-        assert self._db is not None
-        limit = limit or self._max_conversation
-        async with self._db.execute(
+        db = self._require_db()
+        if limit is None:
+            limit = self._max_conversation_messages
+        if limit <= 0:
+            return []
+
+        async with db.execute(
             "SELECT role, content FROM ("
             "  SELECT id, role, content FROM conversations "
             "  WHERE chat_id = ? ORDER BY id DESC LIMIT ?"
@@ -166,7 +183,7 @@ class MemoryManager:
         start_at/end_at은 timezone-aware datetime이어야 하며,
         [start_at, end_at) 범위로 조회한다.
         """
-        assert self._db is not None
+        db = self._require_db()
         if start_at.tzinfo is None or end_at.tzinfo is None:
             raise ValueError("start_at and end_at must be timezone-aware datetimes")
         if end_at <= start_at:
@@ -187,7 +204,7 @@ class MemoryManager:
             query += " LIMIT ?"
             params.append(limit)
 
-        async with self._db.execute(query, params) as cursor:
+        async with db.execute(query, params) as cursor:
             rows = await cursor.fetchall()
 
         return [
@@ -201,11 +218,11 @@ class MemoryManager:
 
     async def clear_conversation(self, chat_id: int) -> int:
         """특정 채팅의 대화 기록을 삭제한다."""
-        assert self._db is not None
-        cursor = await self._db.execute(
+        db = self._require_db()
+        cursor = await db.execute(
             "DELETE FROM conversations WHERE chat_id = ?", (chat_id,)
         )
-        await self._db.commit()
+        await db.commit()
         deleted = cursor.rowcount
         self._logger.info("conversation_cleared", chat_id=chat_id, deleted=deleted)
         return deleted
@@ -220,11 +237,11 @@ class MemoryManager:
         category: str = "general",
     ) -> None:
         """장기 메모리에 항목을 저장한다 (upsert)."""
-        assert self._db is not None
+        db = self._require_db()
         now = _utc_now_sql()
-        await self._db.execute("BEGIN IMMEDIATE")
+        await db.execute("BEGIN IMMEDIATE")
         try:
-            async with self._db.execute(
+            async with db.execute(
                 "SELECT 1 FROM long_term_memory WHERE chat_id = ? AND key = ? LIMIT 1",
                 (chat_id, key),
             ) as cursor:
@@ -232,7 +249,7 @@ class MemoryManager:
 
             if not exists and self._max_long_term > 0:
                 # 신규 키 삽입 전에 사용자별 최대 항목 수를 유지한다.
-                async with self._db.execute(
+                async with db.execute(
                     "SELECT COUNT(*) FROM long_term_memory WHERE chat_id = ?",
                     (chat_id,),
                 ) as cursor:
@@ -240,7 +257,7 @@ class MemoryManager:
                     count = row[0] if row else 0
 
                 if count >= self._max_long_term:
-                    await self._db.execute(
+                    await db.execute(
                         "DELETE FROM long_term_memory WHERE id IN ("
                         "  SELECT id FROM long_term_memory WHERE chat_id = ? "
                         "  ORDER BY updated_at ASC, id ASC LIMIT 1"
@@ -248,7 +265,7 @@ class MemoryManager:
                         (chat_id,),
                     )
 
-            await self._db.execute(
+            await db.execute(
                 "INSERT INTO long_term_memory "
                 "(chat_id, key, value, category, created_at, updated_at) "
                 "VALUES (?, ?, ?, ?, ?, ?) "
@@ -258,9 +275,9 @@ class MemoryManager:
                 "updated_at = excluded.updated_at",
                 (chat_id, key, value, category, now, now),
             )
-            await self._db.commit()
+            await db.commit()
         except Exception:
-            await self._db.rollback()
+            await db.rollback()
             raise
 
     async def recall_memory(
@@ -270,7 +287,7 @@ class MemoryManager:
         category: str | None = None,
     ) -> list[dict]:
         """장기 메모리를 검색한다."""
-        assert self._db is not None
+        db = self._require_db()
         query = "SELECT key, value, category, updated_at FROM long_term_memory WHERE chat_id = ?"
         params: list = [chat_id]
 
@@ -283,7 +300,7 @@ class MemoryManager:
 
         query += " ORDER BY updated_at DESC"
 
-        async with self._db.execute(query, params) as cursor:
+        async with db.execute(query, params) as cursor:
             rows = await cursor.fetchall()
 
         return [
@@ -298,34 +315,45 @@ class MemoryManager:
 
     async def delete_memory(self, chat_id: int, key: str) -> bool:
         """특정 메모리 항목을 삭제한다."""
-        assert self._db is not None
-        cursor = await self._db.execute(
+        db = self._require_db()
+        cursor = await db.execute(
             "DELETE FROM long_term_memory WHERE chat_id = ? AND key = ?",
             (chat_id, key),
         )
-        await self._db.commit()
+        await db.commit()
         return cursor.rowcount > 0
+
+    async def delete_memories_by_category(self, chat_id: int, category: str) -> int:
+        """지정된 chat_id/category에 해당하는 장기 메모리를 모두 삭제한다."""
+        if self._db is None:
+            return 0
+        cursor = await self._db.execute(
+            "DELETE FROM long_term_memory WHERE chat_id = ? AND category = ?",
+            (chat_id, category),
+        )
+        await self._db.commit()
+        return cursor.rowcount
 
     async def get_memory_stats(self, chat_id: int) -> dict:
         """메모리 통계를 반환한다."""
-        assert self._db is not None
+        db = self._require_db()
         stats: dict = {"chat_id": chat_id}
 
-        async with self._db.execute(
+        async with db.execute(
             "SELECT COUNT(*) FROM conversations WHERE chat_id = ?",
             (chat_id,),
         ) as cursor:
             row = await cursor.fetchone()
             stats["conversation_count"] = row[0] if row else 0
 
-        async with self._db.execute(
+        async with db.execute(
             "SELECT COUNT(*) FROM long_term_memory WHERE chat_id = ?",
             (chat_id,),
         ) as cursor:
             row = await cursor.fetchone()
             stats["memory_count"] = row[0] if row else 0
 
-        async with self._db.execute(
+        async with db.execute(
             "SELECT MIN(timestamp) FROM conversations WHERE chat_id = ?",
             (chat_id,),
         ) as cursor:
@@ -336,8 +364,8 @@ class MemoryManager:
 
     async def ping(self) -> bool:
         """DB 연결이 유효한지 확인한다."""
-        assert self._db is not None
-        async with self._db.execute("SELECT 1") as cursor:
+        db = self._require_db()
+        async with db.execute("SELECT 1") as cursor:
             row = await cursor.fetchone()
         return row is not None and row[0] == 1
 
@@ -345,14 +373,14 @@ class MemoryManager:
 
     async def prune_old_conversations(self) -> int:
         """보관 기간이 지난 대화를 삭제한다."""
-        assert self._db is not None
+        db = self._require_db()
         cutoff = (
             datetime.now(timezone.utc) - timedelta(days=self._retention_days)
         ).strftime(_SQLITE_TIMESTAMP_FORMAT)
-        cursor = await self._db.execute(
+        cursor = await db.execute(
             "DELETE FROM conversations WHERE timestamp < ?", (cutoff,)
         )
-        await self._db.commit()
+        await db.commit()
         deleted = cursor.rowcount
         if deleted:
             self._logger.info("conversations_pruned", deleted=deleted)
@@ -362,12 +390,12 @@ class MemoryManager:
         self, chat_id: int, output_dir: Path
     ) -> Path:
         """대화를 마크다운 파일로 내보낸다."""
-        assert self._db is not None
+        db = self._require_db()
         output_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         filepath = output_dir / f"chat_{chat_id}_{timestamp}.md"
 
-        async with self._db.execute(
+        async with db.execute(
             "SELECT role, content, timestamp FROM conversations "
             "WHERE chat_id = ? ORDER BY id ASC",
             (chat_id,),

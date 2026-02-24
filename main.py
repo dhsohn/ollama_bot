@@ -18,6 +18,7 @@ from core.automation_callables import register_builtin_callables
 from core.auto_scheduler import AutoScheduler
 from core.config import AppSettings, load_config
 from core.engine import Engine
+from core.feedback_manager import FeedbackManager
 from core.logging_setup import get_logger, setup_logging
 from core.memory import MemoryManager
 from core.ollama_client import OllamaClient
@@ -49,6 +50,7 @@ class RuntimeState:
     skill_count: int
     auto_count: int
     cleanup_stack: AsyncExitStack
+    feedback: FeedbackManager | None = None
 
 
 def _is_running_in_container() -> bool:
@@ -69,14 +71,23 @@ async def _memory_maintenance_loop(
     memory: MemoryManager,
     logger,
     interval_seconds: int = _MEMORY_MAINTENANCE_INTERVAL_SECONDS,
+    feedback: FeedbackManager | None = None,
+    feedback_retention_days: int | None = None,
 ) -> None:
-    """주기적으로 오래된 대화 데이터를 정리한다."""
+    """주기적으로 오래된 대화/피드백 데이터를 정리한다."""
     while True:
         try:
             deleted = await memory.prune_old_conversations()
             logger.debug("memory_retention_pruned", deleted=deleted)
         except Exception as exc:
             logger.error("memory_retention_prune_failed", error=str(exc))
+
+        if feedback is not None and feedback_retention_days is not None:
+            try:
+                fb_deleted = await feedback.prune_old_feedback(feedback_retention_days)
+                logger.debug("feedback_retention_pruned", deleted=fb_deleted)
+            except Exception as exc:
+                logger.error("feedback_retention_prune_failed", error=str(exc))
         await asyncio.sleep(interval_seconds)
 
 
@@ -125,6 +136,18 @@ async def _build_runtime(config: AppSettings, logger: Any) -> RuntimeState:
         except Exception as exc:
             logger.error("memory_retention_prune_failed_on_start", error=str(exc))
 
+        # 2.5. 피드백 매니저
+        feedback: FeedbackManager | None = None
+        if config.feedback.enabled:
+            feedback = FeedbackManager(memory.db)
+            await feedback.initialize_schema()
+            try:
+                fb_pruned = await feedback.prune_old_feedback(config.feedback.retention_days)
+                if fb_pruned:
+                    logger.info("feedback_pruned", count=fb_pruned)
+            except Exception as exc:
+                logger.error("feedback_prune_failed", error=str(exc))
+
         # 3. Ollama
         ollama = OllamaClient(config.ollama)
         try:
@@ -163,6 +186,7 @@ async def _build_runtime(config: AppSettings, logger: Any) -> RuntimeState:
             config=config,
             engine=engine,
             security=security,
+            feedback=feedback,
         )
 
         # 7. 자동화
@@ -186,6 +210,7 @@ async def _build_runtime(config: AppSettings, logger: Any) -> RuntimeState:
             memory=memory,
             allowed_users=config.security.allowed_users,
             data_dir=config.data_dir,
+            feedback=feedback,
         )
         telegram.set_scheduler(scheduler)
 
@@ -211,6 +236,7 @@ async def _build_runtime(config: AppSettings, logger: Any) -> RuntimeState:
             skill_count=skill_count,
             auto_count=auto_count,
             cleanup_stack=cleanup_stack,
+            feedback=feedback,
         )
     except Exception:
         await cleanup_stack.aclose()
@@ -321,7 +347,12 @@ async def async_main() -> None:
             scheduler_started = True
 
             memory_maintenance_task = asyncio.create_task(
-                _memory_maintenance_loop(runtime.memory, logger),
+                _memory_maintenance_loop(
+                    runtime.memory,
+                    logger,
+                    feedback=runtime.feedback,
+                    feedback_retention_days=runtime.config.feedback.retention_days,
+                ),
                 name="memory_maintenance",
             )
 

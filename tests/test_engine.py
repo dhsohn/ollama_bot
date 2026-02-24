@@ -228,6 +228,37 @@ class TestPreferenceInjection:
         assert "사용자 고정 정보 및 선호도" not in system_content
 
 
+class TestFeedbackGuidelineInjection:
+    @pytest.mark.asyncio
+    async def test_guidelines_injected_into_system_prompt(
+        self, engine: Engine, memory: MemoryManager, mock_ollama,
+    ) -> None:
+        """feedback_guidelines가 있으면 시스템 프롬프트에 포함된다."""
+        await memory.store_memory(111, "feedback_guideline_01", "[avoid] 너무 긴 응답을 피하세요", category="feedback_guidelines")
+        await memory.store_memory(111, "feedback_guideline_02", "[prefer] 예시를 포함하세요", category="feedback_guidelines")
+
+        await engine.process_message(111, "안녕")
+
+        call_args = mock_ollama.chat.call_args
+        messages = call_args.kwargs.get("messages") or call_args[1].get("messages")
+        system_content = messages[0]["content"]
+        assert "응답 품질 가이드라인" in system_content
+        assert "[avoid] 너무 긴 응답을 피하세요" in system_content
+        assert "[prefer] 예시를 포함하세요" in system_content
+
+    @pytest.mark.asyncio
+    async def test_no_guidelines_no_injection(
+        self, engine: Engine, memory: MemoryManager, mock_ollama,
+    ) -> None:
+        """feedback_guidelines가 없으면 시스템 프롬프트가 변경되지 않는다."""
+        await engine.process_message(111, "안녕")
+
+        call_args = mock_ollama.chat.call_args
+        messages = call_args.kwargs.get("messages") or call_args[1].get("messages")
+        system_content = messages[0]["content"]
+        assert "응답 품질 가이드라인" not in system_content
+
+
 class TestProcessPrompt:
     @pytest.mark.asyncio
     async def test_process_prompt_forwards_format_and_options(

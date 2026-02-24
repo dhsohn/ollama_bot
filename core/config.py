@@ -60,6 +60,31 @@ class MemoryConfig(BaseModel):
     conversation_retention_days: int = 30
 
 
+class FeedbackConfig(BaseModel):
+    enabled: bool = True
+    show_buttons: bool = True
+    min_feedback_for_analysis: int = 5
+    max_guidelines: int = 5
+    preview_max_chars: int = 300
+    preview_cache_max_size: int = 500
+    preview_cache_ttl_hours: int = 24
+    retention_days: int = 90
+
+    @field_validator(
+        "min_feedback_for_analysis",
+        "max_guidelines",
+        "preview_max_chars",
+        "preview_cache_max_size",
+        "preview_cache_ttl_hours",
+        "retention_days",
+    )
+    @classmethod
+    def validate_positive_ints(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("feedback numeric settings must be >= 1")
+        return value
+
+
 class SchedulerConfig(BaseModel):
     timezone: str = "Asia/Seoul"
 
@@ -100,6 +125,7 @@ class AppSettings(BaseSettings):
     security: SecurityConfig = Field(default_factory=SecurityConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
+    feedback: FeedbackConfig = Field(default_factory=FeedbackConfig)
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
@@ -136,6 +162,8 @@ def load_config(
         settings.memory = MemoryConfig(**yaml_data["memory"])
     if "scheduler" in yaml_data:
         settings.scheduler = SchedulerConfig(**yaml_data["scheduler"])
+    if "feedback" in yaml_data:
+        settings.feedback = FeedbackConfig(**yaml_data["feedback"])
 
     # 명시적으로 지정된 env 값만 YAML보다 우선
     if "ollama_host" in explicit_env_fields and settings.ollama_host:

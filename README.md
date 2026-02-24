@@ -117,6 +117,7 @@ schtasks /Create /TN "WSL AutoStart" /SC ONLOGON /RU "$env:USERDOMAIN\$env:USERN
 | `/auto` | 자동화 관리 (`/auto list`, `/auto enable <이름>`, `/auto disable <이름>`, `/auto reload`) |
 | `/model` | 모델 확인/변경 (`/model list`, `/model <모델명>`) |
 | `/memory` | 메모리 관리 (`/memory clear`, `/memory export`) |
+| `/feedback` | 피드백 통계 확인 (설정 `feedback.enabled: true`일 때 노출) |
 | `/status` | 시스템 상태 확인 |
 
 명령어 없이 자유롭게 메시지를 보내면 일반 대화 모드로 작동합니다.
@@ -233,7 +234,7 @@ ollama_bot/
 
 ```yaml
 bot:
-  max_conversation_length: 50    # 대화 컨텍스트 최대 턴 수
+  max_conversation_length: 50    # 대화 컨텍스트 최대 메시지 수
   response_timeout: 60           # LLM 응답 타임아웃 (초)
 
 ollama:

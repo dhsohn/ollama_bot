@@ -7,14 +7,16 @@
 from __future__ import annotations
 
 import functools
+import time
 from collections.abc import Callable
 from pathlib import Path
 
-from telegram import BotCommand, Update
+from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatAction, ChatType, ParseMode
 from telegram.ext import (
     Application,
     ApplicationBuilder,
+    CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
     MessageHandler,
@@ -23,6 +25,7 @@ from telegram.ext import (
 
 from core.config import AppSettings
 from core.engine import Engine
+from core.feedback_manager import FeedbackManager
 from core.logging_setup import get_logger
 from core.security import AuthenticationError, RateLimitError, SecurityManager
 from core.telegram_message_renderer import escape_html, split_message, stream_and_render
@@ -83,14 +86,19 @@ class TelegramHandler:
         config: AppSettings,
         engine: Engine,
         security: SecurityManager,
+        feedback: FeedbackManager | None = None,
     ) -> None:
         self._config = config
         self._engine = engine
         self._security = security
+        self._feedback = feedback
         self._app: Application | None = None
         self._logger = get_logger("telegram")
+        self._max_message_length = config.telegram.max_message_length
         # auto_scheduler 참조 (main.py에서 주입)
         self._scheduler = None
+        # 프리뷰 캐시: {(chat_id, bot_message_id): {"user": str, "bot": str, "ts": float}}
+        self._preview_cache: dict[tuple[int, int], dict] = {}
 
     def set_scheduler(self, scheduler) -> None:
         """auto_scheduler 참조를 설정한다 (순환 의존 방지)."""
@@ -114,8 +122,16 @@ class TelegramHandler:
             CommandHandler("memory", self._cmd_memory),
             CommandHandler("status", self._cmd_status),
         ]
+        if self._feedback and self._config.feedback.enabled:
+            handlers.append(CommandHandler("feedback", self._cmd_feedback))
         for handler in handlers:
             self._app.add_handler(handler)
+
+        # 피드백 콜백 핸들러
+        if self._feedback and self._config.feedback.enabled:
+            self._app.add_handler(
+                CallbackQueryHandler(self._handle_feedback_callback, pattern=r"^fb:")
+            )
 
         # 일반 텍스트 메시지 핸들러 (명령어 제외)
         self._app.add_handler(
@@ -126,7 +142,7 @@ class TelegramHandler:
         self._app.add_error_handler(self._error_handler)
 
         # 봇 명령어 목록 설정
-        await self._app.bot.set_my_commands([
+        commands = [
             BotCommand("start", "봇 시작"),
             BotCommand("help", "도움말"),
             BotCommand("skills", "스킬 목록"),
@@ -134,7 +150,10 @@ class TelegramHandler:
             BotCommand("model", "모델 관리"),
             BotCommand("memory", "메모리 관리"),
             BotCommand("status", "시스템 상태"),
-        ])
+        ]
+        if self._feedback and self._config.feedback.enabled:
+            commands.append(BotCommand("feedback", "피드백 통계"))
+        await self._app.bot.set_my_commands(commands)
 
         self._logger.info("telegram_handler_initialized")
         return self._app
@@ -152,15 +171,22 @@ class TelegramHandler:
 
     @_auth_required
     async def _cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        command_lines = [
+            "/start — 봇 시작",
+            "/help — 이 도움말 표시",
+            "/skills — 스킬 목록/리로드",
+            "/auto — 자동화 관리/리로드",
+            "/model — 모델 확인/변경",
+            "/memory — 메모리 관리",
+            "/status — 시스템 상태",
+        ]
+        if self._feedback and self._config.feedback.enabled:
+            command_lines.insert(6, "/feedback — 피드백 통계")
+
         help_text = (
             "📋 *사용 가능한 명령어*\n\n"
-            "/start — 봇 시작\n"
-            "/help — 이 도움말 표시\n"
-            "/skills — 스킬 목록/리로드\n"
-            "/auto — 자동화 관리/리로드\n"
-            "/model — 모델 확인/변경\n"
-            "/memory — 메모리 관리\n"
-            "/status — 시스템 상태\n\n"
+            + "\n".join(command_lines)
+            + "\n\n"
             "💬 *대화 모드*\n"
             "명령어 없이 자유롭게 대화하세요.\n\n"
             "🔧 *스킬 모드*\n"
@@ -376,6 +402,13 @@ class TelegramHandler:
             enabled = sum(1 for a in autos if a["enabled"])
             text += f"\n자동화: {enabled}/{len(autos)}개 활성"
 
+        if self._feedback:
+            global_stats = await self._feedback.get_global_stats()
+            text += (
+                f"\n📊 피드백: {global_stats['total']}건 "
+                f"(만족도 {global_stats['satisfaction_rate']:.0%})"
+            )
+
         await update.effective_message.reply_text(  # type: ignore[union-attr]
             text, parse_mode=ParseMode.HTML
         )
@@ -400,14 +433,36 @@ class TelegramHandler:
             # 초기 placeholder 메시지 전송
             sent_message = await update.effective_message.reply_text("...")  # type: ignore[union-attr]
 
-            await stream_and_render(
+            result = await stream_and_render(
                 stream=self._engine.process_message_stream(chat_id, text),
                 sent_message=sent_message,
                 reply_text=update.effective_message.reply_text,  # type: ignore[union-attr]
                 split_message_fn=self._split_message,
                 edit_interval=_EDIT_INTERVAL,
                 edit_char_threshold=_EDIT_CHAR_THRESHOLD,
+                max_edit_length=self._max_message_length,
             )
+
+            # 피드백 버튼 부착
+            if (
+                self._feedback
+                and self._config.feedback.enabled
+                and self._config.feedback.show_buttons
+                and result.full_response.strip()
+                and result.last_message
+            ):
+                target_msg = result.last_message
+                self._cache_preview(chat_id, target_msg.message_id, text, result.full_response)
+                keyboard = InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton("\U0001f44d", callback_data=f"fb:1:{target_msg.message_id}"),
+                        InlineKeyboardButton("\U0001f44e", callback_data=f"fb:-1:{target_msg.message_id}"),
+                    ]
+                ])
+                try:
+                    await target_msg.edit_reply_markup(reply_markup=keyboard)
+                except Exception:
+                    pass  # 편집 실패 시 버튼 없이 진행
 
         except Exception as exc:
             self._logger.error(
@@ -418,6 +473,97 @@ class TelegramHandler:
             await update.effective_message.reply_text(  # type: ignore[union-attr]
                 "죄송합니다. 메시지 처리 중 오류가 발생했습니다."
             )
+
+    # ── 피드백 ──
+
+    def _cache_preview(self, chat_id: int, bot_message_id: int, user_text: str, bot_text: str) -> None:
+        """프리뷰를 캐시에 저장한다. TTL 초과/크기 초과 시 정리."""
+        max_chars = self._config.feedback.preview_max_chars
+        max_size = self._config.feedback.preview_cache_max_size
+        ttl_hours = self._config.feedback.preview_cache_ttl_hours
+        if max_chars <= 0 or max_size <= 0 or ttl_hours <= 0:
+            return
+        now = time.monotonic()
+
+        # TTL 만료 항목 정리
+        ttl_seconds = ttl_hours * 3600
+        expired = [k for k, v in self._preview_cache.items() if now - v["ts"] > ttl_seconds]
+        for k in expired:
+            del self._preview_cache[k]
+
+        # 최대 크기 초과 시 가장 오래된 항목 제거
+        while len(self._preview_cache) >= max_size:
+            oldest_key = min(self._preview_cache, key=lambda k: self._preview_cache[k]["ts"])
+            del self._preview_cache[oldest_key]
+
+        self._preview_cache[(chat_id, bot_message_id)] = {
+            "user": user_text[:max_chars],
+            "bot": bot_text[:max_chars],
+            "ts": now,
+        }
+
+    async def _handle_feedback_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """인라인 피드백 버튼 콜백을 처리한다."""
+        query = update.callback_query
+        if not query or not update.effective_chat:
+            return
+        if self._feedback is None:
+            await query.answer()
+            return
+        if update.effective_chat.type != ChatType.PRIVATE:
+            await query.answer("private chat에서만 사용할 수 있습니다.", show_alert=False)
+            return
+
+        try:
+            _, rating_str, msg_id_str = query.data.split(":")
+            rating = int(rating_str)
+            bot_message_id = int(msg_id_str)
+        except (ValueError, AttributeError):
+            await query.answer("잘못된 피드백 요청입니다.", show_alert=True)
+            return
+
+        chat_id = update.effective_chat.id
+        try:
+            self._security.authenticate(chat_id)
+            self._security.check_rate_limit(chat_id)
+        except AuthenticationError:
+            await query.answer()
+            return
+        except RateLimitError:
+            await query.answer("요청이 너무 많습니다. 잠시 후 다시 시도해주세요.", show_alert=True)
+            return
+
+        if rating not in (-1, 1):
+            await query.answer("지원하지 않는 피드백 값입니다.", show_alert=True)
+            return
+
+        preview = self._preview_cache.get((chat_id, bot_message_id), {})
+        is_update = await self._feedback.store_feedback(
+            chat_id=chat_id,
+            bot_message_id=bot_message_id,
+            rating=rating,
+            user_preview=preview.get("user"),
+            bot_preview=preview.get("bot"),
+        )
+
+        if is_update:
+            await query.answer("피드백을 업데이트했어요.", show_alert=False)
+        else:
+            await query.answer("피드백 감사합니다!", show_alert=False)
+
+    @_auth_required
+    async def _cmd_feedback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """피드백 통계를 표시한다."""
+        chat_id = update.effective_chat.id  # type: ignore[union-attr]
+        stats = await self._feedback.get_user_stats(chat_id)
+        text = (
+            "📊 <b>피드백 통계</b>\n\n"
+            f"전체: {stats['total']}건\n"
+            f"👍 긍정: {stats['positive']}건\n"
+            f"👎 부정: {stats['negative']}건\n"
+            f"만족도: {stats['satisfaction_rate']:.0%}"
+        )
+        await update.effective_message.reply_text(text, parse_mode=ParseMode.HTML)  # type: ignore[union-attr]
 
     # ── 에러 핸들러 ──
 
@@ -444,9 +590,12 @@ class TelegramHandler:
         return escape_html(value)
 
     def _split_message(
-        self, text: str, max_length: int = 4096
+        self,
+        text: str,
+        max_length: int | None = None,
     ) -> list[str]:
         """긴 메시지를 단락 기준으로 분할한다."""
+        max_length = max_length or self._max_message_length
         return split_message(text, max_length=max_length)
 
     @property

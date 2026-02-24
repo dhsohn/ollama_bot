@@ -5,6 +5,7 @@ from __future__ import annotations
 from core.automation_callables_impl.common import (
     CONSOLIDATION_MERGE_SCHEMA as _CONSOLIDATION_MERGE_SCHEMA,
     DAILY_SUMMARY_SCHEMA as _DAILY_SUMMARY_SCHEMA,
+    FEEDBACK_ANALYSIS_SCHEMA as _FEEDBACK_ANALYSIS_SCHEMA,
     MEMORY_HYGIENE_SCHEMA as _MEMORY_HYGIENE_SCHEMA,
     PREFERENCES_SCHEMA as _PREFERENCES_SCHEMA,
     STALE_EVALUATION_SCHEMA as _STALE_EVALUATION_SCHEMA,
@@ -25,6 +26,7 @@ from core.automation_callables_impl.summary import (
     build_extract_preferences_callable,
 )
 from core.engine import Engine
+from core.feedback_manager import FeedbackManager
 from core.logging_setup import get_logger
 from core.memory import MemoryManager
 
@@ -35,6 +37,7 @@ def register_builtin_callables(
     memory: MemoryManager,
     allowed_users: list[int],
     data_dir: str = "data",
+    feedback: FeedbackManager | None = None,
 ) -> None:
     """내장 자동화 callable을 스케줄러에 등록한다."""
     logger = get_logger("automation_callables")
@@ -93,10 +96,23 @@ def register_builtin_callables(
         ),
     )
 
+    # 피드백 분석 callable
+    if feedback is not None:
+        from core.automation_callables_impl.feedback_analysis import build_feedback_analysis_callable
+        scheduler.register_callable(
+            "feedback_analysis",
+            build_feedback_analysis_callable(engine, memory, feedback, allowed_users, logger),
+        )
+    else:
+        async def _feedback_analysis_noop(**kwargs) -> str:
+            return ""
+        scheduler.register_callable("feedback_analysis", _feedback_analysis_noop)
+
 
 __all__ = [
     "_CONSOLIDATION_MERGE_SCHEMA",
     "_DAILY_SUMMARY_SCHEMA",
+    "_FEEDBACK_ANALYSIS_SCHEMA",
     "_MEMORY_HYGIENE_SCHEMA",
     "_PREFERENCES_SCHEMA",
     "_STALE_EVALUATION_SCHEMA",

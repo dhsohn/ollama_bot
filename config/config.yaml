@@ -34,3 +34,13 @@ memory:
 
 scheduler:
   timezone: "Asia/Seoul"
+
+feedback:
+  enabled: true
+  show_buttons: true
+  min_feedback_for_analysis: 5
+  max_guidelines: 5
+  preview_max_chars: 300
+  preview_cache_max_size: 500
+  preview_cache_ttl_hours: 24
+  retention_days: 90

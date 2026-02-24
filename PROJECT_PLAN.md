@@ -473,7 +473,7 @@ ollama list | rg gpt-oss:20b
 bot:
   name: "ollama_bot"
   language: "ko"                    # 기본 언어
-  max_conversation_length: 50       # 최대 대화 턴 수
+  max_conversation_length: 50       # 최대 대화 메시지 수
   response_timeout: 60              # LLM 응답 타임아웃 (초)
 
 ollama:

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -14,6 +13,7 @@ from .common import (
     MEMORY_HYGIENE_SCHEMA,
     SQLITE_TIMESTAMP_FORMAT,
     STALE_EVALUATION_SCHEMA,
+    parse_json_array,
 )
 
 
@@ -93,34 +93,35 @@ def build_memory_hygiene_callable(
                         temperature=0.2,
                     )
                     llm_calls_remaining -= 1
+                    items = parse_json_array(raw)
+                    if items is None:
+                        raise ValueError("invalid JSON array response")
 
-                    items = json.loads(raw)
-                    if isinstance(items, list):
-                        remaining_keys = {
-                            m["key"] for m in remaining_memories
-                        }
-                        for item in items:
-                            if not isinstance(item, dict):
-                                continue
-                            delete_key = item.get("delete_key", "")
-                            keep_key = item.get("keep_key", "")
-                            reason = item.get("reason", "")
-                            if (
-                                delete_key in remaining_keys
-                                and keep_key in remaining_keys
-                                and delete_key != keep_key
-                                and delete_key not in keys_to_delete
-                            ):
-                                await memory.delete_memory(
-                                    user_id, delete_key,
-                                )
-                                keys_to_delete.add(delete_key)
-                                remaining_keys.discard(delete_key)
-                                if reason == "conflict":
-                                    conflicts_resolved += 1
-                                else:
-                                    duplicates_removed += 1
-                except (json.JSONDecodeError, ValueError):
+                    remaining_keys = {
+                        m["key"] for m in remaining_memories
+                    }
+                    for item in items:
+                        if not isinstance(item, dict):
+                            continue
+                        delete_key = item.get("delete_key", "")
+                        keep_key = item.get("keep_key", "")
+                        reason = item.get("reason", "")
+                        if (
+                            delete_key in remaining_keys
+                            and keep_key in remaining_keys
+                            and delete_key != keep_key
+                            and delete_key not in keys_to_delete
+                        ):
+                            await memory.delete_memory(
+                                user_id, delete_key,
+                            )
+                            keys_to_delete.add(delete_key)
+                            remaining_keys.discard(delete_key)
+                            if reason == "conflict":
+                                conflicts_resolved += 1
+                            else:
+                                duplicates_removed += 1
+                except ValueError:
                     logger.warning(
                         "memory_hygiene_semantic_parse_failed",
                         chat_id=user_id,
@@ -171,27 +172,28 @@ def build_memory_hygiene_callable(
                         temperature=0.2,
                     )
                     llm_calls_remaining -= 1
+                    items = parse_json_array(raw)
+                    if items is None:
+                        raise ValueError("invalid JSON array response")
 
-                    items = json.loads(raw)
-                    if isinstance(items, list):
-                        candidate_keys = {
-                            m["key"] for m in stale_candidates
-                        }
-                        for item in items:
-                            if not isinstance(item, dict):
-                                continue
-                            key = item.get("key", "")
-                            is_stale = item.get("stale", False)
-                            if (
-                                is_stale is True
-                                and key
-                                and key in candidate_keys
-                                and key not in keys_to_delete
-                            ):
-                                await memory.delete_memory(user_id, key)
-                                keys_to_delete.add(key)
-                                stale_removed += 1
-                except (json.JSONDecodeError, ValueError):
+                    candidate_keys = {
+                        m["key"] for m in stale_candidates
+                    }
+                    for item in items:
+                        if not isinstance(item, dict):
+                            continue
+                        key = item.get("key", "")
+                        is_stale = item.get("stale", False)
+                        if (
+                            is_stale is True
+                            and key
+                            and key in candidate_keys
+                            and key not in keys_to_delete
+                        ):
+                            await memory.delete_memory(user_id, key)
+                            keys_to_delete.add(key)
+                            stale_removed += 1
+                except ValueError:
                     logger.warning(
                         "memory_hygiene_stale_parse_failed",
                         chat_id=user_id,
