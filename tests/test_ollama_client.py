@@ -143,6 +143,7 @@ class TestInitialize:
             await ollama_client.initialize()
 
         assert ollama_client._client is not None
+        assert ollama_client._auto_reconnect_enabled is True
 
     @pytest.mark.asyncio
     async def test_initialize_missing_default_model_raises(
@@ -267,6 +268,19 @@ class TestHealthCheck:
         result = await ollama_client.health_check()
         assert result["status"] == "error"
 
+    @pytest.mark.asyncio
+    async def test_health_check_attempt_recovery_reports_flag(
+        self, ollama_client: OllamaClient
+    ) -> None:
+        mock_async_client = AsyncMock()
+        mock_async_client.list = AsyncMock(side_effect=ConnectionError("refused"))
+        ollama_client._client = mock_async_client
+
+        result = await ollama_client.health_check(attempt_recovery=True)
+        assert result["status"] == "error"
+        assert result["recovery_attempted"] is True
+        assert "recovered" in result
+
 
 class TestListModels:
     @pytest.mark.asyncio
@@ -300,3 +314,36 @@ class TestInitializationGuards:
     ) -> None:
         with pytest.raises(RuntimeError, match="초기화"):
             await ollama_client.health_check()
+
+
+class TestReconnect:
+    @pytest.mark.asyncio
+    async def test_recover_connection_before_initialize_returns_false(
+        self, ollama_client: OllamaClient
+    ) -> None:
+        result = await ollama_client.recover_connection()
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_recover_connection_success_after_initialize(
+        self, ollama_client: OllamaClient
+    ) -> None:
+        model = MagicMock()
+        model.model = "test-model"
+        response = MagicMock()
+        response.models = [model]
+
+        first_client = AsyncMock()
+        first_client.list = AsyncMock(return_value=response)
+        second_client = AsyncMock()
+        second_client.list = AsyncMock(return_value=response)
+
+        with patch(
+            "core.ollama_client.AsyncClient",
+            side_effect=[first_client, second_client],
+        ):
+            await ollama_client.initialize()
+            recovered = await ollama_client.recover_connection(force=True)
+
+        assert recovered is True
+        assert ollama_client._client is second_client

@@ -10,7 +10,11 @@ from core.automation_callables_impl.common import (
 )
 
 
-def _build_analysis_prompt(negatives: list[dict], positives: list[dict]) -> str:
+def _build_analysis_prompt(
+    negatives: list[dict],
+    positives: list[dict],
+    auto_low: list[dict] | None = None,
+) -> str:
     """LLM 분석용 프롬프트를 생성한다."""
     parts: list[str] = [
         "아래는 사용자가 봇 응답에 남긴 피드백 데이터이다.\n"
@@ -24,7 +28,12 @@ def _build_analysis_prompt(negatives: list[dict], positives: list[dict]) -> str:
         for fb in negatives:
             user = fb.get("user_preview") or "(없음)"
             bot = fb.get("bot_preview") or "(없음)"
-            parts.append(f"- 질문: {user}\n  응답: {bot}\n")
+            reason = fb.get("reason")
+            line = f"- 질문: {user}\n  응답: {bot}\n"
+            if reason:
+                reason_clean = reason.strip().replace("\n", " ")[:200]
+                line += f"  사유: {reason_clean}\n"
+            parts.append(line)
 
     if positives:
         parts.append("\n## 긍정 피드백 (👍)\n")
@@ -32,6 +41,18 @@ def _build_analysis_prompt(negatives: list[dict], positives: list[dict]) -> str:
             user = fb.get("user_preview") or "(없음)"
             bot = fb.get("bot_preview") or "(없음)"
             parts.append(f"- 질문: {user}\n  응답: {bot}\n")
+
+    if auto_low:
+        parts.append("\n## 자동 평가 저점 응답 (LLM-as-Judge)\n")
+        for ev in auto_low:
+            user = ev.get("user_input") or "(없음)"
+            bot = ev.get("bot_response") or "(없음)"
+            score = ev.get("score", "?")
+            explanation = ev.get("explanation") or ""
+            line = f"- [점수 {score}/5] 질문: {user}\n  응답: {bot}\n"
+            if explanation:
+                line += f"  평가사유: {explanation[:200]}\n"
+            parts.append(line)
 
     return "".join(parts)
 
@@ -62,11 +83,19 @@ def build_feedback_analysis_callable(
             negatives = await feedback.get_recent_feedback(chat_id, rating=-1, limit=max_negative_samples)
             positives = await feedback.get_recent_feedback(chat_id, rating=1, limit=max_positive_samples)
 
-            if not negatives and not positives:
+            # 자동 평가 저점 데이터 수집
+            auto_low: list[dict] | None = None
+            if hasattr(feedback, "get_low_score_evaluations"):
+                try:
+                    auto_low = await feedback.get_low_score_evaluations(chat_id=chat_id, max_score=2, limit=10)
+                except Exception:
+                    pass
+
+            if not negatives and not positives and not auto_low:
                 continue
 
             # LLM에 구조화 출력 요청
-            prompt = _build_analysis_prompt(negatives, positives)
+            prompt = _build_analysis_prompt(negatives, positives, auto_low=auto_low)
             raw = await engine.process_prompt(
                 prompt=prompt,
                 chat_id=chat_id,

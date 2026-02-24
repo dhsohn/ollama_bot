@@ -171,6 +171,26 @@ def test_feedback_default_values() -> None:
     assert cfg.retention_days == 90
 
 
+def test_security_invalid_numeric_value_raises(tmp_path: Path) -> None:
+    """security 숫자 설정이 1 미만이면 예외가 발생한다."""
+    config_path = tmp_path / "config.yaml"
+    env_path = tmp_path / ".env"
+    config_path.write_text(
+        "\n".join([
+            "security:",
+            "  max_concurrent_requests: 0",
+        ]),
+        encoding="utf-8",
+    )
+    env_path.write_text(
+        "TELEGRAM_BOT_TOKEN=test_token\nALLOWED_TELEGRAM_USERS=111",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="security numeric settings must be >= 1"):
+        load_config(config_path=str(config_path), env_file=str(env_path))
+
+
 def test_feedback_section_loaded_from_yaml(tmp_path: Path) -> None:
     """YAML의 feedback 섹션이 올바르게 로드된다."""
     config_path = tmp_path / "config.yaml"

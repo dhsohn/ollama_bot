@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import fnmatch
 import re
 import time
@@ -29,6 +30,10 @@ class SecurityViolationError(Exception):
     """경로 탐색, 차단 입력 등 보안 위반 시 발생."""
 
 
+class GlobalConcurrencyError(Exception):
+    """전역 동시 처리 한도 초과 시 발생."""
+
+
 # ANSI 이스케이프 시퀀스 패턴
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
 
@@ -46,9 +51,12 @@ class SecurityManager:
     def __init__(self, config: SecurityConfig) -> None:
         self._allowed_users: set[int] = set(config.allowed_users)
         self._rate_limit: int = config.rate_limit
+        self._max_concurrent_requests: int = config.max_concurrent_requests
         self._max_file_size: int = config.max_file_size
         self._blocked_paths: list[str] = config.blocked_paths
         self._request_log: dict[int, deque[float]] = defaultdict(deque)
+        self._global_semaphore = asyncio.Semaphore(self._max_concurrent_requests)
+        self._global_in_flight = 0
         self._logger = get_logger("security")
 
     # ── 인증 ──
@@ -96,6 +104,34 @@ class SecurityManager:
 
         window.append(now)
         return True
+
+    async def acquire_global_slot(self, chat_id: int) -> None:
+        """전역 동시 요청 슬롯을 획득한다.
+
+        Raises:
+            GlobalConcurrencyError: 현재 전역 동시 처리량이 한도에 도달한 경우.
+        """
+        try:
+            await asyncio.wait_for(self._global_semaphore.acquire(), timeout=0.001)
+        except (TimeoutError, asyncio.TimeoutError) as exc:
+            self._logger.warning(
+                "global_concurrency_exceeded",
+                chat_id=chat_id,
+                in_flight=self._global_in_flight,
+                limit=self._max_concurrent_requests,
+            )
+            raise GlobalConcurrencyError(
+                "Too many concurrent requests globally"
+            ) from exc
+
+        self._global_in_flight += 1
+
+    def release_global_slot(self) -> None:
+        """전역 동시 요청 슬롯을 반환한다."""
+        if self._global_in_flight <= 0:
+            return
+        self._global_in_flight -= 1
+        self._global_semaphore.release()
 
     # ── 입력 검증 ──
 

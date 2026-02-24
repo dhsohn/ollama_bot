@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from core.auto_evaluator import AutoEvaluator
 from core.automation_callables import register_builtin_callables
 from core.auto_scheduler import AutoScheduler
 from core.config import AppSettings, load_config
@@ -27,6 +28,7 @@ from core.skill_manager import SkillManager
 from core.telegram_handler import TelegramHandler
 
 _MEMORY_MAINTENANCE_INTERVAL_SECONDS = 6 * 60 * 60
+_OLLAMA_RECOVERY_INTERVAL_SECONDS = 60
 
 
 class StartupError(RuntimeError):
@@ -51,6 +53,7 @@ class RuntimeState:
     auto_count: int
     cleanup_stack: AsyncExitStack
     feedback: FeedbackManager | None = None
+    auto_evaluator: AutoEvaluator | None = None
 
 
 def _is_running_in_container() -> bool:
@@ -88,6 +91,37 @@ async def _memory_maintenance_loop(
                 logger.debug("feedback_retention_pruned", deleted=fb_deleted)
             except Exception as exc:
                 logger.error("feedback_retention_prune_failed", error=str(exc))
+
+            try:
+                eval_deleted = await feedback.prune_old_auto_evaluations(feedback_retention_days)
+                if eval_deleted:
+                    logger.debug("auto_eval_retention_pruned", deleted=eval_deleted)
+            except Exception as exc:
+                logger.error("auto_eval_retention_prune_failed", error=str(exc))
+        await asyncio.sleep(interval_seconds)
+
+
+async def _ollama_recovery_loop(
+    ollama: OllamaClient,
+    logger,
+    interval_seconds: int = _OLLAMA_RECOVERY_INTERVAL_SECONDS,
+) -> None:
+    """Ollama 상태를 주기 점검하고 연결 장애 시 재연결을 시도한다."""
+    while True:
+        try:
+            health = await ollama.health_check(attempt_recovery=False)
+            if health.get("status") != "ok":
+                recovered = await ollama.recover_connection(force=True)
+                if recovered:
+                    logger.info("ollama_recovered_by_loop")
+                else:
+                    logger.warning(
+                        "ollama_still_unhealthy",
+                        error=health.get("error"),
+                    )
+        except Exception as exc:
+            logger.error("ollama_recovery_loop_failed", error=str(exc))
+
         await asyncio.sleep(interval_seconds)
 
 
@@ -186,7 +220,19 @@ async def _build_runtime(config: AppSettings, logger: Any) -> RuntimeState:
             ollama=ollama,
             memory=memory,
             skills=skills,
+            feedback_manager=feedback,
         )
+
+        # 5.5. 자동 평가
+        auto_evaluator: AutoEvaluator | None = None
+        if config.auto_evaluation.enabled and feedback is not None:
+            auto_evaluator = AutoEvaluator(
+                config=config.auto_evaluation,
+                ollama=ollama,
+                feedback_manager=feedback,
+                timezone_name=config.scheduler.timezone,
+            )
+            logger.info("auto_evaluator_initialized")
 
         # 6. 텔레그램
         telegram = TelegramHandler(
@@ -194,6 +240,7 @@ async def _build_runtime(config: AppSettings, logger: Any) -> RuntimeState:
             engine=engine,
             security=security,
             feedback=feedback,
+            auto_evaluator=auto_evaluator,
         )
 
         # 7. 자동화
@@ -210,7 +257,14 @@ async def _build_runtime(config: AppSettings, logger: Any) -> RuntimeState:
                 "SCHEDULER_TIMEZONE 설정을 확인하세요."
             ) from exc
 
+        # 순환 의존 방지를 위해 런타임 주입 순서를 고정한다.
+        # 1) scheduler.set_dependencies
+        # 2) register_builtin_callables
+        # 3) telegram.set_scheduler
         scheduler.set_dependencies(engine=engine, telegram=telegram)
+        assert scheduler.dependencies_ready(), (
+            "Scheduler dependencies must be wired before automation loading."
+        )
         register_builtin_callables(
             scheduler=scheduler,
             engine=engine,
@@ -220,6 +274,9 @@ async def _build_runtime(config: AppSettings, logger: Any) -> RuntimeState:
             feedback=feedback,
         )
         telegram.set_scheduler(scheduler)
+        assert telegram.has_scheduler(), (
+            "Telegram handler must receive scheduler before initialization."
+        )
 
         try:
             auto_count = await scheduler.load_automations(strict=True)
@@ -251,6 +308,7 @@ async def _build_runtime(config: AppSettings, logger: Any) -> RuntimeState:
             auto_count=auto_count,
             cleanup_stack=cleanup_stack,
             feedback=feedback,
+            auto_evaluator=auto_evaluator,
         )
     except Exception:
         await cleanup_stack.aclose()
@@ -260,6 +318,7 @@ async def _build_runtime(config: AppSettings, logger: Any) -> RuntimeState:
 async def _shutdown_runtime(
     runtime: RuntimeState,
     memory_maintenance_task: asyncio.Task | None,
+    ollama_recovery_task: asyncio.Task | None,
     scheduler_started: bool,
     app_started: bool,
     updater_started: bool,
@@ -275,9 +334,19 @@ async def _shutdown_runtime(
         except Exception as exc:
             logger.error("scheduler_stop_failed", error=str(exc))
 
+    if runtime.auto_evaluator is not None:
+        try:
+            await runtime.auto_evaluator.shutdown()
+        except Exception as exc:
+            logger.error("auto_evaluator_shutdown_failed", error=str(exc))
+
     if memory_maintenance_task is not None:
         memory_maintenance_task.cancel()
         await asyncio.gather(memory_maintenance_task, return_exceptions=True)
+
+    if ollama_recovery_task is not None:
+        ollama_recovery_task.cancel()
+        await asyncio.gather(ollama_recovery_task, return_exceptions=True)
 
     if updater_started:
         try:
@@ -348,6 +417,7 @@ async def async_main() -> None:
             pass
 
     memory_maintenance_task: asyncio.Task | None = None
+    ollama_recovery_task: asyncio.Task | None = None
     scheduler_started = False
     app_started = False
     updater_started = False
@@ -369,6 +439,10 @@ async def async_main() -> None:
                 ),
                 name="memory_maintenance",
             )
+            ollama_recovery_task = asyncio.create_task(
+                _ollama_recovery_loop(runtime.ollama, logger),
+                name="ollama_recovery",
+            )
 
             logger.info(
                 "bot_running",
@@ -389,6 +463,7 @@ async def async_main() -> None:
             await _shutdown_runtime(
                 runtime=runtime,
                 memory_maintenance_task=memory_maintenance_task,
+                ollama_recovery_task=ollama_recovery_task,
                 scheduler_started=scheduler_started,
                 app_started=app_started,
                 updater_started=updater_started,

@@ -108,6 +108,18 @@ def register_builtin_callables(
             return ""
         scheduler.register_callable("feedback_analysis", _feedback_analysis_noop)
 
+    # KTO 파인튜닝 데이터 내보내기 callable
+    if feedback is not None:
+        from core.automation_callables_impl.export_training_data import build_export_training_data_callable
+        scheduler.register_callable(
+            "export_training_data",
+            build_export_training_data_callable(feedback, data_dir, logger),
+        )
+    else:
+        async def _export_training_data_noop(**kwargs) -> str:
+            return ""
+        scheduler.register_callable("export_training_data", _export_training_data_noop)
+
 
 __all__ = [
     "_CONSOLIDATION_MERGE_SCHEMA",

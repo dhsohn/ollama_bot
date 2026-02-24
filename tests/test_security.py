@@ -6,8 +6,10 @@ import time
 
 import pytest
 
+from core.config import SecurityConfig
 from core.security import (
     AuthenticationError,
+    GlobalConcurrencyError,
     RateLimitError,
     SecurityManager,
     SecurityViolationError,
@@ -121,3 +123,39 @@ class TestFileSize:
     def test_oversized_file(self, security_manager: SecurityManager) -> None:
         with pytest.raises(SecurityViolationError):
             security_manager.validate_file_size(100_000_000)
+
+
+class TestGlobalConcurrency:
+    @pytest.mark.asyncio
+    async def test_global_concurrency_limit_raises(self) -> None:
+        manager = SecurityManager(
+            SecurityConfig(
+                allowed_users=[111],
+                rate_limit=10,
+                max_concurrent_requests=1,
+                max_file_size=10_485_760,
+                blocked_paths=["/etc/*", "/proc/*", "/sys/*"],
+            )
+        )
+
+        await manager.acquire_global_slot(111)
+        with pytest.raises(GlobalConcurrencyError):
+            await manager.acquire_global_slot(111)
+        manager.release_global_slot()
+
+    @pytest.mark.asyncio
+    async def test_release_allows_next_request(self) -> None:
+        manager = SecurityManager(
+            SecurityConfig(
+                allowed_users=[111],
+                rate_limit=10,
+                max_concurrent_requests=1,
+                max_file_size=10_485_760,
+                blocked_paths=["/etc/*", "/proc/*", "/sys/*"],
+            )
+        )
+
+        await manager.acquire_global_slot(111)
+        manager.release_global_slot()
+        await manager.acquire_global_slot(111)
+        manager.release_global_slot()

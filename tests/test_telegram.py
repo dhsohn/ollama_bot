@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
@@ -576,6 +577,36 @@ class TestFeedbackButtons:
         query.answer.assert_awaited_once_with("피드백을 업데이트했어요.", show_alert=False)
 
     @pytest.mark.asyncio
+    async def test_callback_update_clears_pending_reason(
+        self,
+        feedback_handler: TelegramHandler,
+        mock_feedback,
+    ) -> None:
+        """같은 메시지를 재평가하면 사유 대기 상태를 정리한다."""
+        mock_feedback.store_feedback = AsyncMock(return_value=True)
+        feedback_handler._pending_reason[111] = {
+            "bot_message_id": 42,
+            "expires": time.monotonic() + 120,
+        }
+
+        query = MagicMock()
+        query.data = "fb:1:42"
+        query.answer = AsyncMock()
+
+        chat = MagicMock()
+        chat.id = 111
+        chat.type = "private"
+
+        update = MagicMock()
+        update.callback_query = query
+        update.effective_chat = chat
+
+        context = MagicMock()
+        await feedback_handler._handle_feedback_callback(update, context)
+
+        assert 111 not in feedback_handler._pending_reason
+
+    @pytest.mark.asyncio
     async def test_callback_invalid_data(self, feedback_handler: TelegramHandler) -> None:
         """잘못된 콜백 데이터는 에러 메시지를 표시한다."""
         query = MagicMock()
@@ -697,6 +728,84 @@ class TestFeedbackButtons:
         call_text = message.reply_text.await_args[0][0]
         assert "피드백" in call_text
         assert "20건" in call_text
+
+    @pytest.mark.asyncio
+    async def test_reason_or_message_path_does_not_double_rate_limit(
+        self,
+        mock_engine: AsyncMock,
+        mock_feedback: AsyncMock,
+    ) -> None:
+        """collect_reason 경로에서도 인증/레이트리밋이 1회만 적용된다."""
+        config = AppSettings(
+            telegram_bot_token="test_token",
+            data_dir="/tmp/test",
+            bot=BotConfig(),
+            ollama=OllamaConfig(),
+            security=SecurityConfig(allowed_users=[111], rate_limit=1),
+            memory=MemoryConfig(),
+            telegram=TelegramConfig(),
+            feedback=FeedbackConfig(enabled=True, collect_reason=True),
+        )
+        handler = TelegramHandler(
+            config=config,
+            engine=mock_engine,
+            security=SecurityManager(config.security),
+            feedback=mock_feedback,
+        )
+
+        async def _stream():
+            yield "response"
+
+        handler._engine.process_message_stream = MagicMock(return_value=_stream())
+
+        chat = MagicMock()
+        chat.id = 111
+        chat.type = "private"
+        chat.send_action = AsyncMock()
+
+        sent_message = MagicMock()
+        sent_message.edit_text = AsyncMock()
+        sent_message.message_id = 42
+        sent_message.edit_reply_markup = AsyncMock()
+
+        message = MagicMock()
+        message.text = "hello"
+        message.reply_text = AsyncMock(return_value=sent_message)
+
+        update = MagicMock()
+        update.effective_chat = chat
+        update.effective_message = message
+
+        await handler._handle_reason_or_message(update, MagicMock())
+
+        handler._engine.process_message_stream.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_expired_reason_is_consumed(self, feedback_handler: TelegramHandler) -> None:
+        """만료된 사유 입력은 일반 메시지 처리로 전달되지 않는다."""
+        feedback_handler._pending_reason[111] = {
+            "bot_message_id": 42,
+            "expires": time.monotonic() - 1,
+        }
+        feedback_handler._engine.process_message_stream = MagicMock()
+
+        chat = MagicMock()
+        chat.id = 111
+        chat.type = "private"
+        chat.send_action = AsyncMock()
+
+        message = MagicMock()
+        message.text = "늦은 사유"
+        message.reply_text = AsyncMock()
+
+        update = MagicMock()
+        update.effective_chat = chat
+        update.effective_message = message
+
+        await feedback_handler._handle_reason_or_message(update, MagicMock())
+
+        feedback_handler._engine.process_message_stream.assert_not_called()
+        message.reply_text.assert_awaited_once_with("사유 입력 시간이 만료되었습니다.")
 
 
 class TestApplicationGuards:

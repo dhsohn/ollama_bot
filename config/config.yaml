@@ -21,6 +21,7 @@ telegram:
 security:
   allowed_users: []
   rate_limit: 30
+  max_concurrent_requests: 4
   max_file_size: 10485760
   blocked_paths:
     - "/etc/*"
@@ -44,3 +45,19 @@ feedback:
   preview_cache_max_size: 500
   preview_cache_ttl_hours: 24
   retention_days: 90
+  collect_reason: true
+  reason_min_chars: 3
+  reason_max_chars: 500
+  reason_timeout_seconds: 120
+  dicl_enabled: true
+  dicl_max_examples: 2
+  dicl_max_keywords: 5
+  dicl_max_total_chars: 2000
+  dicl_recent_days: 180
+
+auto_evaluation:
+  enabled: false
+  daily_limit: 50
+  min_response_length: 50
+  max_concurrency: 2
+  cooldown_seconds: 300

@@ -7,6 +7,7 @@ ollama 라이브러리의 AsyncClient를 래핑하여
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import AsyncGenerator
 
 from ollama import AsyncClient, ResponseError
@@ -33,6 +34,12 @@ class OllamaClient:
         self._max_tokens = config.max_tokens
         self._system_prompt = config.system_prompt
         self._client: AsyncClient | None = None
+        self._auto_reconnect_enabled = False
+        self._is_healthy = True
+        self._last_connection_error: str | None = None
+        self._next_reconnect_at = 0.0
+        self._reconnect_cooldown_seconds = 15.0
+        self._reconnect_lock = asyncio.Lock()
         self._logger = get_logger("ollama_client")
 
     @property
@@ -49,9 +56,9 @@ class OllamaClient:
 
     async def initialize(self) -> None:
         """클라이언트를 생성하고 연결을 확인한다."""
-        self._client = AsyncClient(host=self._host)
+        client = AsyncClient(host=self._host)
         try:
-            response = await self._client.list()
+            response = await client.list()
             available = [m.model for m in response.models if m.model is not None]
             self._logger.info(
                 "ollama_connected",
@@ -70,10 +77,15 @@ class OllamaClient:
                     f"Available models: {available_text}. "
                     f"Pull model first: ollama pull {self._default_model}"
                 )
+            self._client = client
+            self._auto_reconnect_enabled = True
+            self._mark_healthy()
         except ModelNotFoundError:
+            self._mark_unhealthy("default model missing")
             raise
         except Exception as exc:
             self._logger.error("ollama_connection_failed", error=str(exc))
+            self._mark_unhealthy(exc)
             raise OllamaClientError(
                 f"Failed to connect to Ollama at {self._host}: {exc}"
             ) from exc
@@ -81,6 +93,68 @@ class OllamaClient:
     async def close(self) -> None:
         """클라이언트 리소스를 정리한다."""
         self._client = None
+        self._auto_reconnect_enabled = False
+        self._is_healthy = False
+
+    def _mark_healthy(self) -> None:
+        self._is_healthy = True
+        self._last_connection_error = None
+        self._next_reconnect_at = 0.0
+
+    def _mark_unhealthy(self, error: Exception | str) -> None:
+        self._is_healthy = False
+        self._last_connection_error = str(error)
+        self._next_reconnect_at = time.monotonic() + self._reconnect_cooldown_seconds
+
+    async def recover_connection(self, *, force: bool = False) -> bool:
+        """연결 장애 시 재연결을 시도한다.
+
+        Returns:
+            재연결 성공 여부.
+        """
+        if not self._auto_reconnect_enabled:
+            return False
+        if self._client is None:
+            return False
+
+        now = time.monotonic()
+        if not force and now < self._next_reconnect_at:
+            return False
+
+        async with self._reconnect_lock:
+            now = time.monotonic()
+            if not force and now < self._next_reconnect_at:
+                return False
+
+            candidate = AsyncClient(host=self._host)
+            try:
+                response = await candidate.list()
+            except Exception as exc:
+                self._mark_unhealthy(exc)
+                self._logger.warning("ollama_reconnect_failed", error=str(exc))
+                return False
+
+            available = [m.model for m in response.models if m.model is not None]
+            if self._default_model not in available:
+                error = ModelNotFoundError(
+                    f"Default model '{self._default_model}' not found on {self._host}"
+                )
+                self._mark_unhealthy(error)
+                self._logger.warning(
+                    "ollama_reconnect_default_model_missing",
+                    model=self._default_model,
+                    available=available,
+                )
+                return False
+
+            self._client = candidate
+            self._mark_healthy()
+            self._logger.info(
+                "ollama_reconnected",
+                host=self._host,
+                models_count=len(available),
+            )
+            return True
 
     def _require_client(self) -> AsyncClient:
         if self._client is None:
@@ -97,7 +171,6 @@ class OllamaClient:
         format: str | dict | None = None,
     ) -> str:
         """비스트리밍 채팅 요청. 재시도 포함."""
-        client = self._require_client()
         model = model or self._default_model
         options = {
             "temperature": self._temperature if temperature is None else temperature,
@@ -105,6 +178,7 @@ class OllamaClient:
         }
 
         async def _do_chat() -> str:
+            client = self._require_client()
             kwargs: dict = dict(
                 model=model,
                 messages=messages,
@@ -155,7 +229,10 @@ class OllamaClient:
                     break
                 if chunk.message.content:
                     yield chunk.message.content
+            self._mark_healthy()
         except (ResponseError, asyncio.TimeoutError, OSError) as exc:
+            self._mark_unhealthy(exc)
+            await self.recover_connection()
             raise OllamaClientError(
                 f"Ollama streaming request failed for model '{model}': {exc}"
             ) from exc
@@ -163,7 +240,13 @@ class OllamaClient:
     async def list_models(self) -> list[dict]:
         """로컬에 설치된 모델 목록을 반환한다."""
         client = self._require_client()
-        response = await client.list()
+        try:
+            response = await client.list()
+            self._mark_healthy()
+        except Exception as exc:
+            self._mark_unhealthy(exc)
+            await self.recover_connection()
+            raise
         return [
             {
                 "name": m.model,
@@ -178,20 +261,24 @@ class OllamaClient:
         client = self._require_client()
         try:
             response = await client.show(model)
+            self._mark_healthy()
             return {
                 "model": model,
                 "modelfile": response.modelfile if hasattr(response, "modelfile") else None,
                 "parameters": response.parameters if hasattr(response, "parameters") else None,
             }
         except ResponseError as exc:
+            self._mark_unhealthy(exc)
+            await self.recover_connection()
             raise ModelNotFoundError(f"Model '{model}' not found: {exc}") from exc
 
-    async def health_check(self) -> dict:
+    async def health_check(self, *, attempt_recovery: bool = False) -> dict:
         """Ollama 서버 상태를 확인한다."""
         client = self._require_client()
         try:
             response = await client.list()
             models = [m.model for m in response.models]
+            self._mark_healthy()
             return {
                 "status": "ok",
                 "host": self._host,
@@ -201,10 +288,16 @@ class OllamaClient:
                 "default_model_available": self._default_model in models,
             }
         except Exception as exc:
+            self._mark_unhealthy(exc)
+            recovered = False
+            if attempt_recovery:
+                recovered = await self.recover_connection(force=True)
             return {
                 "status": "error",
                 "host": self._host,
                 "error": str(exc),
+                "recovery_attempted": attempt_recovery,
+                "recovered": recovered,
             }
 
     async def _retry_with_backoff(
@@ -218,10 +311,14 @@ class OllamaClient:
 
         for attempt in range(max_retries + 1):
             try:
-                return await coro_factory()
+                response = await coro_factory()
+                self._mark_healthy()
+                return response
             except (ResponseError, asyncio.TimeoutError, OSError) as exc:
                 last_error = exc
+                self._mark_unhealthy(exc)
                 if attempt < max_retries:
+                    await self.recover_connection(force=True)
                     delay = backoff_delays[min(attempt, len(backoff_delays) - 1)]
                     self._logger.warning(
                         "ollama_retry",

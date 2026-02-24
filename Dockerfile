@@ -1,8 +1,8 @@
 # Stage 1: 의존성 빌드
 FROM python:3.11-slim AS builder
 WORKDIR /build
-COPY requirements.txt .
-RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
+COPY requirements.txt requirements.lock .
+RUN pip install --no-cache-dir --prefix=/install -r requirements.lock
 
 # Stage 2: 런타임
 FROM python:3.11-slim

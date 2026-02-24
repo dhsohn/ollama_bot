@@ -11,6 +11,7 @@ import inspect
 import time
 from collections.abc import Callable
 from pathlib import Path
+from typing import Protocol
 
 from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatAction, ChatType, ParseMode
@@ -28,12 +29,27 @@ from core.config import AppSettings
 from core.engine import Engine
 from core.feedback_manager import FeedbackManager
 from core.logging_setup import get_logger
-from core.security import AuthenticationError, RateLimitError, SecurityManager
+from core.security import (
+    AuthenticationError,
+    GlobalConcurrencyError,
+    RateLimitError,
+    SecurityManager,
+)
 from core.telegram_message_renderer import escape_html, split_message, stream_and_render
 
 # 메시지 편집 최소 간격 (초) — 텔레그램 API 제한 대응
 _EDIT_INTERVAL = 1.0
 _EDIT_CHAR_THRESHOLD = 100
+
+
+class _AutoEvaluatorLike(Protocol):
+    def schedule_evaluation(
+        self,
+        chat_id: int,
+        bot_message_id: int,
+        user_input: str,
+        bot_response: str,
+    ) -> None: ...
 
 
 def _auth_required(func: Callable) -> Callable:
@@ -74,7 +90,21 @@ def _auth_required(func: Callable) -> Callable:
             )
             return
 
-        return await func(self, update, context)
+        acquired_global_slot = False
+        try:
+            await self._security.acquire_global_slot(chat_id)
+            acquired_global_slot = True
+        except GlobalConcurrencyError:
+            await update.effective_message.reply_text(
+                "현재 요청이 많습니다. 잠시 후 다시 시도해주세요."
+            )
+            return
+
+        try:
+            return await func(self, update, context)
+        finally:
+            if acquired_global_slot:
+                self._security.release_global_slot()
 
     return wrapper
 
@@ -88,11 +118,13 @@ class TelegramHandler:
         engine: Engine,
         security: SecurityManager,
         feedback: FeedbackManager | None = None,
+        auto_evaluator: _AutoEvaluatorLike | None = None,
     ) -> None:
         self._config = config
         self._engine = engine
         self._security = security
         self._feedback = feedback
+        self._auto_evaluator = auto_evaluator
         self._app: Application | None = None
         self._logger = get_logger("telegram")
         self._max_message_length = config.telegram.max_message_length
@@ -100,10 +132,16 @@ class TelegramHandler:
         self._scheduler = None
         # 프리뷰 캐시: {(chat_id, bot_message_id): {"user": str, "bot": str, "ts": float}}
         self._preview_cache: dict[tuple[int, int], dict] = {}
+        # 사유 수집 대기: {chat_id: {"bot_message_id": int, "expires": float}}
+        self._pending_reason: dict[int, dict] = {}
 
     def set_scheduler(self, scheduler) -> None:
         """auto_scheduler 참조를 설정한다 (순환 의존 방지)."""
         self._scheduler = scheduler
+
+    def has_scheduler(self) -> bool:
+        """auto_scheduler 참조 주입 여부를 반환한다."""
+        return self._scheduler is not None
 
     @property
     def _feedback_enabled(self) -> bool:
@@ -157,9 +195,18 @@ class TelegramHandler:
             )
 
         # 일반 텍스트 메시지 핸들러 (명령어 제외)
-        self._app.add_handler(
-            MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_message)
-        )
+        if self._feedback_enabled and self._config.feedback.collect_reason:
+            self._app.add_handler(CommandHandler("skip", self._handle_reason_skip))
+            self._app.add_handler(
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    self._handle_reason_or_message,
+                )
+            )
+        else:
+            self._app.add_handler(
+                MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_message)
+            )
 
         # 에러 핸들러
         self._app.add_error_handler(self._error_handler)
@@ -475,6 +522,10 @@ class TelegramHandler:
     @_auth_required
     async def _handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """자유 텍스트 메시지를 처리한다. 스트리밍 UX를 제공한다."""
+        await self._handle_message_impl(update, context)
+
+    async def _handle_message_impl(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """자유 텍스트 메시지를 처리한다. 스트리밍 UX를 제공한다."""
         chat_id = update.effective_chat.id  # type: ignore[union-attr]
         text = update.effective_message.text  # type: ignore[union-attr]
         if text is None:
@@ -521,6 +572,19 @@ class TelegramHandler:
                     await target_msg.edit_reply_markup(reply_markup=keyboard)
                 except Exception:
                     pass  # 편집 실패 시 버튼 없이 진행
+
+            # LLM-as-Judge 자동 평가 트리거
+            if (
+                self._auto_evaluator is not None
+                and result.full_response.strip()
+                and result.last_message
+            ):
+                self._auto_evaluator.schedule_evaluation(
+                    chat_id,
+                    result.last_message.message_id,
+                    text,
+                    result.full_response,
+                )
 
         except Exception as exc:
             self._logger.error(
@@ -617,6 +681,34 @@ class TelegramHandler:
             bot_preview=preview.get("bot"),
         )
 
+        # 기존 요청(동일 메시지)에 대한 pending reason은 재평가 시 정리한다.
+        pending = self._pending_reason.get(chat_id)
+        if (
+            pending is not None
+            and pending.get("bot_message_id") == bot_message_id
+            and (is_update or rating == 1)
+        ):
+            del self._pending_reason[chat_id]
+
+        # 👎이면서 사유 수집이 활성화되어 있으면 사유 입력 요청
+        if (
+            rating == -1
+            and not is_update
+            and self._config.feedback.collect_reason
+        ):
+            timeout = self._config.feedback.reason_timeout_seconds
+            self._pending_reason[chat_id] = {
+                "bot_message_id": bot_message_id,
+                "expires": time.monotonic() + timeout,
+            }
+            await query.answer("피드백 감사합니다!", show_alert=False)
+            if query.message is not None and hasattr(query.message, "reply_text"):
+                await query.message.reply_text(
+                    "어떤 점이 아쉬웠나요? 사유를 입력해주세요.\n"
+                    "건너뛰려면 /skip 을 입력하세요."
+                )
+            return
+
         if is_update:
             await query.answer("피드백을 업데이트했어요.", show_alert=False)
         else:
@@ -638,6 +730,78 @@ class TelegramHandler:
             f"만족도: {stats['satisfaction_rate']:.0%}"
         )
         await update.effective_message.reply_text(text, parse_mode=ParseMode.HTML)  # type: ignore[union-attr]
+
+    # ── 사유 수집 ──
+
+    async def _handle_reason_input(self, chat_id: int, text: str, update: Update) -> bool:
+        """대기 중인 사유가 있으면 저장하고 True를 반환한다."""
+        pending = self._pending_reason.get(chat_id)
+        if pending is None:
+            return False
+
+        # 만료 확인
+        if time.monotonic() > pending["expires"]:
+            del self._pending_reason[chat_id]
+            await update.effective_message.reply_text(  # type: ignore[union-attr]
+                "사유 입력 시간이 만료되었습니다."
+            )
+            return True
+
+        # 길이 검증
+        min_chars = self._config.feedback.reason_min_chars
+        max_chars = self._config.feedback.reason_max_chars
+        reason = self._security.sanitize_input(text).strip()
+
+        if len(reason) < min_chars:
+            await update.effective_message.reply_text(  # type: ignore[union-attr]
+                f"사유는 최소 {min_chars}자 이상 입력해주세요. 건너뛰려면 /skip"
+            )
+            return True
+
+        reason = reason[:max_chars]
+
+        updated = False
+        if self._feedback is not None:
+            updated = await self._feedback.update_reason(
+                chat_id=chat_id,
+                bot_message_id=pending["bot_message_id"],
+                reason=reason,
+            )
+
+        del self._pending_reason[chat_id]
+        if updated:
+            await update.effective_message.reply_text(  # type: ignore[union-attr]
+                "사유가 기록되었습니다. 감사합니다!"
+            )
+        else:
+            await update.effective_message.reply_text(  # type: ignore[union-attr]
+                "사유를 저장할 대상 피드백을 찾지 못했습니다."
+            )
+        return True
+
+    @_auth_required
+    async def _handle_reason_skip(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """사유 입력을 건너뛴다."""
+        chat_id = update.effective_chat.id  # type: ignore[union-attr]
+        if chat_id in self._pending_reason:
+            del self._pending_reason[chat_id]
+            await update.effective_message.reply_text("사유 입력을 건너뛰었습니다.")  # type: ignore[union-attr]
+        else:
+            await update.effective_message.reply_text("건너뛸 사유 요청이 없습니다.")  # type: ignore[union-attr]
+
+    @_auth_required
+    async def _handle_reason_or_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """사유 대기 상태이면 사유를 처리하고, 아니면 일반 메시지를 처리한다."""
+        chat_id = update.effective_chat.id  # type: ignore[union-attr]
+        text = update.effective_message.text  # type: ignore[union-attr]
+        if text is None:
+            return
+
+        if await self._handle_reason_input(chat_id, text, update):
+            return
+
+        # 사유 대기가 아니면 일반 메시지 처리로 위임
+        await self._handle_message_impl(update, context)
 
     # ── 에러 핸들러 ──
 

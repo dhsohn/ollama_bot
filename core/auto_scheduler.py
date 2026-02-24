@@ -167,6 +167,10 @@ class AutoScheduler:
         self._engine = engine
         self._telegram = telegram
 
+    def dependencies_ready(self) -> bool:
+        """런타임 의존성(engine/telegram) 주입 완료 여부."""
+        return self._engine is not None and self._telegram is not None
+
     def register_callable(self, name: str, func: Callable[..., Any]) -> None:
         """외부 callable을 이름으로 등록한다. YAML의 callable 액션에서 참조."""
         if not callable(func):
@@ -455,6 +459,11 @@ class AutoScheduler:
 
     def start(self) -> None:
         """스케줄러를 시작한다."""
+        if not self.dependencies_ready():
+            raise RuntimeError(
+                "AutoScheduler dependencies are not set. "
+                "Call set_dependencies(engine, telegram) before start()."
+            )
         if not self._scheduler.running:
             self._scheduler.start()
             self._logger.info("scheduler_started")

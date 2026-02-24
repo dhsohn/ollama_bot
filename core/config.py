@@ -54,10 +54,18 @@ class TelegramConfig(BaseModel):
 class SecurityConfig(BaseModel):
     allowed_users: list[int] = Field(default_factory=list)
     rate_limit: int = 30
+    max_concurrent_requests: int = 4
     max_file_size: int = 10_485_760
     blocked_paths: list[str] = Field(
         default_factory=lambda: ["/etc/*", "/proc/*", "/sys/*"]
     )
+
+    @field_validator("rate_limit", "max_concurrent_requests", "max_file_size")
+    @classmethod
+    def validate_positive(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("security numeric settings must be >= 1")
+        return value
 
 
 class MemoryConfig(BaseModel):
@@ -75,6 +83,15 @@ class FeedbackConfig(BaseModel):
     preview_cache_max_size: int = 500
     preview_cache_ttl_hours: int = 24
     retention_days: int = 90
+    collect_reason: bool = True
+    reason_min_chars: int = 3
+    reason_max_chars: int = 500
+    reason_timeout_seconds: int = 120
+    dicl_enabled: bool = True
+    dicl_max_examples: int = 2
+    dicl_max_keywords: int = 5
+    dicl_max_total_chars: int = 2000
+    dicl_recent_days: int = 180
 
     @field_validator(
         "min_feedback_for_analysis",
@@ -83,11 +100,38 @@ class FeedbackConfig(BaseModel):
         "preview_cache_max_size",
         "preview_cache_ttl_hours",
         "retention_days",
+        "reason_min_chars",
+        "reason_max_chars",
+        "reason_timeout_seconds",
+        "dicl_max_examples",
+        "dicl_max_keywords",
+        "dicl_max_total_chars",
+        "dicl_recent_days",
     )
     @classmethod
     def validate_positive_ints(cls, value: int) -> int:
         if value < 1:
             raise ValueError("feedback numeric settings must be >= 1")
+        return value
+
+
+class AutoEvaluationConfig(BaseModel):
+    enabled: bool = False
+    daily_limit: int = 50
+    min_response_length: int = 50
+    max_concurrency: int = 2
+    cooldown_seconds: int = 300
+
+    @field_validator(
+        "daily_limit",
+        "min_response_length",
+        "max_concurrency",
+        "cooldown_seconds",
+    )
+    @classmethod
+    def validate_positive_ints(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("auto_evaluation numeric settings must be >= 1")
         return value
 
 
@@ -132,6 +176,7 @@ class AppSettings(BaseSettings):
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
     feedback: FeedbackConfig = Field(default_factory=FeedbackConfig)
+    auto_evaluation: AutoEvaluationConfig = Field(default_factory=AutoEvaluationConfig)
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
@@ -170,6 +215,8 @@ def load_config(
         settings.scheduler = SchedulerConfig(**yaml_data["scheduler"])
     if "feedback" in yaml_data:
         settings.feedback = FeedbackConfig(**yaml_data["feedback"])
+    if "auto_evaluation" in yaml_data:
+        settings.auto_evaluation = AutoEvaluationConfig(**yaml_data["auto_evaluation"])
 
     # 명시적으로 지정된 env 값만 YAML보다 우선
     if "ollama_host" in explicit_env_fields and settings.ollama_host:
