@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 from core.automation_callables_impl.common import (
+    CONSOLIDATION_MERGE_SCHEMA as _CONSOLIDATION_MERGE_SCHEMA,
     DAILY_SUMMARY_SCHEMA as _DAILY_SUMMARY_SCHEMA,
     MEMORY_HYGIENE_SCHEMA as _MEMORY_HYGIENE_SCHEMA,
     PREFERENCES_SCHEMA as _PREFERENCES_SCHEMA,
     STALE_EVALUATION_SCHEMA as _STALE_EVALUATION_SCHEMA,
     TRIAGE_SCHEMA as _TRIAGE_SCHEMA,
+)
+from core.automation_callables_impl.memory_consolidation import (
+    build_memory_consolidation_callable,
 )
 from core.automation_callables_impl.memory_hygiene import (
     build_memory_hygiene_callable,
@@ -71,6 +75,15 @@ def register_builtin_callables(
         ),
     )
     scheduler.register_callable(
+        "memory_consolidation",
+        build_memory_consolidation_callable(
+            engine=engine,
+            memory=memory,
+            allowed_users=allowed_users,
+            logger=logger,
+        ),
+    )
+    scheduler.register_callable(
         "memory_hygiene",
         build_memory_hygiene_callable(
             engine=engine,
@@ -82,6 +95,7 @@ def register_builtin_callables(
 
 
 __all__ = [
+    "_CONSOLIDATION_MERGE_SCHEMA",
     "_DAILY_SUMMARY_SCHEMA",
     "_MEMORY_HYGIENE_SCHEMA",
     "_PREFERENCES_SCHEMA",

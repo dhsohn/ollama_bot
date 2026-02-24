@@ -1,0 +1,19 @@
+name: "memory_consolidation"
+description: "관련 메모리 항목을 LLM으로 통합하여 장기 메모리를 압축합니다"
+version: "1.0"
+enabled: true
+schedule: "0 4 * * sun"
+action:
+  type: "callable"
+  target: "memory_consolidation"
+  parameters:
+    min_entries_per_category: 5
+    max_llm_calls: 3
+    max_entries_per_merge: 8
+output:
+  send_to_telegram: true
+  save_to_file: "reports/memory_consolidation_{date}.md"
+retry:
+  max_attempts: 2
+  delay_seconds: 60
+timeout: 300

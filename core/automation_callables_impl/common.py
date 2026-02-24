@@ -103,6 +103,23 @@ STALE_EVALUATION_SCHEMA: dict = {
     },
 }
 
+CONSOLIDATION_MERGE_SCHEMA: dict = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {
+            "merge_keys": {
+                "type": "array",
+                "items": {"type": "string"},
+                "minItems": 2,
+            },
+            "new_key": {"type": "string"},
+            "new_value": {"type": "string"},
+        },
+        "required": ["merge_keys", "new_key", "new_value"],
+    },
+}
+
 SQLITE_TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 
