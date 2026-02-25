@@ -27,6 +27,10 @@ except ImportError:
     _HAS_ENCODER = False
     sentence_transformers_module = cast(Any, None)
 
+SentenceTransformer = (
+    sentence_transformers_module.SentenceTransformer if _HAS_ENCODER else cast(Any, None)
+)
+
 
 @dataclass
 class ContextStrategy:
@@ -94,7 +98,7 @@ class IntentRouter:
 
         if self._encoder is None:
             try:
-                self._encoder = sentence_transformers_module.SentenceTransformer(self._encoder_model)
+                self._encoder = SentenceTransformer(self._encoder_model)
                 self._logger.info("intent_router_encoder_loaded", model=self._encoder_model)
             except Exception as exc:
                 self._logger.warning("intent_router_encoder_failed", error=str(exc))

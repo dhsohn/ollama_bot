@@ -30,6 +30,10 @@ except ImportError:
     _HAS_ENCODER = False
     sentence_transformers_module = cast(Any, None)
 
+SentenceTransformer = (
+    sentence_transformers_module.SentenceTransformer if _HAS_ENCODER else cast(Any, None)
+)
+
 
 @dataclass(frozen=True)
 class CacheContext:
@@ -144,9 +148,7 @@ class SemanticCache:
             return
 
         try:
-            self._encoder = sentence_transformers_module.SentenceTransformer(
-                self._model_name, device=self._device
-            )
+            self._encoder = SentenceTransformer(self._model_name, device=self._device)
             self._enabled = True
             self._logger.info("semantic_cache_encoder_loaded", model=self._model_name)
         except Exception as exc:
