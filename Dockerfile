@@ -1,8 +1,13 @@
 # Stage 1: 의존성 빌드
 FROM python:3.11-slim AS builder
 WORKDIR /build
-COPY requirements.txt requirements.lock .
-RUN pip install --no-cache-dir --prefix=/install -r requirements.lock
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir \
+    --index-url https://download.pytorch.org/whl/cpu \
+    --extra-index-url https://pypi.org/simple \
+    "torch==2.4.1+cpu" \
+    && pip install --no-cache-dir -r requirements.txt
 
 # Stage 2: 런타임
 FROM python:3.11-slim
@@ -15,9 +20,10 @@ WORKDIR /app
 ENV HF_HOME=/app/data/hf_cache
 ENV SENTENCE_TRANSFORMERS_HOME=/app/data/hf_cache/sentence_transformers
 
-COPY --from=builder /install /usr/local
+COPY --from=builder /usr/local /usr/local
 
 COPY core/ core/
+COPY apps/ apps/
 COPY skills/ skills/
 COPY auto/ auto/
 COPY config/ config/

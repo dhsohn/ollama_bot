@@ -285,3 +285,53 @@ def test_partial_feedback_section_preserves_defaults(tmp_path: Path) -> None:
     # 누락 필드 기본값 유지 여부 검증
     assert settings.feedback.preview_cache_max_size == 500
     assert settings.feedback.preview_cache_ttl_hours == 24
+
+
+def test_llm_provider_and_lemonade_env_override(tmp_path: Path) -> None:
+    """provider/lemonade 관련 env override가 반영된다."""
+    config_path = tmp_path / "config.yaml"
+    env_path = tmp_path / ".env"
+    _write_minimal_yaml(config_path)
+    env_path.write_text(
+        "\n".join(
+            [
+                "TELEGRAM_BOT_TOKEN=test_token",
+                "ALLOWED_TELEGRAM_USERS=111",
+                "LLM_PROVIDER=lemonade",
+                "LEMONADE_HOST=http://localhost:8000",
+                "LEMONADE_MODEL=llama-3.1-8b",
+                "LEMONADE_API_KEY=secret",
+                "LEMONADE_BASE_PATH=/api/v1",
+                "LEMONADE_TIMEOUT_SECONDS=45",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    settings = load_config(config_path=str(config_path), env_file=str(env_path))
+    assert settings.llm_provider == "lemonade"
+    assert settings.lemonade.host == "http://localhost:8000"
+    assert settings.lemonade.model == "llama-3.1-8b"
+    assert settings.lemonade.api_key == "secret"
+    assert settings.lemonade.base_path == "/api/v1"
+    assert settings.lemonade.timeout_seconds == 45
+
+
+def test_invalid_llm_provider_raises(tmp_path: Path) -> None:
+    """지원하지 않는 provider는 설정 로드 시 실패한다."""
+    config_path = tmp_path / "config.yaml"
+    env_path = tmp_path / ".env"
+    _write_minimal_yaml(config_path)
+    env_path.write_text(
+        "\n".join(
+            [
+                "TELEGRAM_BOT_TOKEN=test_token",
+                "ALLOWED_TELEGRAM_USERS=111",
+                "LLM_PROVIDER=unsupported",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="llm_provider"):
+        load_config(config_path=str(config_path), env_file=str(env_path))

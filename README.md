@@ -2,6 +2,12 @@
 
 로컬 LLM(Ollama) 기반 24시간 자동화 텔레그램 봇
 
+현재 코드베이스는 **단일 ollama_bot 앱 + provider 선택형** 구조입니다.
+- `apps/ollama_bot`: 단일 앱 진입점
+- `core/`: shared core
+- `LLM_PROVIDER`: `ollama` 또는 `lemonade` 선택
+- `packages/hw_amd_npu`: AMD NPU 런타임 프로파일 모듈
+
 ---
 
 ## 주요 기능
@@ -37,14 +43,22 @@ pip install -r requirements-dev.txt
 cp .env.example .env
 ```
 
-`.env` 파일을 편집하여 필수 값을 입력합니다:
+`.env` 파일을 편집합니다:
 
 ```env
 TELEGRAM_BOT_TOKEN=your_bot_token_here
 ALLOWED_TELEGRAM_USERS=your_telegram_chat_id_here
-OLLAMA_HOST=http://localhost:11434  # Ollama 서버 주소
-OLLAMA_MODEL=gpt-oss:20b           # 사용할 모델
-SCHEDULER_TIMEZONE=Asia/Seoul      # 자동화 cron 기준 타임존
+LOG_LEVEL=INFO
+SCHEDULER_TIMEZONE=Asia/Seoul
+
+LLM_PROVIDER=ollama            # ollama | lemonade
+OLLAMA_HOST=http://localhost:11434
+OLLAMA_MODEL=gpt-oss:20b
+
+LEMONADE_HOST=http://localhost:8000
+LEMONADE_MODEL=
+LEMONADE_API_KEY=
+AMD_NPU_PROFILE=balanced
 ```
 
 > `ALLOWED_TELEGRAM_USERS`를 placeholder 그대로 두거나 형식이 잘못되면 봇은 시작되지 않습니다(fail-fast).
@@ -58,18 +72,20 @@ ollama pull gpt-oss:20b
 ollama serve
 ```
 
-### 4. 실행
+### 4. 앱 실행
 
 ```bash
-docker compose up --build -d
+docker compose -f docker-compose.yml up --build -d
 ```
 
+> 실행 provider는 `.env`의 `LLM_PROVIDER` 값(`ollama`/`lemonade`)을 사용합니다.
 > 보안/운영 정책상 컨테이너 외부에서 `python main.py` 실행은 차단됩니다.
+> `main.py`는 레거시 호환 엔트리포인트이며 내부적으로 `apps/ollama_bot/main.py`를 호출합니다.
 
 ### 5. WSL 부팅 시 자동 실행 (선택)
 
 `scripts/up.sh`는 WSL 환경에서 Windows 게이트웨이 IP를 읽어 `.env`의 `OLLAMA_HOST`를 자동 갱신한 뒤
-`docker compose up -d`를 실행합니다.
+`docker compose -f docker-compose.yml up -d`를 실행합니다.
 
 ```bash
 sudo bash scripts/install_boot_service.sh
@@ -222,11 +238,16 @@ bash scripts/soak_monitor.sh --minutes 360 --max-restarts 0 --max-error-lines 0
 
 ```
 ollama_bot/
-├── main.py                  # 진입점
+├── main.py                  # 레거시 호환 진입점 (ollama_bot 위임)
+├── .env.example
+├── apps/
+│   ├── ollama_bot/
+│   │   └── main.py          # 단일 앱 진입점
 ├── config/config.yaml       # 전역 설정
-├── core/                    # 핵심 엔진
+├── core/                    # shared core
 │   ├── engine.py            # 대화 오케스트레이션
 │   ├── ollama_client.py     # Ollama API 클라이언트
+│   ├── lemonade_client.py   # Lemonade(OpenAI-compatible) 클라이언트
 │   ├── telegram_handler.py  # 텔레그램 봇 핸들러
 │   ├── skill_manager.py     # 스킬 로더/실행기
 │   ├── auto_scheduler.py    # 자동화 스케줄러
@@ -239,6 +260,8 @@ ollama_bot/
 ├── auto/                    # 자동화 디렉토리
 │   ├── _builtin/            # 내장 자동화 (YAML)
 │   └── custom/              # 사용자 커스텀 자동화
+├── packages/
+│   └── hw_amd_npu/          # AMD NPU 런타임 프로파일
 ├── data/                    # 런타임 데이터
 │   ├── conversations/       # 대화 내보내기
 │   ├── memory/              # SQLite DB
@@ -258,15 +281,17 @@ ollama_bot/
 
 ```yaml
 bot:
-  max_conversation_length: 50    # 대화 컨텍스트 최대 메시지 수
+  max_conversation_length: 30    # 대화 컨텍스트 최대 메시지 수
   response_timeout: 60           # LLM 응답 타임아웃 (초)
 
 ollama:
   temperature: 0.7
-  max_tokens: 2048
+  max_tokens: 768
+  num_ctx: 4096
 
 security:
   rate_limit: 30                 # 분당 최대 요청 수
+  max_concurrent_requests: 2     # CPU 환경 권장값
 
 scheduler:
   timezone: "Asia/Seoul"         # 자동화 cron 실행 기준 타임존
@@ -278,8 +303,13 @@ scheduler:
 |------|------|------|
 | `TELEGRAM_BOT_TOKEN` | 텔레그램 봇 토큰 | O |
 | `ALLOWED_TELEGRAM_USERS` | 허용 사용자 ID (쉼표 구분) | O |
+| `LLM_PROVIDER` | LLM 백엔드 (`ollama`/`lemonade`) | X |
 | `OLLAMA_HOST` | Ollama 서버 주소 | X |
 | `OLLAMA_MODEL` | 기본 모델 | X |
+| `LEMONADE_HOST` | Lemonade 서버 주소(OpenAI-compatible) | X |
+| `LEMONADE_MODEL` | Lemonade 모델(비우면 `OLLAMA_MODEL` 사용) | X |
+| `LEMONADE_API_KEY` | Lemonade API 키(필요 시) | X |
+| `AMD_NPU_PROFILE` | NPU 프로파일 (`balanced`/`throughput`/`latency`) | X |
 | `SCHEDULER_TIMEZONE` | 자동화 스케줄 타임존 (IANA, 예: `Asia/Seoul`) | X |
 | `LOG_LEVEL` | 로그 레벨 (DEBUG/INFO/WARNING) | X |
 

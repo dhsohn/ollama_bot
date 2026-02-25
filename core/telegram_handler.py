@@ -574,9 +574,11 @@ class TelegramHandler:
 
         try:
             # 인텐트 기반 placeholder
-            intent = self._engine.classify_intent(text)
-            if inspect.isawaitable(intent):
-                intent = await intent
+            raw_intent = self._engine.classify_intent(text)
+            if inspect.isawaitable(raw_intent):
+                intent = await raw_intent
+            else:
+                intent = raw_intent
             placeholder = _INTENT_PLACEHOLDERS.get(intent, _INTENT_PLACEHOLDERS[None])
             sent_message = await update.effective_message.reply_text(placeholder)  # type: ignore[union-attr]
 

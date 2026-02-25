@@ -6,7 +6,7 @@ PROJECT_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 ENV_FILE="${PROJECT_ROOT}/.env"
 
 if [[ ! -f "${ENV_FILE}" ]]; then
-  echo "[up.sh] ERROR: ${ENV_FILE} 파일이 없습니다. 먼저 .env를 생성하세요."
+  echo "[up.sh] ERROR: ${ENV_FILE} 파일이 없습니다. 먼저 scripts/setup.sh를 실행하세요."
   exit 1
 fi
 
@@ -40,9 +40,9 @@ mkdir -p \
 cd "${PROJECT_ROOT}"
 
 if [[ "${1:-}" == "--build" ]]; then
-  echo "[up.sh] docker compose up -d --build"
-  docker compose up -d --build
+  echo "[up.sh] docker compose -f docker-compose.yml up -d --build"
+  docker compose -f docker-compose.yml up -d --build
 else
-  echo "[up.sh] docker compose up -d"
-  docker compose up -d
+  echo "[up.sh] docker compose -f docker-compose.yml up -d"
+  docker compose -f docker-compose.yml up -d
 fi

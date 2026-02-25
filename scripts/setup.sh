@@ -10,7 +10,7 @@ command -v docker >/dev/null 2>&1 || { echo "오류: Docker가 필요합니다."
 # .env 생성
 if [ ! -f .env ]; then
     cp .env.example .env
-    echo ".env 파일이 생성되었습니다. 텔레그램 봇 토큰 등을 설정하세요."
+    echo ".env 파일이 생성되었습니다."
 else
     echo ".env 파일이 이미 존재합니다."
 fi
@@ -32,7 +32,7 @@ fi
 
 echo ""
 echo "=== 설정 완료 ==="
-echo "1. .env 파일을 편집하여 TELEGRAM_BOT_TOKEN을 설정하세요."
+echo "1. .env 파일을 환경에 맞게 편집하세요."
 echo "2. Ollama를 실행하세요: ollama serve"
-echo "3. 봇을 실행하세요: docker compose up -d"
+echo "3. 봇 실행: docker compose -f docker-compose.yml up -d"
 echo "4. (선택) 부팅 자동 실행: sudo bash scripts/install_boot_service.sh"

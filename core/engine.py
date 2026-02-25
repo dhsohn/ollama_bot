@@ -119,7 +119,7 @@ class Engine:
         self._semantic_cache = semantic_cache
         self._intent_router = intent_router
         self._context_compressor = context_compressor
-        self._system_prompt = config.ollama.system_prompt
+        self._system_prompt = getattr(ollama, "system_prompt", config.ollama.system_prompt)
         self._max_conversation_length = config.bot.max_conversation_length
         self._start_time = time.monotonic()
         self._logger = get_logger("engine")
