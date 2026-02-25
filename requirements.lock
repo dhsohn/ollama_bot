@@ -12,7 +12,7 @@ anyio==4.5.2
     # via httpx
 apscheduler==3.11.2
     # via -r requirements.txt
-backports-zoneinfo==0.2.1
+backports-zoneinfo==0.2.1 ; python_version < "3.9"
     # via
     #   apscheduler
     #   tzlocal
