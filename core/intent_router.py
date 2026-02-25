@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import yaml
 
@@ -21,8 +21,8 @@ try:
     _HAS_ENCODER = True
 except ImportError:
     _HAS_ENCODER = False
-    np = None
-    SentenceTransformer = None
+    np = cast(Any, None)
+    SentenceTransformer = cast(Any, None)
 
 
 @dataclass

@@ -10,7 +10,7 @@ import asyncio
 import json
 import re
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from core.logging_setup import get_logger
 
@@ -24,8 +24,8 @@ try:
     _HAS_ENCODER = True
 except ImportError:
     _HAS_ENCODER = False
-    np = None
-    SentenceTransformer = None
+    np = cast(Any, None)
+    SentenceTransformer = cast(Any, None)
 
 
 @dataclass(frozen=True)
