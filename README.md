@@ -114,7 +114,7 @@ schtasks /Create /TN "WSL AutoStart" /SC ONLOGON /RU "$env:USERDOMAIN\$env:USERN
 | `/start` | 봇 시작 |
 | `/help` | 도움말 표시 |
 | `/skills` | 스킬 목록/리로드 (`/skills`, `/skills reload`) |
-| `/auto` | 자동화 관리 (`/auto list`, `/auto enable <이름>`, `/auto disable <이름>`, `/auto reload`) |
+| `/auto` | 자동화 관리 (`/auto list`, `/auto disable <이름>`, `/auto reload`) |
 | `/model` | 모델 확인/변경 (`/model list`, `/model <모델명>`) |
 | `/memory` | 메모리 관리 (`/memory clear`, `/memory export`) |
 | `/feedback` | 피드백 통계 확인 (설정 `feedback.enabled: true`일 때 노출) |

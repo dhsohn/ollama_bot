@@ -506,17 +506,6 @@ class AutoScheduler:
             message += f"; ... and {len(errors) - max_items} more"
         return message
 
-    async def enable_automation(self, name: str) -> bool:
-        """자동화를 활성화하고 작업을 등록한다."""
-        auto = self._automations.get(name)
-        if not auto:
-            return False
-
-        auto.enabled = True
-        self._register_job(auto)
-        self._logger.info("automation_enabled", name=name)
-        return True
-
     async def disable_automation(self, name: str) -> bool:
         """자동화를 비활성화하고 작업을 제거한다."""
         auto = self._automations.get(name)

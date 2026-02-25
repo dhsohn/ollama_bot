@@ -306,12 +306,8 @@ class TelegramHandler:
             await self._handle_auto_list(update)
             return
 
-        if len(args) >= 2 and args[0] == "enable":
-            await self._handle_auto_toggle(update, name=args[1], enable=True)
-            return
-
         if len(args) >= 2 and args[0] == "disable":
-            await self._handle_auto_toggle(update, name=args[1], enable=False)
+            await self._handle_auto_disable(update, name=args[1])
             return
 
         if args[0] == "reload":
@@ -319,7 +315,7 @@ class TelegramHandler:
             return
 
         await update.effective_message.reply_text(
-            "사용법: /auto [list|enable <이름>|disable <이름>|reload]"
+            "사용법: /auto [list|disable <이름>|reload]"
         )
 
     async def _handle_auto_list(self, update: Update) -> None:
@@ -343,16 +339,12 @@ class TelegramHandler:
             "\n".join(lines), parse_mode=ParseMode.HTML
         )
 
-    async def _handle_auto_toggle(self, update: Update, name: str, *, enable: bool) -> None:
+    async def _handle_auto_disable(self, update: Update, name: str) -> None:
         if self._scheduler is None:
             await update.effective_message.reply_text("자동화 스케줄러가 초기화되지 않았습니다.")  # type: ignore[union-attr]
             return
-        if enable:
-            result = await self._scheduler.enable_automation(name)
-            message = f"'{name}' 자동화가 활성화되었습니다." if result else f"'{name}' 자동화를 찾을 수 없습니다."
-        else:
-            result = await self._scheduler.disable_automation(name)
-            message = f"'{name}' 자동화가 비활성화되었습니다." if result else f"'{name}' 자동화를 찾을 수 없습니다."
+        result = await self._scheduler.disable_automation(name)
+        message = f"'{name}' 자동화가 비활성화되었습니다." if result else f"'{name}' 자동화를 찾을 수 없습니다."
         await update.effective_message.reply_text(message)
 
     async def _handle_auto_reload(self, update: Update) -> None:

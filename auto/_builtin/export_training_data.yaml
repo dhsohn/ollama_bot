@@ -1,7 +1,7 @@
 name: "export_training_data"
 description: "피드백 데이터를 KTO 파인튜닝 형식으로 내보냅니다"
 version: "1.0"
-enabled: false
+enabled: true
 schedule: "0 3 * * 0"
 action:
   type: "callable"
