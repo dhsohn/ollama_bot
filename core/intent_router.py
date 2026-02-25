@@ -16,13 +16,16 @@ from core.logging_setup import get_logger
 
 try:
     import numpy as np
-    from sentence_transformers import SentenceTransformer
+except ImportError:
+    np = cast(Any, None)
+
+try:
+    import sentence_transformers as sentence_transformers_module
 
     _HAS_ENCODER = True
 except ImportError:
     _HAS_ENCODER = False
-    np = cast(Any, None)
-    SentenceTransformer = cast(Any, None)
+    sentence_transformers_module = cast(Any, None)
 
 
 @dataclass
@@ -91,7 +94,7 @@ class IntentRouter:
 
         if self._encoder is None:
             try:
-                self._encoder = SentenceTransformer(self._encoder_model)
+                self._encoder = sentence_transformers_module.SentenceTransformer(self._encoder_model)
                 self._logger.info("intent_router_encoder_loaded", model=self._encoder_model)
             except Exception as exc:
                 self._logger.warning("intent_router_encoder_failed", error=str(exc))

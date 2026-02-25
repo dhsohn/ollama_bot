@@ -19,13 +19,16 @@ if TYPE_CHECKING:
 
 try:
     import numpy as np
-    from sentence_transformers import SentenceTransformer
+except ImportError:
+    np = cast(Any, None)
+
+try:
+    import sentence_transformers as sentence_transformers_module
 
     _HAS_ENCODER = True
 except ImportError:
     _HAS_ENCODER = False
-    np = cast(Any, None)
-    SentenceTransformer = cast(Any, None)
+    sentence_transformers_module = cast(Any, None)
 
 
 @dataclass(frozen=True)
@@ -141,7 +144,9 @@ class SemanticCache:
             return
 
         try:
-            self._encoder = SentenceTransformer(self._model_name, device=self._device)
+            self._encoder = sentence_transformers_module.SentenceTransformer(
+                self._model_name, device=self._device
+            )
             self._enabled = True
             self._logger.info("semantic_cache_encoder_loaded", model=self._model_name)
         except Exception as exc:
