@@ -62,6 +62,17 @@ class TestInputSanitization:
         result = security_manager.sanitize_input(long_input)
         assert len(result) == 10_000
 
+    def test_length_limit_uses_configured_max_input_length(self) -> None:
+        manager = SecurityManager(
+            SecurityConfig(
+                allowed_users=[111],
+                max_input_length=128,
+            )
+        )
+        long_input = "a" * 1_000
+        result = manager.sanitize_input(long_input)
+        assert len(result) == 128
+
     def test_normal_input_unchanged(self, security_manager: SecurityManager) -> None:
         text = "안녕하세요! Hello, World! 🎉"
         result = security_manager.sanitize_input(text)

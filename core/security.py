@@ -52,6 +52,7 @@ class SecurityManager:
         self._allowed_users: set[int] = set(config.allowed_users)
         self._rate_limit: int = config.rate_limit
         self._max_concurrent_requests: int = config.max_concurrent_requests
+        self._max_input_length: int = config.max_input_length
         self._max_file_size: int = config.max_file_size
         self._blocked_paths: list[str] = config.blocked_paths
         self._request_log: dict[int, deque[float]] = defaultdict(deque)
@@ -140,7 +141,7 @@ class SecurityManager:
 
         - Null 바이트 제거
         - ANSI 이스케이프 제거
-        - 길이 제한 (10,000자)
+        - 길이 제한 (security.max_input_length)
         - Unicode NFC 정규화
         """
         # Null 바이트 제거
@@ -153,9 +154,9 @@ class SecurityManager:
         text = unicodedata.normalize("NFC", text)
 
         # 길이 제한
-        if len(text) > 10_000:
+        if len(text) > self._max_input_length:
             self._logger.warning("input_truncated", original_length=len(text))
-            text = text[:10_000]
+            text = text[:self._max_input_length]
 
         return text
 

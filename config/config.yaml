@@ -10,6 +10,8 @@ ollama:
   model: "gpt-oss:20b"
   temperature: 0.7
   max_tokens: 2048
+  num_ctx: 8192
+  prompt_version: "v1"
   system_prompt: |
     당신은 유용한 AI 어시스턴트입니다.
     한국어로 답변하며, 간결하고 정확한 정보를 제공합니다.
@@ -22,6 +24,7 @@ security:
   allowed_users: []
   rate_limit: 30
   max_concurrent_requests: 4
+  max_input_length: 10000
   max_file_size: 10485760
   blocked_paths:
     - "/etc/*"
@@ -61,3 +64,34 @@ auto_evaluation:
   min_response_length: 50
   max_concurrency: 2
   cooldown_seconds: 300
+
+instant_responder:
+  enabled: true
+  rules_path: "config/instant_rules.yaml"
+
+semantic_cache:
+  enabled: true
+  model_name: "intfloat/multilingual-e5-small"
+  embedding_device: "cpu"
+  similarity_threshold: 0.92
+  min_query_chars: 4
+  exclude_patterns:
+    - "(지금|현재)\\s*몇\\s*시"
+    - "오늘\\s*(날짜|며칠|요일)"
+  max_entries: 5000
+  ttl_hours: 168
+  invalidate_on_negative_feedback: true
+
+intent_router:
+  enabled: true
+  routes_path: "config/intent_routes.yaml"
+  min_confidence: 0.75
+  encoder_model: "intfloat/multilingual-e5-small"
+
+context_compressor:
+  enabled: true
+  recent_keep: 10
+  summary_refresh_interval: 10
+  summary_max_tokens: 200
+  background_summarize: true
+  summarize_concurrency: 1

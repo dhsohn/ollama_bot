@@ -40,6 +40,8 @@ class OllamaConfig(BaseModel):
     model: str = "gpt-oss:20b"
     temperature: float = 0.7
     max_tokens: int = 2048
+    num_ctx: int = 8192
+    prompt_version: str = "v1"
     system_prompt: str = (
         "당신은 유용한 AI 어시스턴트입니다.\n"
         "한국어로 답변하며, 간결하고 정확한 정보를 제공합니다.\n"
@@ -55,12 +57,15 @@ class SecurityConfig(BaseModel):
     allowed_users: list[int] = Field(default_factory=list)
     rate_limit: int = 30
     max_concurrent_requests: int = 4
+    max_input_length: int = 10_000
     max_file_size: int = 10_485_760
     blocked_paths: list[str] = Field(
         default_factory=lambda: ["/etc/*", "/proc/*", "/sys/*"]
     )
 
-    @field_validator("rate_limit", "max_concurrent_requests", "max_file_size")
+    @field_validator(
+        "rate_limit", "max_concurrent_requests", "max_input_length", "max_file_size"
+    )
     @classmethod
     def validate_positive(cls, value: int) -> int:
         if value < 1:
@@ -158,6 +163,44 @@ class SchedulerConfig(BaseModel):
         return value
 
 
+class InstantResponderConfig(BaseModel):
+    enabled: bool = True
+    rules_path: str = "config/instant_rules.yaml"
+
+
+class SemanticCacheConfig(BaseModel):
+    enabled: bool = True
+    model_name: str = "intfloat/multilingual-e5-small"
+    embedding_device: str = "cpu"
+    similarity_threshold: float = 0.92
+    min_query_chars: int = 4
+    exclude_patterns: list[str] = Field(default_factory=lambda: [
+        r"(지금|현재)\s*몇\s*시",
+        r"오늘\s*(날짜|며칠|요일)",
+    ])
+    max_entries: int = 5000
+    ttl_hours: int = 168
+    invalidate_on_negative_feedback: bool = True
+
+
+class IntentRouterConfig(BaseModel):
+    enabled: bool = True
+    routes_path: str = "config/intent_routes.yaml"
+    min_confidence: float = 0.75
+    encoder_model: str = "intfloat/multilingual-e5-small"
+
+
+class ContextCompressorConfig(BaseModel):
+    enabled: bool = True
+    recent_keep: int = 10
+    summary_refresh_interval: int = 10
+    summary_max_tokens: int = 200
+    background_summarize: bool = True
+    archive_enabled: bool = True
+    summarize_concurrency: int = 1
+    run_only_when_idle: bool = True
+
+
 class AppSettings(BaseSettings):
     """루트 설정. .env에서 시크릿을, config.yaml에서 나머지를 로드한다."""
 
@@ -177,6 +220,10 @@ class AppSettings(BaseSettings):
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
     feedback: FeedbackConfig = Field(default_factory=FeedbackConfig)
     auto_evaluation: AutoEvaluationConfig = Field(default_factory=AutoEvaluationConfig)
+    instant_responder: InstantResponderConfig = Field(default_factory=InstantResponderConfig)
+    semantic_cache: SemanticCacheConfig = Field(default_factory=SemanticCacheConfig)
+    intent_router: IntentRouterConfig = Field(default_factory=IntentRouterConfig)
+    context_compressor: ContextCompressorConfig = Field(default_factory=ContextCompressorConfig)
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
@@ -217,6 +264,14 @@ def load_config(
         settings.feedback = FeedbackConfig(**yaml_data["feedback"])
     if "auto_evaluation" in yaml_data:
         settings.auto_evaluation = AutoEvaluationConfig(**yaml_data["auto_evaluation"])
+    if "instant_responder" in yaml_data:
+        settings.instant_responder = InstantResponderConfig(**yaml_data["instant_responder"])
+    if "semantic_cache" in yaml_data:
+        settings.semantic_cache = SemanticCacheConfig(**yaml_data["semantic_cache"])
+    if "intent_router" in yaml_data:
+        settings.intent_router = IntentRouterConfig(**yaml_data["intent_router"])
+    if "context_compressor" in yaml_data:
+        settings.context_compressor = ContextCompressorConfig(**yaml_data["context_compressor"])
 
     # 명시적으로 지정된 env 값만 YAML보다 우선
     if "ollama_host" in explicit_env_fields and settings.ollama_host:

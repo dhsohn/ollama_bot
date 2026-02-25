@@ -1,0 +1,57 @@
+# 인텐트 라우팅 규칙 정의
+# 각 라우트는 예시 발화(utterances)와 컨텍스트 전략을 정의한다.
+
+min_confidence: 0.75
+
+routes:
+  # ── 잡담/캐주얼 ──
+  - name: "chitchat"
+    utterances:
+      - "심심해"
+      - "뭐하고 있어?"
+      - "오늘 기분이 어때?"
+      - "재미있는 얘기 해줘"
+      - "농담 하나 해봐"
+    strategy:
+      max_history: 3
+      include_dicl: false
+      include_preferences: false
+      max_tokens: 512
+
+  # ── 단순 질의응답 ──
+  - name: "simple_qa"
+    utterances:
+      - "파이썬이 뭐야?"
+      - "HTTP 상태 코드 설명해줘"
+      - "리스트와 튜플의 차이"
+      - "도커가 뭐야?"
+    strategy:
+      max_history: 5
+      include_dicl: false
+      max_tokens: 1024
+
+  # ── 코드 관련 ──
+  - name: "code"
+    utterances:
+      - "코드 짜줘"
+      - "이 함수 고쳐줘"
+      - "파이썬으로 구현해줘"
+      - "디버깅 도와줘"
+      - "에러가 나는데"
+    strategy:
+      max_history: 15
+      include_dicl: true
+      system_prompt_suffix: |
+        코드 응답 시 간결한 코드와 핵심 설명만 제공하세요.
+
+  # ── 복잡한 분석/토론 ──
+  - name: "complex"
+    utterances:
+      - "이 아키텍처를 분석해줘"
+      - "장단점을 비교해줘"
+      - "전략을 세워줘"
+      - "심층 분석해줘"
+    strategy:
+      max_history: 50
+      include_dicl: true
+      include_preferences: true

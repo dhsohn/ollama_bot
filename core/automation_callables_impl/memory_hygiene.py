@@ -88,7 +88,7 @@ def build_memory_hygiene_callable(
                 try:
                     raw = await engine.process_prompt(
                         prompt=prompt,
-                        format=MEMORY_HYGIENE_SCHEMA,
+                        response_format=MEMORY_HYGIENE_SCHEMA,
                         max_tokens=512,
                         temperature=0.2,
                     )
@@ -167,7 +167,7 @@ def build_memory_hygiene_callable(
                 try:
                     raw = await engine.process_prompt(
                         prompt=prompt,
-                        format=STALE_EVALUATION_SCHEMA,
+                        response_format=STALE_EVALUATION_SCHEMA,
                         max_tokens=512,
                         temperature=0.2,
                     )

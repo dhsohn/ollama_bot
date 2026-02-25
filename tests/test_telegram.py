@@ -36,6 +36,8 @@ def mock_engine() -> AsyncMock:
     engine = AsyncMock()
     engine.process_message = AsyncMock(return_value="Bot response")
     engine.process_message_stream = AsyncMock()
+    engine.classify_intent = MagicMock(return_value=None)
+    engine.consume_last_stream_meta = MagicMock(return_value=None)
     engine.get_status = AsyncMock(return_value={
         "uptime_seconds": 100,
         "uptime_human": "1분 40초",
@@ -529,6 +531,51 @@ class TestFeedbackButtons:
         sent_message.edit_reply_markup.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_cache_feedback_link_saved_when_stream_meta_has_cache_id(
+        self,
+        app_config: AppSettings,
+        mock_engine: AsyncMock,
+        security: SecurityManager,
+        mock_feedback: AsyncMock,
+    ) -> None:
+        semantic_cache = AsyncMock()
+        handler = TelegramHandler(
+            config=app_config,
+            engine=mock_engine,
+            security=security,
+            feedback=mock_feedback,
+            semantic_cache=semantic_cache,
+        )
+
+        async def _stream():
+            yield "response"
+
+        handler._engine.process_message_stream = MagicMock(return_value=_stream())
+        handler._engine.consume_last_stream_meta = MagicMock(return_value={"cache_id": 77})
+
+        chat = MagicMock()
+        chat.id = 111
+        chat.type = "private"
+        chat.send_action = AsyncMock()
+
+        sent_message = MagicMock()
+        sent_message.edit_text = AsyncMock()
+        sent_message.message_id = 42
+        sent_message.edit_reply_markup = AsyncMock()
+
+        message = MagicMock()
+        message.text = "hello"
+        message.reply_text = AsyncMock(return_value=sent_message)
+
+        update = MagicMock()
+        update.effective_chat = chat
+        update.effective_message = message
+
+        await handler._handle_message(update, MagicMock())
+
+        semantic_cache.link_feedback_target.assert_awaited_once_with(111, 42, 77)
+
+    @pytest.mark.asyncio
     async def test_callback_new_feedback(self, feedback_handler: TelegramHandler, mock_feedback) -> None:
         """콜백으로 새 피드백이 저장된다."""
         # 프리뷰 캐시에 항목 추가
@@ -728,6 +775,41 @@ class TestFeedbackButtons:
         call_text = message.reply_text.await_args[0][0]
         assert "피드백" in call_text
         assert "20건" in call_text
+
+    @pytest.mark.asyncio
+    async def test_status_includes_degraded_components(self, feedback_handler: TelegramHandler) -> None:
+        """degraded 컴포넌트가 있으면 /status에 노출된다."""
+        feedback_handler._engine.get_status = AsyncMock(return_value={
+            "uptime_seconds": 100,
+            "uptime_human": "1분 40초",
+            "ollama": {"status": "ok"},
+            "skills_loaded": 3,
+            "current_model": "test-model",
+            "degraded_components": {
+                "semantic_cache": {
+                    "reason": "encoder_unavailable",
+                    "degraded_for_seconds": 45,
+                }
+            },
+        })
+
+        chat = MagicMock()
+        chat.id = 111
+        chat.type = "private"
+
+        message = MagicMock()
+        message.reply_text = AsyncMock()
+
+        update = MagicMock()
+        update.effective_chat = chat
+        update.effective_message = message
+
+        await feedback_handler._cmd_status(update, MagicMock())
+
+        call_text = message.reply_text.await_args[0][0]
+        assert "degraded 상태" in call_text
+        assert "semantic_cache" in call_text
+        assert "encoder_unavailable" in call_text
 
     @pytest.mark.asyncio
     async def test_reason_or_message_path_does_not_double_rate_limit(

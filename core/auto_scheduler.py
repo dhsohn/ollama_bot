@@ -102,7 +102,7 @@ class EngineInterface(Protocol):
         self,
         prompt: str,
         chat_id: int | None = None,
-        format: str | dict | None = None,
+        response_format: str | dict | None = None,
         max_tokens: int | None = None,
         temperature: float | None = None,
     ) -> str: ...

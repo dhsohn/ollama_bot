@@ -77,7 +77,7 @@ def build_daily_summary_callable(
             raw = await engine.process_prompt(
                 prompt=prompt,
                 chat_id=user_id,
-                format=DAILY_SUMMARY_SCHEMA,
+                response_format=DAILY_SUMMARY_SCHEMA,
                 max_tokens=512,
                 temperature=0.5,
             )
@@ -215,7 +215,7 @@ def build_extract_preferences_callable(
             response = await engine.process_prompt(
                 prompt=prompt,
                 chat_id=user_id,
-                format=PREFERENCES_SCHEMA,
+                response_format=PREFERENCES_SCHEMA,
                 max_tokens=512,
                 temperature=0.3,
             )

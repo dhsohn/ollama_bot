@@ -78,7 +78,7 @@ def build_memory_consolidation_callable(
                 try:
                     raw = await engine.process_prompt(
                         prompt=prompt,
-                        format=CONSOLIDATION_MERGE_SCHEMA,
+                        response_format=CONSOLIDATION_MERGE_SCHEMA,
                         max_tokens=768,
                         temperature=0.2,
                     )

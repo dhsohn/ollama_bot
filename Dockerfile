@@ -11,6 +11,10 @@ RUN groupadd -r botuser && useradd -r -g botuser -d /app botuser
 
 WORKDIR /app
 
+# HuggingFace 모델 캐시 디렉터리
+ENV HF_HOME=/app/data/hf_cache
+ENV SENTENCE_TRANSFORMERS_HOME=/app/data/hf_cache/sentence_transformers
+
 COPY --from=builder /install /usr/local
 
 COPY core/ core/
@@ -21,6 +25,7 @@ COPY scripts/ scripts/
 COPY main.py .
 
 RUN mkdir -p /app/data/conversations /app/data/memory /app/data/logs /app/data/reports \
+    /app/data/hf_cache/sentence_transformers \
     && chmod +x /app/scripts/*.sh \
     && chown -R botuser:botuser /app/data
 

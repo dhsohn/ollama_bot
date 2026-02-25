@@ -7,16 +7,8 @@ from __future__ import annotations
 
 import asyncio
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
 from typing import TYPE_CHECKING
-
-try:
-    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-except ImportError:
-    ZoneInfo = None
-
-    class ZoneInfoNotFoundError(Exception):
-        """zoneinfo 미지원 환경 대체 예외."""
 
 from core.config import AutoEvaluationConfig
 from core.logging_setup import get_logger
@@ -159,15 +151,16 @@ class AutoEvaluator:
             )
 
             try:
-                raw = await self._ollama.chat(
+                chat_response = await self._ollama.chat(
                     messages=[
                         {"role": "system", "content": "응답 품질 평가 전문가입니다."},
                         {"role": "user", "content": prompt},
                     ],
-                    format={"type": "object", "properties": {"score": {"type": "integer"}, "explanation": {"type": "string"}}, "required": ["score", "explanation"]},
+                    response_format={"type": "object", "properties": {"score": {"type": "integer"}, "explanation": {"type": "string"}}, "required": ["score", "explanation"]},
                     temperature=0.1,
                     timeout=30,
                 )
+                raw = chat_response.content
             except Exception as exc:
                 self._consecutive_failures += 1
                 if self._consecutive_failures >= 3:
@@ -204,11 +197,19 @@ class AutoEvaluator:
 
     def _utc_bounds_for_today(self) -> tuple[str, str]:
         """설정 timezone 기준 오늘의 UTC 경계를 반환한다."""
-        tz = timezone.utc
-        if ZoneInfo is not None:
+        tz: tzinfo = timezone.utc
+        zoneinfo_cls: type[tzinfo] | None = None
+        try:
+            from zoneinfo import ZoneInfo
+
+            zoneinfo_cls = ZoneInfo
+        except ImportError:
+            zoneinfo_cls = None
+
+        if zoneinfo_cls is not None:
             try:
-                tz = ZoneInfo(self._timezone_name)
-            except ZoneInfoNotFoundError:
+                tz = zoneinfo_cls(self._timezone_name)
+            except Exception:
                 self._logger.warning(
                     "auto_eval_timezone_fallback_utc",
                     timezone=self._timezone_name,

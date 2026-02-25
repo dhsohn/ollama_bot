@@ -237,3 +237,51 @@ def test_feedback_invalid_numeric_value_raises(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="feedback numeric settings must be >= 1"):
         load_config(config_path=str(config_path), env_file=str(env_path))
+
+
+def test_partial_ollama_section_preserves_defaults(tmp_path: Path) -> None:
+    """ollama 섹션 일부만 지정해도 누락 필드는 기본값을 유지한다."""
+    config_path = tmp_path / "config.yaml"
+    env_path = tmp_path / ".env"
+    config_path.write_text(
+        "\n".join([
+            "ollama:",
+            "  model: \"custom-model\"",
+        ]),
+        encoding="utf-8",
+    )
+    env_path.write_text(
+        "TELEGRAM_BOT_TOKEN=test_token\nALLOWED_TELEGRAM_USERS=111",
+        encoding="utf-8",
+    )
+
+    settings = load_config(config_path=str(config_path), env_file=str(env_path))
+    assert settings.ollama.model == "custom-model"
+    assert settings.ollama.host == "http://host.docker.internal:11434"
+    assert settings.ollama.temperature == 0.7
+    assert settings.ollama.max_tokens == 2048
+
+
+def test_partial_feedback_section_preserves_defaults(tmp_path: Path) -> None:
+    """feedback 섹션 일부 오버라이드 시 나머지 기본값이 유지된다."""
+    config_path = tmp_path / "config.yaml"
+    env_path = tmp_path / ".env"
+    config_path.write_text(
+        "\n".join([
+            "feedback:",
+            "  retention_days: 14",
+            "  collect_reason: false",
+        ]),
+        encoding="utf-8",
+    )
+    env_path.write_text(
+        "TELEGRAM_BOT_TOKEN=test_token\nALLOWED_TELEGRAM_USERS=111",
+        encoding="utf-8",
+    )
+
+    settings = load_config(config_path=str(config_path), env_file=str(env_path))
+    assert settings.feedback.retention_days == 14
+    assert settings.feedback.collect_reason is False
+    # 누락 필드 기본값 유지 여부 검증
+    assert settings.feedback.preview_cache_max_size == 500
+    assert settings.feedback.preview_cache_ttl_hours == 24

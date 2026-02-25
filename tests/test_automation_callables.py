@@ -143,8 +143,8 @@ class TestDailySummaryCallable:
         assert "어제-사용자-메시지" in prompt
         assert "어제-봇-메시지" in prompt
         assert "오늘-메시지" not in prompt
-        # JSON Schema format 전달 검증
-        assert call_kwargs["format"] is _DAILY_SUMMARY_SCHEMA
+        # JSON Schema response_format 전달 검증
+        assert call_kwargs["response_format"] is _DAILY_SUMMARY_SCHEMA
 
     @pytest.mark.asyncio
     async def test_daily_summary_without_history_returns_empty_message(
@@ -577,7 +577,7 @@ class TestErrorLogTriageCallable:
         engine.process_prompt.assert_awaited_once()
         call_kwargs = engine.process_prompt.await_args.kwargs
         assert "ollama_retry" in call_kwargs["prompt"]
-        assert call_kwargs["format"] is _TRIAGE_SCHEMA
+        assert call_kwargs["response_format"] is _TRIAGE_SCHEMA
 
     @pytest.mark.asyncio
     async def test_no_errors_returns_empty(
@@ -905,13 +905,13 @@ class TestErrorLogTriageCallable:
 
 class TestExtractPreferencesSchemaFormat:
     @pytest.mark.asyncio
-    async def test_extract_preferences_uses_schema_format(
+    async def test_extract_preferences_uses_schema_response_format(
         self,
         scheduler: AutoScheduler,
         app_settings: AppSettings,
         memory_manager: MemoryManager,
     ) -> None:
-        """format에 _PREFERENCES_SCHEMA dict가 전달된다."""
+        """response_format에 _PREFERENCES_SCHEMA dict가 전달된다."""
         engine = AsyncMock()
         engine.process_prompt = AsyncMock(
             return_value='[{"key": "lang", "value": "ko"}]',
@@ -933,7 +933,7 @@ class TestExtractPreferencesSchemaFormat:
         await scheduler._run_action(auto)
 
         call_kwargs = engine.process_prompt.await_args.kwargs
-        assert call_kwargs["format"] is _PREFERENCES_SCHEMA
+        assert call_kwargs["response_format"] is _PREFERENCES_SCHEMA
         assert call_kwargs["max_tokens"] == 512
         assert call_kwargs["temperature"] == 0.3
         assert _PREFERENCES_SCHEMA["maxItems"] == 10

@@ -15,6 +15,10 @@ class StreamResult:
 
     full_response: str
     last_message: Any  # telegram.Message
+    tier: str = "full"
+    intent: str | None = None
+    cache_id: int | None = None
+    usage: Any = None  # ChatUsage
 
 
 def escape_html(value: object) -> str:
@@ -47,6 +51,19 @@ def split_message(text: str, max_length: int = 4096) -> list[str]:
     return parts
 
 
+def _calc_edit_interval(elapsed: float) -> float:
+    """경과 시간에 따라 동적 편집 간격을 계산한다.
+
+    초반엔 빠르게 편집하여 응답이 오는 느낌을 주고,
+    시간이 길어지면 간격을 넓혀 API 호출을 줄인다.
+    """
+    if elapsed < 3.0:
+        return 0.5
+    if elapsed < 10.0:
+        return 1.0
+    return 2.0
+
+
 async def stream_and_render(
     stream: AsyncIterable[str],
     sent_message: Any,
@@ -59,7 +76,8 @@ async def stream_and_render(
 ) -> StreamResult:
     """스트리밍 청크를 텔레그램 메시지 편집/분할 전송으로 렌더링한다."""
     full_response = ""
-    last_edit_time = time.monotonic()
+    stream_start = time.monotonic()
+    last_edit_time = stream_start
     last_edit_len = 0
     last_msg = sent_message
 
@@ -68,10 +86,15 @@ async def stream_and_render(
 
         now = time.monotonic()
         chars_since_edit = len(full_response) - last_edit_len
+        elapsed = now - stream_start
+        effective_interval = (
+            edit_interval if edit_interval < _calc_edit_interval(0)
+            else _calc_edit_interval(elapsed)
+        )
         time_since_edit = now - last_edit_time
 
         if (
-            time_since_edit >= edit_interval
+            time_since_edit >= effective_interval
             and chars_since_edit >= edit_char_threshold
         ):
             display_text = full_response + " ▌"

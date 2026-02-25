@@ -68,7 +68,7 @@ def build_error_log_triage_callable(
 
         analysis_raw = await engine.process_prompt(
             prompt=prompt,
-            format=TRIAGE_SCHEMA,
+            response_format=TRIAGE_SCHEMA,
             max_tokens=768,
             temperature=0.3,
         )

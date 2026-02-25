@@ -17,6 +17,7 @@ from core.config import (
     TelegramConfig,
 )
 from core.memory import MemoryManager
+from core.ollama_client import ChatResponse
 from core.security import SecurityManager
 
 
@@ -70,7 +71,7 @@ def mock_ollama_client() -> AsyncMock:
     client = AsyncMock()
     client.default_model = "test-model"
     client.system_prompt = "You are a test assistant."
-    client.chat = AsyncMock(return_value="Test response")
+    client.chat = AsyncMock(return_value=ChatResponse(content="Test response"))
     client.health_check = AsyncMock(
         return_value={"status": "ok", "models_count": 1}
     )

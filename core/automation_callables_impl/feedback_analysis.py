@@ -99,7 +99,7 @@ def build_feedback_analysis_callable(
             raw = await engine.process_prompt(
                 prompt=prompt,
                 chat_id=chat_id,
-                format=FEEDBACK_ANALYSIS_SCHEMA,
+                response_format=FEEDBACK_ANALYSIS_SCHEMA,
             )
 
             parsed = parse_json_array(raw)

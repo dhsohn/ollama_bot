@@ -6,12 +6,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import inspect
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatAction, ChatType, ParseMode
@@ -37,9 +38,24 @@ from core.security import (
 )
 from core.telegram_message_renderer import escape_html, split_message, stream_and_render
 
+if TYPE_CHECKING:
+    from core.semantic_cache import SemanticCache
+
 # 메시지 편집 최소 간격 (초) — 텔레그램 API 제한 대응
 _EDIT_INTERVAL = 1.0
 _EDIT_CHAR_THRESHOLD = 100
+
+# 연속 typing 인디케이터 간격 (초)
+_TYPING_INTERVAL = 4.0
+
+# 인텐트별 placeholder 메시지
+_INTENT_PLACEHOLDERS: dict[str | None, str] = {
+    "code": "코드를 분석하고 있습니다...",
+    "complex": "심층 분석 중입니다...",
+    "chitchat": "답변을 준비하고 있습니다...",
+    "simple_qa": "답변을 찾고 있습니다...",
+    None: "...",
+}
 
 
 class _AutoEvaluatorLike(Protocol):
@@ -119,12 +135,14 @@ class TelegramHandler:
         security: SecurityManager,
         feedback: FeedbackManager | None = None,
         auto_evaluator: _AutoEvaluatorLike | None = None,
+        semantic_cache: SemanticCache | None = None,
     ) -> None:
         self._config = config
         self._engine = engine
         self._security = security
         self._feedback = feedback
         self._auto_evaluator = auto_evaluator
+        self._semantic_cache = semantic_cache
         self._app: Application | None = None
         self._logger = get_logger("telegram")
         self._max_message_length = config.telegram.max_message_length
@@ -493,6 +511,22 @@ class TelegramHandler:
             f"로드된 스킬: {status['skills_loaded']}개"
         )
 
+        degraded_components = status.get("degraded_components", {})
+        if degraded_components:
+            degraded_lines = []
+            for name, detail in degraded_components.items():
+                reason = detail.get("reason") or "unknown"
+                duration = detail.get("degraded_for_seconds")
+                if isinstance(duration, int):
+                    degraded_lines.append(
+                        f"- {name}: {reason} ({duration}초)"
+                    )
+                else:
+                    degraded_lines.append(f"- {name}: {reason}")
+            text += "\n⚠️ degraded 상태:\n" + "\n".join(degraded_lines)
+        else:
+            text += "\n✅ degraded 상태 없음"
+
         if self._scheduler:
             autos = self._scheduler.list_automations()
             enabled = sum(1 for a in autos if a["enabled"])
@@ -531,9 +565,20 @@ class TelegramHandler:
         # 타이핑 표시
         await update.effective_chat.send_action(ChatAction.TYPING)  # type: ignore[union-attr]
 
+        # 연속 typing 인디케이터
+        typing_stop = asyncio.Event()
+        typing_task = asyncio.create_task(
+            self._keep_typing(update.effective_chat, typing_stop),
+            name=f"typing_{chat_id}",
+        )
+
         try:
-            # 초기 placeholder 메시지 전송
-            sent_message = await update.effective_message.reply_text("...")  # type: ignore[union-attr]
+            # 인텐트 기반 placeholder
+            intent = self._engine.classify_intent(text)
+            if inspect.isawaitable(intent):
+                intent = await intent
+            placeholder = _INTENT_PLACEHOLDERS.get(intent, _INTENT_PLACEHOLDERS[None])
+            sent_message = await update.effective_message.reply_text(placeholder)  # type: ignore[union-attr]
 
             result = await stream_and_render(
                 stream=self._engine.process_message_stream(chat_id, text),
@@ -544,6 +589,29 @@ class TelegramHandler:
                 edit_char_threshold=_EDIT_CHAR_THRESHOLD,
                 max_edit_length=self._max_message_length,
             )
+            consume_meta = getattr(self._engine, "consume_last_stream_meta", None)
+            if callable(consume_meta):
+                stream_meta = consume_meta(chat_id)
+                if inspect.isawaitable(stream_meta):
+                    stream_meta = await stream_meta
+                if isinstance(stream_meta, dict):
+                    result.tier = stream_meta.get("tier", result.tier)
+                    result.intent = stream_meta.get("intent")
+                    result.cache_id = stream_meta.get("cache_id")
+                    result.usage = stream_meta.get("usage")
+
+            # 캐시 피드백 링크 저장
+            if (
+                self._semantic_cache is not None
+                and result.cache_id is not None
+                and result.last_message
+            ):
+                try:
+                    await self._semantic_cache.link_feedback_target(
+                        chat_id, result.last_message.message_id, result.cache_id,
+                    )
+                except Exception:
+                    pass
 
             # 피드백 버튼 부착
             if (
@@ -587,6 +655,27 @@ class TelegramHandler:
             await update.effective_message.reply_text(  # type: ignore[union-attr]
                 "죄송합니다. 메시지 처리 중 오류가 발생했습니다."
             )
+        finally:
+            typing_stop.set()
+            typing_task.cancel()
+            try:
+                await typing_task
+            except asyncio.CancelledError:
+                pass
+
+    @staticmethod
+    async def _keep_typing(chat: Any, stop_event: asyncio.Event) -> None:
+        """typing 인디케이터를 주기적으로 전송한다."""
+        while not stop_event.is_set():
+            try:
+                await chat.send_action(ChatAction.TYPING)
+            except Exception:
+                pass
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=_TYPING_INTERVAL)
+                return
+            except asyncio.TimeoutError:
+                pass
 
     # ── 피드백 ──
 
@@ -681,6 +770,26 @@ class TelegramHandler:
             and (is_update or rating == 1)
         ):
             del self._pending_reason[chat_id]
+
+        # 👎 피드백 시 시맨틱 캐시 무효화
+        if (
+            rating == -1
+            and self._semantic_cache is not None
+            and self._config.semantic_cache.invalidate_on_negative_feedback
+        ):
+            try:
+                linked_cache_id = await self._semantic_cache.get_feedback_cache_id(
+                    chat_id, bot_message_id,
+                )
+                if linked_cache_id is not None:
+                    await self._semantic_cache.invalidate_by_id(linked_cache_id)
+                    self._logger.info(
+                        "cache_invalidated_by_feedback",
+                        chat_id=chat_id,
+                        cache_id=linked_cache_id,
+                    )
+            except Exception as exc:
+                self._logger.debug("cache_feedback_invalidation_failed", error=str(exc))
 
         # 👎이면서 사유 수집이 활성화되어 있으면 사유 입력 요청
         if (
@@ -821,19 +930,14 @@ class TelegramHandler:
         return escape_html(value)
 
     def _get_skill_reload_errors(self) -> list[str]:
-        if (
-            "get_last_skill_load_errors" not in getattr(self._engine, "__dict__", {})
-            and not hasattr(type(self._engine), "get_last_skill_load_errors")
-        ):
+        getter = self._engine.get_last_skill_load_errors
+        if inspect.iscoroutinefunction(getter):
             return []
-        getter = getattr(self._engine, "get_last_skill_load_errors", None)
-        if not callable(getter) or inspect.iscoroutinefunction(getter):
-            return []
-        try:
-            errors = getter()
-        except Exception:
-            return []
+        errors = getter()
         if inspect.isawaitable(errors):
+            closer = getattr(errors, "close", None)
+            if callable(closer):
+                closer()
             return []
         if isinstance(errors, list):
             return [str(item) for item in errors]
@@ -842,19 +946,14 @@ class TelegramHandler:
     def _get_auto_reload_errors(self) -> list[str]:
         if self._scheduler is None:
             return []
-        if (
-            "get_last_load_errors" not in getattr(self._scheduler, "__dict__", {})
-            and not hasattr(type(self._scheduler), "get_last_load_errors")
-        ):
+        getter = self._scheduler.get_last_load_errors
+        if inspect.iscoroutinefunction(getter):
             return []
-        getter = getattr(self._scheduler, "get_last_load_errors", None)
-        if not callable(getter) or inspect.iscoroutinefunction(getter):
-            return []
-        try:
-            errors = getter()
-        except Exception:
-            return []
+        errors = getter()
         if inspect.isawaitable(errors):
+            closer = getattr(errors, "close", None)
+            if callable(closer):
+                closer()
             return []
         if isinstance(errors, list):
             return [str(item) for item in errors]

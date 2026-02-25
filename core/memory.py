@@ -32,6 +32,26 @@ CREATE INDEX IF NOT EXISTS idx_conversations_chat_id_id
 CREATE INDEX IF NOT EXISTS idx_conversations_timestamp
     ON conversations(timestamp);
 
+CREATE TABLE IF NOT EXISTS conversations_archive (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id       INTEGER NOT NULL,
+    role          TEXT NOT NULL CHECK(role IN ('user', 'assistant', 'system')),
+    content       TEXT NOT NULL,
+    message_id    INTEGER NOT NULL,
+    timestamp     DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_archive_chat_id_id
+    ON conversations_archive(chat_id, id);
+
+CREATE TABLE IF NOT EXISTS context_summaries (
+    chat_id        INTEGER NOT NULL,
+    summary        TEXT NOT NULL,
+    last_archive_id INTEGER NOT NULL,
+    message_count  INTEGER NOT NULL,
+    created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(chat_id)
+);
+
 CREATE TABLE IF NOT EXISTS long_term_memory (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     chat_id INTEGER NOT NULL,
@@ -63,11 +83,13 @@ class MemoryManager:
         config: MemoryConfig,
         data_dir: str,
         max_conversation_length: int = 50,
+        archive_enabled: bool = False,
     ) -> None:
         self._db_path = Path(data_dir) / "memory" / "ollama_bot.db"
         self._max_long_term = config.max_long_term_entries
         self._retention_days = config.conversation_retention_days
         self._max_conversation_messages = max_conversation_length
+        self._archive_enabled = archive_enabled
         self._db: aiosqlite.Connection | None = None
         self._logger = get_logger("memory")
 
@@ -137,6 +159,17 @@ class MemoryManager:
 
         limit = self._max_conversation_messages
         if limit > 0:
+            # 트림 전 아카이브에 복사 (삭제 대상만)
+            if self._archive_enabled:
+                await db.execute(
+                    "INSERT INTO conversations_archive (chat_id, role, content, message_id, timestamp) "
+                    "SELECT chat_id, role, content, id, timestamp FROM conversations "
+                    "WHERE chat_id = ? AND id IN ("
+                    "  SELECT id FROM conversations WHERE chat_id = ? "
+                    "  ORDER BY id DESC LIMIT -1 OFFSET ?"
+                    ")",
+                    (chat_id, chat_id, limit),
+                )
             await db.execute(
                 "DELETE FROM conversations WHERE chat_id = ? AND id IN ("
                 "  SELECT id FROM conversations WHERE chat_id = ? "
@@ -219,10 +252,16 @@ class MemoryManager:
         ]
 
     async def clear_conversation(self, chat_id: int) -> int:
-        """특정 채팅의 대화 기록을 삭제한다."""
+        """특정 채팅의 대화 기록을 삭제한다 (archive/summary 포함)."""
         db = self._require_db()
         cursor = await db.execute(
             "DELETE FROM conversations WHERE chat_id = ?", (chat_id,)
+        )
+        await db.execute(
+            "DELETE FROM conversations_archive WHERE chat_id = ?", (chat_id,)
+        )
+        await db.execute(
+            "DELETE FROM context_summaries WHERE chat_id = ?", (chat_id,)
         )
         await db.commit()
         deleted = cursor.rowcount
@@ -373,7 +412,7 @@ class MemoryManager:
     # ── 유지보수 ──
 
     async def prune_old_conversations(self) -> int:
-        """보관 기간이 지난 대화를 삭제한다."""
+        """보관 기간이 지난 대화를 삭제한다 (archive/summary 포함)."""
         db = self._require_db()
         cutoff = (
             datetime.now(timezone.utc) - timedelta(days=self._retention_days)
@@ -381,11 +420,90 @@ class MemoryManager:
         cursor = await db.execute(
             "DELETE FROM conversations WHERE timestamp < ?", (cutoff,)
         )
+        archive_cursor = await db.execute(
+            "DELETE FROM conversations_archive WHERE timestamp < ?", (cutoff,)
+        )
+        summary_cursor = await db.execute(
+            "DELETE FROM context_summaries WHERE created_at < ?", (cutoff,)
+        )
+        # 대화/아카이브가 모두 없는 채팅의 요약은 orphan으로 정리한다.
+        orphan_cursor = await db.execute(
+            "DELETE FROM context_summaries "
+            "WHERE chat_id NOT IN (SELECT DISTINCT chat_id FROM conversations) "
+            "AND chat_id NOT IN (SELECT DISTINCT chat_id FROM conversations_archive)"
+        )
         await db.commit()
         deleted = cursor.rowcount
-        if deleted:
-            self._logger.info("conversations_pruned", deleted=deleted)
+        archive_deleted = archive_cursor.rowcount
+        summary_deleted = summary_cursor.rowcount + orphan_cursor.rowcount
+        if deleted or archive_deleted or summary_deleted:
+            self._logger.info(
+                "conversations_pruned",
+                deleted=deleted,
+                archive_deleted=archive_deleted,
+                summary_deleted=summary_deleted,
+            )
         return deleted
+
+    # ── 아카이브 / 요약 (Phase 5: 컨텍스트 압축) ──
+
+    async def get_archived_messages(
+        self,
+        chat_id: int,
+        after_id: int = 0,
+        limit: int = 200,
+    ) -> list[dict]:
+        """아카이브에서 메시지를 조회한다."""
+        db = self._require_db()
+        async with db.execute(
+            "SELECT id, role, content, timestamp FROM conversations_archive "
+            "WHERE chat_id = ? AND id > ? ORDER BY id ASC LIMIT ?",
+            (chat_id, after_id, limit),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [
+            {"id": row[0], "role": row[1], "content": row[2], "timestamp": row[3]}
+            for row in rows
+        ]
+
+    async def get_summary(self, chat_id: int) -> dict | None:
+        """캐시된 요약을 조회한다."""
+        db = self._require_db()
+        async with db.execute(
+            "SELECT summary, last_archive_id, message_count, created_at "
+            "FROM context_summaries WHERE chat_id = ?",
+            (chat_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            return None
+        return {
+            "summary": row[0],
+            "last_archive_id": row[1],
+            "message_count": row[2],
+            "created_at": row[3],
+        }
+
+    async def store_summary(
+        self,
+        chat_id: int,
+        summary: str,
+        last_archive_id: int,
+        message_count: int,
+    ) -> None:
+        """요약을 저장/갱신한다."""
+        db = self._require_db()
+        await db.execute(
+            "INSERT INTO context_summaries (chat_id, summary, last_archive_id, message_count) "
+            "VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(chat_id) DO UPDATE SET "
+            "summary = excluded.summary, "
+            "last_archive_id = excluded.last_archive_id, "
+            "message_count = excluded.message_count, "
+            "created_at = CURRENT_TIMESTAMP",
+            (chat_id, summary, last_archive_id, message_count),
+        )
+        await db.commit()
 
     async def export_conversation_markdown(
         self, chat_id: int, output_dir: Path

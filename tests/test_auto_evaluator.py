@@ -9,6 +9,7 @@ import pytest
 
 from core.auto_evaluator import AutoEvaluator
 from core.config import AutoEvaluationConfig
+from core.ollama_client import ChatResponse
 
 
 @pytest.fixture
@@ -25,7 +26,9 @@ def eval_config() -> AutoEvaluationConfig:
 @pytest.fixture
 def mock_ollama() -> AsyncMock:
     client = AsyncMock()
-    client.chat = AsyncMock(return_value='{"score": 4, "explanation": "Good response"}')
+    client.chat = AsyncMock(
+        return_value=ChatResponse(content='{"score": 4, "explanation": "Good response"}')
+    )
     return client
 
 
@@ -71,7 +74,7 @@ class TestEvaluate:
 
     @pytest.mark.asyncio
     async def test_evaluate_parse_failure(self, evaluator, mock_ollama, mock_feedback) -> None:
-        mock_ollama.chat = AsyncMock(return_value="invalid json")
+        mock_ollama.chat = AsyncMock(return_value=ChatResponse(content="invalid json"))
         result = await evaluator.evaluate(111, 1, "질문", "충분히 긴 응답입니다")
         assert result is None
         mock_feedback.store_auto_evaluation.assert_not_called()

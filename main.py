@@ -9,17 +9,23 @@ from __future__ import annotations
 import asyncio
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
+import os
+import random
 import signal
 import sys
 from pathlib import Path
 from typing import Any
 
+import aiosqlite
+
 from core.auto_evaluator import AutoEvaluator
 from core.automation_callables import register_builtin_callables
 from core.auto_scheduler import AutoScheduler
 from core.config import AppSettings, load_config
+from core.context_compressor import ContextCompressor
 from core.engine import Engine
 from core.feedback_manager import FeedbackManager
+from core.instant_responder import InstantResponder
 from core.logging_setup import get_logger, setup_logging
 from core.memory import MemoryManager
 from core.ollama_client import OllamaClient
@@ -29,6 +35,9 @@ from core.telegram_handler import TelegramHandler
 
 _MEMORY_MAINTENANCE_INTERVAL_SECONDS = 6 * 60 * 60
 _OLLAMA_RECOVERY_INTERVAL_SECONDS = 60
+_CACHE_PRUNE_INTERVAL_SECONDS = 3600
+_MEMORY_MAINTENANCE_JITTER_RATIO = 0.1
+_ALLOW_LOCAL_RUN_ENV = "ALLOW_LOCAL_RUN"
 
 
 class StartupError(RuntimeError):
@@ -54,6 +63,7 @@ class RuntimeState:
     cleanup_stack: AsyncExitStack
     feedback: FeedbackManager | None = None
     auto_evaluator: AutoEvaluator | None = None
+    semantic_cache: Any = None  # SemanticCache | None
 
 
 def _is_running_in_container() -> bool:
@@ -70,14 +80,33 @@ def _is_running_in_container() -> bool:
     return any(marker in cgroup for marker in markers)
 
 
+def _is_truthy(value: str | None) -> bool:
+    """환경변수 문자열을 bool로 변환한다."""
+    if value is None:
+        return False
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+async def _open_sqlite_db(path: Path) -> aiosqlite.Connection:
+    """WAL 모드 SQLite 연결을 생성한다."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    db = await aiosqlite.connect(str(path))
+    db.row_factory = aiosqlite.Row
+    await db.execute("PRAGMA journal_mode=WAL")
+    await db.commit()
+    return db
+
+
 async def _memory_maintenance_loop(
     memory: MemoryManager,
     logger,
     interval_seconds: int = _MEMORY_MAINTENANCE_INTERVAL_SECONDS,
+    jitter_ratio: float = _MEMORY_MAINTENANCE_JITTER_RATIO,
     feedback: FeedbackManager | None = None,
     feedback_retention_days: int | None = None,
+    semantic_cache: Any = None,
 ) -> None:
-    """주기적으로 오래된 대화/피드백 데이터를 정리한다."""
+    """주기적으로 오래된 대화/피드백/캐시 데이터를 정리한다."""
     while True:
         try:
             deleted = await memory.prune_old_conversations()
@@ -98,7 +127,19 @@ async def _memory_maintenance_loop(
                     logger.debug("auto_eval_retention_pruned", deleted=eval_deleted)
             except Exception as exc:
                 logger.error("auto_eval_retention_prune_failed", error=str(exc))
-        await asyncio.sleep(interval_seconds)
+
+        # 시맨틱 캐시 TTL 정리
+        if semantic_cache is not None:
+            try:
+                cache_pruned = await semantic_cache.prune_expired()
+                if cache_pruned:
+                    logger.debug("semantic_cache_pruned", deleted=cache_pruned)
+            except Exception as exc:
+                logger.error("semantic_cache_prune_failed", error=str(exc))
+
+        base_interval = max(1, interval_seconds)
+        jitter = random.uniform(0.0, base_interval * max(0.0, jitter_ratio))
+        await asyncio.sleep(base_interval + jitter)
 
 
 async def _ollama_recovery_loop(
@@ -161,6 +202,7 @@ async def _build_runtime(config: AppSettings, logger: Any) -> RuntimeState:
             config=config.memory,
             data_dir=config.data_dir,
             max_conversation_length=config.bot.max_conversation_length,
+            archive_enabled=config.context_compressor.enabled and config.context_compressor.archive_enabled,
         )
         await memory.initialize()
         cleanup_stack.push_async_callback(memory.close)
@@ -173,7 +215,10 @@ async def _build_runtime(config: AppSettings, logger: Any) -> RuntimeState:
         # 2.5. 피드백 매니저
         feedback: FeedbackManager | None = None
         if config.feedback.enabled:
-            feedback = FeedbackManager(memory.db)
+            feedback_db_path = Path(config.data_dir) / "memory" / "feedback.db"
+            feedback_db = await _open_sqlite_db(feedback_db_path)
+            cleanup_stack.push_async_callback(feedback_db.close)
+            feedback = FeedbackManager(feedback_db)
             await feedback.initialize_schema()
             try:
                 fb_pruned = await feedback.prune_old_feedback(config.feedback.retention_days)
@@ -214,6 +259,84 @@ async def _build_runtime(config: AppSettings, logger: Any) -> RuntimeState:
                 sample=skill_load_errors[:3],
             )
 
+        # 4.5. 속도 최적화 컴포넌트 초기화
+        instant_responder = None
+        semantic_cache = None
+        intent_router = None
+        context_compressor = None
+
+        # 즉시 응답
+        if config.instant_responder.enabled:
+            instant_responder = InstantResponder(
+                rules_path=config.instant_responder.rules_path,
+            )
+            logger.info("instant_responder_initialized", rules=instant_responder.rules_count)
+
+        # 시맨틱 캐시
+        if config.semantic_cache.enabled:
+            cache_db: aiosqlite.Connection | None = None
+            try:
+                from core.semantic_cache import SemanticCache
+
+                cache_db_path = Path(config.data_dir) / "memory" / "cache.db"
+                cache_db = await _open_sqlite_db(cache_db_path)
+                semantic_cache = SemanticCache(
+                    db=cache_db,
+                    model_name=config.semantic_cache.model_name,
+                    embedding_device=config.semantic_cache.embedding_device,
+                    similarity_threshold=config.semantic_cache.similarity_threshold,
+                    max_entries=config.semantic_cache.max_entries,
+                    ttl_hours=config.semantic_cache.ttl_hours,
+                    min_query_chars=config.semantic_cache.min_query_chars,
+                    exclude_patterns=config.semantic_cache.exclude_patterns,
+                )
+                await semantic_cache.initialize()
+                cleanup_stack.push_async_callback(cache_db.close)
+                logger.info("semantic_cache_initialized", enabled=semantic_cache.enabled)
+            except Exception as exc:
+                if cache_db is not None:
+                    await cache_db.close()
+                logger.warning("semantic_cache_init_failed", error=str(exc))
+                semantic_cache = None
+
+        # 인텐트 라우터
+        if config.intent_router.enabled:
+            try:
+                from core.intent_router import IntentRouter
+
+                shared_encoder = (
+                    semantic_cache.encoder
+                    if semantic_cache is not None and semantic_cache.enabled
+                    else None
+                )
+                intent_router = await asyncio.to_thread(
+                    IntentRouter,
+                    routes_path=config.intent_router.routes_path,
+                    encoder_model=config.intent_router.encoder_model,
+                    min_confidence=config.intent_router.min_confidence,
+                    encoder=shared_encoder,
+                )
+                logger.info(
+                    "intent_router_initialized",
+                    enabled=intent_router.enabled,
+                    routes=intent_router.routes_count,
+                )
+            except Exception as exc:
+                logger.warning("intent_router_init_failed", error=str(exc))
+                intent_router = None
+
+        # 컨텍스트 압축
+        if config.context_compressor.enabled:
+            context_compressor = ContextCompressor(
+                ollama=ollama,
+                memory=memory,
+                recent_keep=config.context_compressor.recent_keep,
+                summary_refresh_interval=config.context_compressor.summary_refresh_interval,
+                summary_max_tokens=config.context_compressor.summary_max_tokens,
+                summarize_concurrency=config.context_compressor.summarize_concurrency,
+            )
+            logger.info("context_compressor_initialized")
+
         # 5. 엔진
         engine = Engine(
             config=config,
@@ -221,6 +344,10 @@ async def _build_runtime(config: AppSettings, logger: Any) -> RuntimeState:
             memory=memory,
             skills=skills,
             feedback_manager=feedback,
+            instant_responder=instant_responder,
+            semantic_cache=semantic_cache,
+            intent_router=intent_router,
+            context_compressor=context_compressor,
         )
 
         # 5.5. 자동 평가
@@ -241,6 +368,7 @@ async def _build_runtime(config: AppSettings, logger: Any) -> RuntimeState:
             security=security,
             feedback=feedback,
             auto_evaluator=auto_evaluator,
+            semantic_cache=semantic_cache,
         )
 
         # 7. 자동화
@@ -309,6 +437,7 @@ async def _build_runtime(config: AppSettings, logger: Any) -> RuntimeState:
             cleanup_stack=cleanup_stack,
             feedback=feedback,
             auto_evaluator=auto_evaluator,
+            semantic_cache=semantic_cache,
         )
     except Exception:
         await cleanup_stack.aclose()
@@ -370,10 +499,11 @@ async def _shutdown_runtime(
 
 async def async_main() -> None:
     """비동기 메인 루프."""
-    if not _is_running_in_container():
+    if not _is_running_in_container() and not _is_truthy(os.environ.get(_ALLOW_LOCAL_RUN_ENV)):
         print(
             "오류: 이 애플리케이션은 Docker 컨테이너에서만 실행됩니다.\n"
-            "실행 방법: docker compose up --build -d",
+            "실행 방법: docker compose up --build -d\n"
+            f"로컬 실행 우회: {_ALLOW_LOCAL_RUN_ENV}=1",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -436,6 +566,7 @@ async def async_main() -> None:
                     logger,
                     feedback=runtime.feedback,
                     feedback_retention_days=runtime.config.feedback.retention_days,
+                    semantic_cache=runtime.semantic_cache,
                 ),
                 name="memory_maintenance",
             )

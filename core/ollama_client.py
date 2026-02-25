@@ -9,11 +9,43 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import AsyncGenerator
+from dataclasses import dataclass
 
 from ollama import AsyncClient, ResponseError
 
 from core.config import OllamaConfig
 from core.logging_setup import get_logger
+
+
+# ── 응답 메타데이터 ──
+
+
+@dataclass
+class ChatUsage:
+    """LLM 호출 사용량 메타데이터."""
+
+    prompt_eval_count: int = 0
+    eval_count: int = 0
+    eval_duration: int = 0  # nanoseconds
+    total_duration: int = 0  # nanoseconds
+
+
+@dataclass
+class ChatResponse:
+    """LLM 응답 + 메타데이터."""
+
+    content: str
+    usage: ChatUsage | None = None
+
+    def __str__(self) -> str:
+        return self.content
+
+
+@dataclass
+class ChatStreamState:
+    """요청 단위 스트리밍 메타데이터."""
+
+    usage: ChatUsage | None = None
 
 
 class OllamaClientError(Exception):
@@ -32,6 +64,7 @@ class OllamaClient:
         self._default_model = config.model
         self._temperature = config.temperature
         self._max_tokens = config.max_tokens
+        self._num_ctx: int = getattr(config, "num_ctx", 8192)
         self._system_prompt = config.system_prompt
         self._client: AsyncClient | None = None
         self._auto_reconnect_enabled = False
@@ -168,29 +201,36 @@ class OllamaClient:
         temperature: float | None = None,
         max_tokens: int | None = None,
         timeout: int = 60,
-        format: str | dict | None = None,
-    ) -> str:
+        response_format: str | dict | None = None,
+    ) -> ChatResponse:
         """비스트리밍 채팅 요청. 재시도 포함."""
         model = model or self._default_model
         options = {
             "temperature": self._temperature if temperature is None else temperature,
             "num_predict": self._max_tokens if max_tokens is None else max_tokens,
+            "num_ctx": self._num_ctx,
         }
 
-        async def _do_chat() -> str:
+        async def _do_chat() -> ChatResponse:
             client = self._require_client()
             kwargs: dict = dict(
                 model=model,
                 messages=messages,
                 options=options,
             )
-            if format is not None:
-                kwargs["format"] = format
+            if response_format is not None:
+                kwargs["format"] = response_format
             response = await asyncio.wait_for(
                 client.chat(**kwargs),
                 timeout=timeout,
             )
-            return response.message.content
+            usage = ChatUsage(
+                prompt_eval_count=getattr(response, "prompt_eval_count", 0) or 0,
+                eval_count=getattr(response, "eval_count", 0) or 0,
+                eval_duration=getattr(response, "eval_duration", 0) or 0,
+                total_duration=getattr(response, "total_duration", 0) or 0,
+            )
+            return ChatResponse(content=response.message.content, usage=usage)
 
         return await self._retry_with_backoff(_do_chat)
 
@@ -201,6 +241,7 @@ class OllamaClient:
         temperature: float | None = None,
         max_tokens: int | None = None,
         timeout: int = 60,
+        stream_state: ChatStreamState | None = None,
     ) -> AsyncGenerator[str, None]:
         """스트리밍 채팅 요청. 청크를 순차적으로 반환한다."""
         client = self._require_client()
@@ -208,7 +249,10 @@ class OllamaClient:
         options = {
             "temperature": self._temperature if temperature is None else temperature,
             "num_predict": self._max_tokens if max_tokens is None else max_tokens,
+            "num_ctx": self._num_ctx,
         }
+        state = stream_state or ChatStreamState()
+        state.usage = None
 
         try:
             response = await asyncio.wait_for(
@@ -229,6 +273,14 @@ class OllamaClient:
                     break
                 if chunk.message.content:
                     yield chunk.message.content
+                # 마지막 청크(done=True)에서 usage 메타데이터 추출
+                if getattr(chunk, "done", False):
+                    state.usage = ChatUsage(
+                        prompt_eval_count=getattr(chunk, "prompt_eval_count", 0) or 0,
+                        eval_count=getattr(chunk, "eval_count", 0) or 0,
+                        eval_duration=getattr(chunk, "eval_duration", 0) or 0,
+                        total_duration=getattr(chunk, "total_duration", 0) or 0,
+                    )
             self._mark_healthy()
         except (ResponseError, asyncio.TimeoutError, OSError) as exc:
             self._mark_unhealthy(exc)
@@ -304,7 +356,7 @@ class OllamaClient:
         self,
         coro_factory,
         max_retries: int = 2,
-    ) -> str:
+    ) -> ChatResponse:
         """재시도 래퍼. 지수 백오프 적용 (1초, 3초)."""
         backoff_delays = [1, 3]
         last_error: Exception | None = None

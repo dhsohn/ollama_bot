@@ -8,7 +8,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from core.config import OllamaConfig
-from core.ollama_client import OllamaClient, OllamaClientError, ModelNotFoundError
+from core.ollama_client import (
+    ChatResponse,
+    ChatStreamState,
+    OllamaClient,
+    OllamaClientError,
+    ModelNotFoundError,
+)
 
 
 @pytest.fixture
@@ -32,6 +38,10 @@ class TestChat:
     async def test_chat_returns_response(self, ollama_client: OllamaClient) -> None:
         mock_response = MagicMock()
         mock_response.message.content = "Hello!"
+        mock_response.prompt_eval_count = 10
+        mock_response.eval_count = 20
+        mock_response.eval_duration = 1000
+        mock_response.total_duration = 2000
 
         mock_async_client = AsyncMock()
         mock_async_client.chat = AsyncMock(return_value=mock_response)
@@ -40,7 +50,10 @@ class TestChat:
         result = await ollama_client.chat(
             messages=[{"role": "user", "content": "Hi"}]
         )
-        assert result == "Hello!"
+        assert result.content == "Hello!"
+        assert str(result) == "Hello!"
+        assert result.usage is not None
+        assert result.usage.prompt_eval_count == 10
 
     @pytest.mark.asyncio
     async def test_chat_timeout_retries(self, ollama_client: OllamaClient) -> None:
@@ -68,7 +81,7 @@ class TestChat:
 
         await ollama_client.chat(
             messages=[{"role": "user", "content": "Hi"}],
-            format="json",
+            response_format="json",
         )
 
         call_kwargs = mock_async_client.chat.call_args.kwargs
@@ -86,7 +99,7 @@ class TestChat:
 
         await ollama_client.chat(
             messages=[{"role": "user", "content": "Hi"}],
-            format=schema,
+            response_format=schema,
         )
 
         call_kwargs = mock_async_client.chat.call_args.kwargs
@@ -240,6 +253,46 @@ class TestChatStream:
         call_kwargs = mock_async_client.chat.call_args.kwargs
         assert call_kwargs["options"]["temperature"] == 0.0
         assert call_kwargs["options"]["num_predict"] == 0
+
+    @pytest.mark.asyncio
+    async def test_chat_stream_populates_stream_state_usage(self, ollama_client: OllamaClient) -> None:
+        class _ChunkStream:
+            def __init__(self) -> None:
+                self._done = False
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                if self._done:
+                    raise StopAsyncIteration
+                self._done = True
+                chunk = MagicMock()
+                chunk.message.content = "ok"
+                chunk.done = True
+                chunk.prompt_eval_count = 12
+                chunk.eval_count = 34
+                chunk.eval_duration = 56
+                chunk.total_duration = 78
+                return chunk
+
+        mock_async_client = AsyncMock()
+        mock_async_client.chat = AsyncMock(return_value=_ChunkStream())
+        ollama_client._client = mock_async_client
+        state = ChatStreamState()
+
+        chunks = []
+        async for chunk in ollama_client.chat_stream(
+            messages=[{"role": "user", "content": "Hi"}],
+            timeout=1,
+            stream_state=state,
+        ):
+            chunks.append(chunk)
+
+        assert chunks == ["ok"]
+        assert state.usage is not None
+        assert state.usage.prompt_eval_count == 12
+        assert state.usage.eval_count == 34
 
 
 class TestHealthCheck:

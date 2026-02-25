@@ -463,7 +463,7 @@ class TestMemoryConsolidation:
 
         engine.process_prompt.assert_awaited_once()
         call_kwargs = engine.process_prompt.await_args.kwargs
-        assert call_kwargs["format"] is _CONSOLIDATION_MERGE_SCHEMA
+        assert call_kwargs["response_format"] is _CONSOLIDATION_MERGE_SCHEMA
         assert call_kwargs["max_tokens"] == 768
         assert call_kwargs["temperature"] == 0.2
 

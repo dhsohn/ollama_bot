@@ -1,0 +1,45 @@
+# 즉시 응답 규칙 정의
+# 우선순위: 파일 내 순서대로 평가, 첫 매칭에서 중단
+
+rules:
+  # ── 인사 ──
+  - name: "greeting"
+    patterns:
+      - "^(안녕|하이|헬로|hi|hello|hey)\\b"
+      - "^좋은\\s*(아침|저녁|오후)"
+    responses:
+      - "안녕하세요! 무엇을 도와드릴까요?"
+      - "반갑습니다! 어떤 도움이 필요하세요?"
+    case_insensitive: true
+
+  # ── 감사 ──
+  - name: "thanks"
+    patterns:
+      - "^(고마워|감사|땡큐|thanks|thank you)"
+    responses:
+      - "천만에요!"
+      - "도움이 되었다니 기쁩니다!"
+    case_insensitive: true
+
+  # ── 작별 ──
+  - name: "farewell"
+    patterns:
+      - "^(잘가|바이|안녕히|bye|goodbye)"
+    responses:
+      - "안녕히 가세요! 필요하면 언제든 불러주세요."
+    case_insensitive: true
+
+  # ── 동적 응답 (callable) ──
+  - name: "current_time"
+    patterns:
+      - "지금\\s*몇\\s*시"
+      - "현재\\s*시간"
+    type: "callable"
+    callable: "get_current_time"
+
+  - name: "current_date"
+    patterns:
+      - "오늘\\s*날짜"
+      - "오늘\\s*며칠"
+    type: "callable"
+    callable: "get_current_date"

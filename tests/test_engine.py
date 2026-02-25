@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -11,6 +13,7 @@ import pytest_asyncio
 from core.config import AppSettings, BotConfig, OllamaConfig, SecurityConfig, MemoryConfig, TelegramConfig
 from core.engine import Engine
 from core.memory import MemoryManager
+from core.ollama_client import ChatResponse, ChatUsage
 from core.skill_manager import SkillDefinition, SecurityLevel, SkillManager
 
 
@@ -34,7 +37,7 @@ def mock_ollama() -> AsyncMock:
     client = AsyncMock()
     client.default_model = "test-model"
     client.system_prompt = "You are a test bot."
-    client.chat = AsyncMock(return_value="LLM response")
+    client.chat = AsyncMock(return_value=ChatResponse(content="LLM response"))
     client.health_check = AsyncMock(return_value={"status": "ok"})
     client.list_models = AsyncMock(return_value=[{"name": "test-model", "size": 1024}])
     return client
@@ -161,6 +164,131 @@ class TestProcessMessage:
         call_args = mock_ollama.chat_stream.call_args
         assert call_args.kwargs.get("timeout") == 12
 
+    @pytest.mark.asyncio
+    async def test_stream_cache_hit_sets_stream_meta(
+        self,
+        app_settings: AppSettings,
+        mock_ollama: AsyncMock,
+        memory: MemoryManager,
+        mock_skills: MagicMock,
+    ) -> None:
+        semantic_cache = AsyncMock()
+        semantic_cache.is_cacheable = MagicMock(return_value=True)
+        semantic_cache.get = AsyncMock(
+            return_value=SimpleNamespace(response="cached response", cache_id=99)
+        )
+        semantic_cache.put = AsyncMock()
+
+        engine = Engine(
+            config=app_settings,
+            ollama=mock_ollama,
+            memory=memory,
+            skills=mock_skills,
+            semantic_cache=semantic_cache,
+        )
+
+        chunks = []
+        async for chunk in engine.process_message_stream(111, "반복 질문"):
+            chunks.append(chunk)
+
+        assert chunks == ["cached response"]
+        meta = engine.consume_last_stream_meta(111)
+        assert meta is not None
+        assert meta["tier"] == "cache"
+        assert meta["cache_id"] == 99
+        mock_ollama.chat_stream.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_stream_usage_isolated_per_concurrent_requests(
+        self,
+        app_settings: AppSettings,
+        memory: MemoryManager,
+        mock_skills: MagicMock,
+    ) -> None:
+        async def _chat_stream(*, messages, stream_state=None, **kwargs):
+            content = messages[-1]["content"]
+            prompt_tokens = 111 if content == "Q1" else 222
+            yield f"R:{content}"
+            await asyncio.sleep(0)
+            if stream_state is not None:
+                stream_state.usage = ChatUsage(
+                    prompt_eval_count=prompt_tokens,
+                    eval_count=1,
+                )
+
+        mock_ollama = AsyncMock()
+        mock_ollama.default_model = "test-model"
+        mock_ollama.chat_stream = MagicMock(side_effect=_chat_stream)
+        mock_ollama.health_check = AsyncMock(return_value={"status": "ok"})
+
+        engine = Engine(
+            config=app_settings,
+            ollama=mock_ollama,
+            memory=memory,
+            skills=mock_skills,
+        )
+
+        async def _run_stream(chat_id: int, text: str):
+            chunks = []
+            async for chunk in engine.process_message_stream(chat_id, text):
+                chunks.append(chunk)
+            return "".join(chunks), engine.consume_last_stream_meta(chat_id)
+
+        (resp1, meta1), (resp2, meta2) = await asyncio.gather(
+            _run_stream(111, "Q1"),
+            _run_stream(222, "Q2"),
+        )
+
+        assert resp1 == "R:Q1"
+        assert resp2 == "R:Q2"
+        assert meta1 is not None and meta1["usage"] is not None
+        assert meta2 is not None and meta2["usage"] is not None
+        assert meta1["usage"].prompt_eval_count == 111
+        assert meta2["usage"].prompt_eval_count == 222
+
+    @pytest.mark.asyncio
+    async def test_active_request_count_returns_to_zero_after_concurrent_requests(
+        self,
+        app_settings: AppSettings,
+        memory: MemoryManager,
+        mock_skills: MagicMock,
+    ) -> None:
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        lock = asyncio.Lock()
+        running_calls = 0
+
+        async def _slow_chat(**kwargs):
+            nonlocal running_calls
+            async with lock:
+                running_calls += 1
+                if running_calls >= 2:
+                    entered.set()
+            await release.wait()
+            return ChatResponse(content="done")
+
+        mock_ollama = AsyncMock()
+        mock_ollama.default_model = "test-model"
+        mock_ollama.chat = AsyncMock(side_effect=_slow_chat)
+        mock_ollama.health_check = AsyncMock(return_value={"status": "ok"})
+
+        engine = Engine(
+            config=app_settings,
+            ollama=mock_ollama,
+            memory=memory,
+            skills=mock_skills,
+        )
+
+        t1 = asyncio.create_task(engine.process_message(111, "a"))
+        t2 = asyncio.create_task(engine.process_message(222, "b"))
+
+        await entered.wait()
+        assert engine._active_request_count == 2
+
+        release.set()
+        await asyncio.gather(t1, t2)
+        assert engine._active_request_count == 0
+
 
 class TestExecuteSkill:
     @pytest.mark.asyncio
@@ -261,20 +389,20 @@ class TestFeedbackGuidelineInjection:
 
 class TestProcessPrompt:
     @pytest.mark.asyncio
-    async def test_process_prompt_forwards_format_and_options(
+    async def test_process_prompt_forwards_response_format_and_options(
         self, engine: Engine, mock_ollama,
     ) -> None:
-        """format, max_tokens, temperature가 ollama.chat()에 전달된다."""
+        """response_format, max_tokens, temperature가 ollama.chat()에 전달된다."""
         schema = {"type": "object", "properties": {"k": {"type": "string"}}}
         await engine.process_prompt(
             prompt="test",
-            format=schema,
+            response_format=schema,
             max_tokens=256,
             temperature=0.2,
         )
 
         call_kwargs = mock_ollama.chat.call_args.kwargs
-        assert call_kwargs["format"] is schema
+        assert call_kwargs["response_format"] is schema
         assert call_kwargs["max_tokens"] == 256
         assert call_kwargs["temperature"] == 0.2
 
@@ -287,6 +415,8 @@ class TestGetStatus:
         assert "ollama" in status
         assert status["ollama"]["status"] == "ok"
         assert status["skills_loaded"] == 3
+        assert "optimization_tiers" in status
+        assert "degraded_components" in status
 
 
 # ── V2: DICL 주입 테스트 ──
@@ -374,8 +504,8 @@ class TestDICLInjection:
         call_args = mock_ollama.chat.call_args
         messages = call_args.kwargs.get("messages") or call_args[1].get("messages")
         system_content = messages[0]["content"]
-        assert "---EXAMPLE START---" in system_content
-        assert "---EXAMPLE END---" in system_content
+        assert "<example>" in system_content
+        assert "</example>" in system_content
         assert "Human:" not in system_content
         assert "<|im_start|>" not in system_content
         assert "\nAssistant:" not in system_content
