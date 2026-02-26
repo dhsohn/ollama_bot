@@ -1,5 +1,5 @@
 # ollama_bot 전역 설정
-llm_provider: "ollama"
+llm_provider: "lemonade"
 log_level: "INFO"
 data_dir: "/app/data"
 
@@ -21,9 +21,9 @@ ollama:
     한국어로 답변하며, 간결하고 정확한 정보를 제공합니다.
 
 lemonade:
-  host: "http://host.docker.internal:8000"
+  host: "http://windows-host:11434"
   api_key: ""
-  model: ""
+  model: "GLM-4.7-Flash-GGUF"
   base_path: "/api/v1"
   timeout_seconds: 60
 

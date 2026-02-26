@@ -20,6 +20,7 @@ COPY --from=builder /usr/local /usr/local
 
 COPY core/ core/
 COPY apps/ apps/
+COPY packages/ packages/
 COPY skills/ skills/
 COPY auto/ auto/
 COPY config/ config/
