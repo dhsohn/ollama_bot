@@ -9,30 +9,17 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
+
+import numpy as np
+from fastembed import TextEmbedding
 
 from core.async_utils import run_in_thread
+from core.embedding_utils import embed_texts
 from core.logging_setup import get_logger
 
 if TYPE_CHECKING:
     import aiosqlite
-
-try:
-    import numpy as np
-except ImportError:
-    np = cast(Any, None)
-
-try:
-    import sentence_transformers as sentence_transformers_module
-
-    _HAS_ENCODER = True
-except ImportError:
-    _HAS_ENCODER = False
-    sentence_transformers_module = cast(Any, None)
-
-SentenceTransformer = (
-    sentence_transformers_module.SentenceTransformer if _HAS_ENCODER else cast(Any, None)
-)
 
 
 @dataclass(frozen=True)
@@ -98,8 +85,7 @@ class SemanticCache:
         self,
         db: aiosqlite.Connection,
         *,
-        model_name: str = "intfloat/multilingual-e5-small",
-        embedding_device: str = "cpu",
+        model_name: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
         similarity_threshold: float = 0.92,
         max_entries: int = 5000,
         ttl_hours: int = 168,
@@ -108,7 +94,6 @@ class SemanticCache:
     ) -> None:
         self._db = db
         self._model_name = model_name
-        self._device = embedding_device
         self._threshold = similarity_threshold
         self._max_entries = max_entries
         self._ttl_hours = ttl_hours
@@ -143,12 +128,11 @@ class SemanticCache:
         await self._db.executescript(_SCHEMA_SQL)
         await self._db.commit()
 
-        if not _HAS_ENCODER:
-            self._logger.warning("semantic_cache_no_encoder", reason="sentence-transformers not installed")
-            return
-
         try:
-            self._encoder = SentenceTransformer(self._model_name, device=self._device)
+            self._encoder = TextEmbedding(
+                model_name=self._model_name,
+                providers=["CPUExecutionProvider"],
+            )
             self._enabled = True
             self._logger.info("semantic_cache_encoder_loaded", model=self._model_name)
         except Exception as exc:
@@ -246,10 +230,9 @@ class SemanticCache:
             self._misses += 1
             return None
 
-        query_emb = await run_in_thread(
-            self._encoder.encode, query, normalize_embeddings=True
-        )
-        query_vec = np.array(query_emb, dtype=np.float32)
+        query_vec = (
+            await run_in_thread(embed_texts, self._encoder, [query], normalize=True)
+        )[0]
 
         # 코사인 유사도 (정규화된 벡터 → 내적), 컨텍스트 후보군만 탐색
         candidate_embeddings = self._embeddings[candidate_positions]
@@ -292,10 +275,10 @@ class SemanticCache:
         if not self._enabled:
             return -1
 
-        query_emb = await run_in_thread(
-            self._encoder.encode, query, normalize_embeddings=True
-        )
-        emb_blob = np.array(query_emb, dtype=np.float32).tobytes()
+        query_emb = (
+            await run_in_thread(embed_texts, self._encoder, [query], normalize=True)
+        )[0]
+        emb_blob = np.asarray(query_emb, dtype=np.float32).tobytes()
 
         cursor = await self._db.execute(
             "INSERT INTO semantic_cache (scope, chat_id, query, response, embedding, model, prompt_ver, intent) "
@@ -319,7 +302,7 @@ class SemanticCache:
 
         # 인메모리 인덱스 갱신
         self._ids.append(cache_id)
-        emb_vec = np.array(query_emb, dtype=np.float32).reshape(1, -1)
+        emb_vec = np.asarray(query_emb, dtype=np.float32).reshape(1, -1)
         if self._embeddings is None:
             self._embeddings = emb_vec
         else:

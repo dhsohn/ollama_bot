@@ -31,6 +31,7 @@
 
 - Python 3.11+
 - Docker / Docker Compose
+- 임베딩 런타임은 `fastembed`(ONNX Runtime CPU) 기반
 - 텔레그램 봇 토큰 (`@BotFather`)
 - LLM 백엔드 중 하나
   - Ollama (`ollama serve`)

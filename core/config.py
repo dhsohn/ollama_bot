@@ -7,21 +7,8 @@
 from __future__ import annotations
 
 from pathlib import Path
-from datetime import timedelta, timezone
 from typing import Any, Literal, Sequence
-
-_ZoneInfo: Any
-_ZoneInfoNotFoundError: type[Exception]
-try:
-    from zoneinfo import ZoneInfo as _ZoneInfo
-    from zoneinfo import ZoneInfoNotFoundError as _ZoneInfoNotFoundError
-except ImportError:
-    _ZoneInfo = None
-
-    class _ZoneInfoNotFoundErrorFallback(Exception):
-        """zoneinfo 미지원 환경에서의 대체 예외."""
-
-    _ZoneInfoNotFoundError = _ZoneInfoNotFoundErrorFallback
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 from pydantic import BaseModel, Field, field_validator
@@ -161,20 +148,10 @@ class SchedulerConfig(BaseModel):
     @field_validator("timezone")
     @classmethod
     def validate_timezone(cls, value: str) -> str:
-        if _ZoneInfo is not None:
-            try:
-                _ZoneInfo(value)
-            except _ZoneInfoNotFoundError as exc:
-                raise ValueError(f"Invalid timezone: {value}") from exc
-            return value
-
-        # zoneinfo 미지원(Python 3.8 등) 환경 최소 지원
-        fallback_timezones = {
-            "UTC": timezone.utc,
-            "Asia/Seoul": timezone(timedelta(hours=9), name="Asia/Seoul"),
-        }
-        if value not in fallback_timezones:
-            raise ValueError(f"Invalid timezone: {value}")
+        try:
+            ZoneInfo(value)
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError(f"Invalid timezone: {value}") from exc
         return value
 
 
@@ -185,8 +162,7 @@ class InstantResponderConfig(BaseModel):
 
 class SemanticCacheConfig(BaseModel):
     enabled: bool = True
-    model_name: str = "intfloat/multilingual-e5-small"
-    embedding_device: str = "cpu"
+    model_name: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
     similarity_threshold: float = 0.92
     min_query_chars: int = 4
     exclude_patterns: list[str] = Field(default_factory=lambda: [
@@ -202,7 +178,7 @@ class IntentRouterConfig(BaseModel):
     enabled: bool = True
     routes_path: str = "config/intent_routes.yaml"
     min_confidence: float = 0.75
-    encoder_model: str = "intfloat/multilingual-e5-small"
+    encoder_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 
 
 class ContextCompressorConfig(BaseModel):

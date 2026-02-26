@@ -94,9 +94,8 @@ class _SimpleIntentRouter:
 
 @pytest_asyncio.fixture
 async def integration_runtime(tmp_path: Path, monkeypatch):
-    monkeypatch.setattr(semantic_cache_module, "_HAS_ENCODER", True)
     monkeypatch.setattr(semantic_cache_module, "np", np)
-    monkeypatch.setattr(semantic_cache_module, "SentenceTransformer", lambda *args, **kwargs: _FakeEncoder())
+    monkeypatch.setattr(semantic_cache_module, "TextEmbedding", lambda *args, **kwargs: _FakeEncoder())
 
     config = AppSettings(
         telegram_bot_token="test-token",

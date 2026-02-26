@@ -355,7 +355,6 @@ async def _build_runtime(
                 semantic_cache = SemanticCache(
                     db=cache_db,
                     model_name=config.semantic_cache.model_name,
-                    embedding_device=config.semantic_cache.embedding_device,
                     similarity_threshold=config.semantic_cache.similarity_threshold,
                     max_entries=config.semantic_cache.max_entries,
                     ttl_hours=config.semantic_cache.ttl_hours,

@@ -10,19 +10,7 @@ from datetime import datetime, timedelta, timezone
 from datetime import tzinfo
 from pathlib import Path
 from typing import Any
-
-_ZoneInfo: Any
-_ZoneInfoNotFoundError: type[Exception]
-try:
-    from zoneinfo import ZoneInfo as _ZoneInfo
-    from zoneinfo import ZoneInfoNotFoundError as _ZoneInfoNotFoundError
-except ImportError:
-    _ZoneInfo = None
-
-    class _ZoneInfoNotFoundErrorFallback(Exception):
-        """zoneinfo 미지원 환경에서의 대체 예외."""
-
-    _ZoneInfoNotFoundError = _ZoneInfoNotFoundErrorFallback
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 ROLE_LABELS = {
@@ -148,28 +136,15 @@ SQLITE_TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 def safe_timezone(name: str, logger: Any) -> tzinfo:
     """설정값에서 안전한 타임존 객체를 반환한다."""
-    if _ZoneInfo is not None:
-        try:
-            return _ZoneInfo(name)
-        except _ZoneInfoNotFoundError:
-            logger.warning(
-                "invalid_timezone_fallback",
-                timezone=name,
-                fallback="UTC",
-            )
-            return _ZoneInfo("UTC")
-
-    # Python 3.8 등 zoneinfo 미지원 환경용 최소 폴백
-    if name == "UTC":
+    try:
+        return ZoneInfo(name)
+    except ZoneInfoNotFoundError:
+        logger.warning(
+            "invalid_timezone_fallback",
+            timezone=name,
+            fallback="UTC",
+        )
         return timezone.utc
-    if name == "Asia/Seoul":
-        return timezone(timedelta(hours=9), name="Asia/Seoul")
-    logger.warning(
-        "timezone_unsupported_fallback",
-        timezone=name,
-        fallback="UTC",
-    )
-    return timezone.utc
 
 
 def truncate(text: str, max_chars: int) -> str:

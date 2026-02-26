@@ -10,23 +10,11 @@ import asyncio
 import functools
 import inspect
 from collections.abc import Callable
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any, Protocol
-
-_ZoneInfo: Any
-_ZoneInfoNotFoundError: type[Exception]
-try:
-    from zoneinfo import ZoneInfo as _ZoneInfo
-    from zoneinfo import ZoneInfoNotFoundError as _ZoneInfoNotFoundError
-except ImportError:
-    _ZoneInfo = None
-
-    class _ZoneInfoNotFoundErrorFallback(Exception):
-        """zoneinfo 미지원 환경에서의 대체 예외."""
-
-    _ZoneInfoNotFoundError = _ZoneInfoNotFoundErrorFallback
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -143,20 +131,10 @@ class AutoScheduler:
     @staticmethod
     def _resolve_timezone(name: str):
         """실행 환경에서 사용 가능한 tzinfo를 반환한다."""
-        if _ZoneInfo is not None:
-            try:
-                return _ZoneInfo(name)
-            except _ZoneInfoNotFoundError as exc:
-                raise ValueError(f"Invalid timezone: {name}") from exc
-
-        if name == "UTC":
-            return timezone.utc
-        if name == "Asia/Seoul":
-            return timezone(timedelta(hours=9), name="Asia/Seoul")
-        raise ValueError(
-            f"Invalid timezone on this Python runtime: {name}. "
-            "Use UTC or Asia/Seoul."
-        )
+        try:
+            return ZoneInfo(name)
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError(f"Invalid timezone: {name}") from exc
 
     def set_dependencies(
         self,

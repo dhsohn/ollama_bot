@@ -9,6 +9,7 @@ import asyncio
 import time
 from datetime import datetime, timedelta, timezone, tzinfo
 from typing import TYPE_CHECKING
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from core.config import AutoEvaluationConfig
 from core.logging_setup import get_logger
@@ -198,22 +199,13 @@ class AutoEvaluator:
     def _utc_bounds_for_today(self) -> tuple[str, str]:
         """설정 timezone 기준 오늘의 UTC 경계를 반환한다."""
         tz: tzinfo = timezone.utc
-        zoneinfo_cls: type[tzinfo] | None = None
         try:
-            from zoneinfo import ZoneInfo
-
-            zoneinfo_cls = ZoneInfo
-        except ImportError:
-            zoneinfo_cls = None
-
-        if zoneinfo_cls is not None:
-            try:
-                tz = zoneinfo_cls(self._timezone_name)
-            except Exception:
-                self._logger.warning(
-                    "auto_eval_timezone_fallback_utc",
-                    timezone=self._timezone_name,
-                )
+            tz = ZoneInfo(self._timezone_name)
+        except ZoneInfoNotFoundError:
+            self._logger.warning(
+                "auto_eval_timezone_fallback_utc",
+                timezone=self._timezone_name,
+            )
 
         now_local = datetime.now(tz)
         start_local = now_local.replace(hour=0, minute=0, second=0, microsecond=0)

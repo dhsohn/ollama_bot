@@ -82,8 +82,7 @@ instant_responder:
 
 semantic_cache:
   enabled: true
-  model_name: "intfloat/multilingual-e5-small"
-  embedding_device: "cpu"
+  model_name: "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
   similarity_threshold: 0.92
   min_query_chars: 6
   exclude_patterns:
@@ -97,7 +96,7 @@ intent_router:
   enabled: true
   routes_path: "config/intent_routes.yaml"
   min_confidence: 0.75
-  encoder_model: "intfloat/multilingual-e5-small"
+  encoder_model: "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 
 context_compressor:
   enabled: true

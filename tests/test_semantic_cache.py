@@ -48,9 +48,8 @@ async def db(tmp_path):
 
 @pytest_asyncio.fixture
 async def semantic_cache(db, monkeypatch) -> SemanticCache:
-    monkeypatch.setattr(semantic_cache_module, "_HAS_ENCODER", True)
     monkeypatch.setattr(semantic_cache_module, "np", np)
-    monkeypatch.setattr(semantic_cache_module, "SentenceTransformer", lambda *args, **kwargs: _FakeEncoder())
+    monkeypatch.setattr(semantic_cache_module, "TextEmbedding", lambda *args, **kwargs: _FakeEncoder())
 
     cache = SemanticCache(
         db=db,

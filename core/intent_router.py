@@ -8,28 +8,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
+from fastembed import TextEmbedding
+import numpy as np
 import yaml
 
+from core.embedding_utils import embed_texts
 from core.logging_setup import get_logger
-
-try:
-    import numpy as np
-except ImportError:
-    np = cast(Any, None)
-
-try:
-    import sentence_transformers as sentence_transformers_module
-
-    _HAS_ENCODER = True
-except ImportError:
-    _HAS_ENCODER = False
-    sentence_transformers_module = cast(Any, None)
-
-SentenceTransformer = (
-    sentence_transformers_module.SentenceTransformer if _HAS_ENCODER else cast(Any, None)
-)
 
 
 @dataclass
@@ -68,7 +54,7 @@ class IntentRouter:
     def __init__(
         self,
         routes_path: str = "config/intent_routes.yaml",
-        encoder_model: str = "intfloat/multilingual-e5-small",
+        encoder_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
         min_confidence: float = 0.75,
         encoder: Any = None,
     ) -> None:
@@ -92,13 +78,12 @@ class IntentRouter:
 
     def _initialize(self) -> None:
         """인코더 로드 + 라우트 임베딩 사전 계산."""
-        if not _HAS_ENCODER:
-            self._logger.warning("intent_router_no_encoder", reason="sentence-transformers not installed")
-            return
-
         if self._encoder is None:
             try:
-                self._encoder = SentenceTransformer(self._encoder_model)
+                self._encoder = TextEmbedding(
+                    model_name=self._encoder_model,
+                    providers=["CPUExecutionProvider"],
+                )
                 self._logger.info("intent_router_encoder_loaded", model=self._encoder_model)
             except Exception as exc:
                 self._logger.warning("intent_router_encoder_failed", error=str(exc))
@@ -142,16 +127,14 @@ class IntentRouter:
                 )
 
                 # 예시 발화 임베딩 사전 계산
-                embeddings = self._encoder.encode(
-                    utterances, normalize_embeddings=True
-                )
+                embeddings = embed_texts(self._encoder, utterances, normalize=True)
 
                 loaded.append(
                     _RouteDefinition(
                         name=name,
                         utterances=utterances,
                         strategy=strategy,
-                        embeddings=np.array(embeddings, dtype=np.float32),
+                        embeddings=np.asarray(embeddings, dtype=np.float32),
                     )
                 )
 
@@ -168,8 +151,7 @@ class IntentRouter:
             return None
 
         try:
-            query_emb = self._encoder.encode(text, normalize_embeddings=True)
-            query_vec = np.array(query_emb, dtype=np.float32)
+            query_vec = embed_texts(self._encoder, [text], normalize=True)[0]
 
             best_route: _RouteDefinition | None = None
             best_score = -1.0
