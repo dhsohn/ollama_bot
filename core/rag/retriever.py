@@ -13,6 +13,7 @@ from core.rag.types import RetrievedItem
 if TYPE_CHECKING:
     from core.lemonade_client import LemonadeClient
     from core.rag.indexer import RAGIndexer
+    from core.rag.types import Chunk
 
 _MAX_CHUNKS_PER_DOC = 2
 
@@ -67,7 +68,7 @@ class RAGRetriever:
         chunks = await self._indexer.get_chunks_by_ids(row_ids)
 
         # row_id → chunk 매핑 (순서 보존)
-        chunk_by_rid: dict[int, object] = {}
+        chunk_by_rid: dict[int, Chunk] = {}
         for rid, chunk in zip(row_ids, chunks):
             chunk_by_rid[rid] = chunk
 
@@ -76,9 +77,9 @@ class RAGRetriever:
         items: list[RetrievedItem] = []
 
         for rid, score in search_results:
-            chunk = chunk_by_rid.get(rid)
-            if chunk is None:
+            if rid not in chunk_by_rid:
                 continue
+            chunk = chunk_by_rid[rid]
 
             doc_id = chunk.metadata.doc_id
             chunk_id = chunk.metadata.chunk_id

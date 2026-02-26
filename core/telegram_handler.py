@@ -557,8 +557,11 @@ class TelegramHandler:
 
     async def _handle_message_impl(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """자유 텍스트 메시지를 처리한다. 스트리밍 UX를 제공한다."""
-        chat_id = update.effective_chat.id  # type: ignore[union-attr]
-        message = update.effective_message  # type: ignore[union-attr]
+        chat = update.effective_chat
+        message = update.effective_message
+        if chat is None or message is None:
+            return
+        chat_id = chat.id
         raw_text = message.text or message.caption or ""
 
         # 이미지 처리
@@ -581,12 +584,12 @@ class TelegramHandler:
             return
 
         # 타이핑 표시
-        await update.effective_chat.send_action(ChatAction.TYPING)  # type: ignore[union-attr]
+        await chat.send_action(ChatAction.TYPING)
 
         # 연속 typing 인디케이터
         typing_stop = asyncio.Event()
         typing_task = asyncio.create_task(
-            self._keep_typing(update.effective_chat, typing_stop),
+            self._keep_typing(chat, typing_stop),
             name=f"typing_{chat_id}",
         )
 
@@ -598,12 +601,12 @@ class TelegramHandler:
             else:
                 intent = raw_intent
             placeholder = _INTENT_PLACEHOLDERS.get(intent, _INTENT_PLACEHOLDERS[None])
-            sent_message = await update.effective_message.reply_text(placeholder)  # type: ignore[union-attr]
+            sent_message = await message.reply_text(placeholder)
 
             result = await stream_and_render(
                 stream=self._engine.process_message_stream(chat_id, text, images=images),
                 sent_message=sent_message,
-                reply_text=update.effective_message.reply_text,  # type: ignore[union-attr]
+                reply_text=message.reply_text,
                 split_message_fn=self._split_message,
                 edit_interval=_EDIT_INTERVAL,
                 edit_char_threshold=_EDIT_CHAR_THRESHOLD,
@@ -630,7 +633,7 @@ class TelegramHandler:
                             if str(item).strip()
                         ]
                         if warning_lines:
-                            await update.effective_message.reply_text(  # type: ignore[union-attr]
+                            await message.reply_text(
                                 "⚠️ <b>실행 모드 알림</b>\n" + "\n".join(warning_lines),
                                 parse_mode=ParseMode.HTML,
                             )
@@ -687,7 +690,7 @@ class TelegramHandler:
                 chat_id=chat_id,
                 error=str(exc),
             )
-            await update.effective_message.reply_text(  # type: ignore[union-attr]
+            await message.reply_text(
                 "죄송합니다. 메시지 처리 중 오류가 발생했습니다."
             )
         finally:

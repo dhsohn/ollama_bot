@@ -16,6 +16,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 # 프로젝트 루트를 sys.path에 추가
 _project_root = str(Path(__file__).resolve().parent.parent.parent)
@@ -35,6 +36,7 @@ async def _init_components():
 
     config = load_config()
     provider = config.llm_provider.strip().lower()
+    llm: Any
 
     if provider == "lemonade":
         llm = LemonadeClient(config.lemonade, fallback_ollama=config.ollama)
@@ -163,7 +165,7 @@ async def cmd_dry_run(args: argparse.Namespace) -> None:
 
 
 # 테스트 케이스
-_ROUTING_TEST_CASES = [
+_ROUTING_TEST_CASES: list[dict[str, Any]] = [
     # Vision (5)
     {"input": "이 사진에서 뭐가 보여?", "images": [b"fake"], "expected_role": "vision"},
     {"input": "이미지를 분석해줘", "images": [b"fake"], "expected_role": "vision"},
@@ -200,7 +202,7 @@ _ROUTING_TEST_CASES = [
     {"input": "인과관계를 규명하고 단계별로 논리를 전개해줘", "expected_role": "reasoning"},
 ]
 
-_RAG_TEST_CASES = [
+_RAG_TEST_CASES: list[dict[str, Any]] = [
     {"input": "내 프로젝트의 README에 뭐라고 적혀있어?", "expected_rag": True},
     {"input": "kb 폴더에 있는 문서 검색해줘", "expected_rag": True},
     {"input": "내 노트에서 관련 내용을 찾아줘", "expected_rag": True},
