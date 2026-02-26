@@ -28,14 +28,14 @@ class ContextCompressor:
 
     def __init__(
         self,
-        ollama: OllamaClient,
+        llm_client: OllamaClient,
         memory: MemoryManager,
         recent_keep: int = 10,
         summary_refresh_interval: int = 10,
         summary_max_tokens: int = 200,
         summarize_concurrency: int = 1,
     ) -> None:
-        self._ollama = ollama
+        self._llm_client = llm_client
         self._memory = memory
         self.recent_keep = recent_keep
         self._refresh_interval = summary_refresh_interval
@@ -154,7 +154,7 @@ class ContextCompressor:
         else:
             summary_input = conversation_text
 
-        chat_response = await self._ollama.chat(
+        chat_response = await self._llm_client.chat(
             messages=[
                 {"role": "system", "content": _SUMMARY_SYSTEM_PROMPT},
                 {"role": "user", "content": summary_input},

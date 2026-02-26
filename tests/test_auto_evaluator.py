@@ -44,7 +44,7 @@ def mock_feedback() -> AsyncMock:
 def evaluator(eval_config, mock_ollama, mock_feedback) -> AutoEvaluator:
     return AutoEvaluator(
         config=eval_config,
-        ollama=mock_ollama,
+        llm_client=mock_ollama,
         feedback_manager=mock_feedback,
     )
 
@@ -60,7 +60,7 @@ class TestEvaluate:
     @pytest.mark.asyncio
     async def test_evaluate_disabled(self, eval_config, mock_ollama, mock_feedback) -> None:
         eval_config.enabled = False
-        ev = AutoEvaluator(config=eval_config, ollama=mock_ollama, feedback_manager=mock_feedback)
+        ev = AutoEvaluator(config=eval_config, llm_client=mock_ollama, feedback_manager=mock_feedback)
         result = await ev.evaluate(111, 1, "질문", "응답")
         assert result is None
         mock_feedback.store_auto_evaluation.assert_not_called()
@@ -112,7 +112,7 @@ class TestScheduleEvaluation:
     @pytest.mark.asyncio
     async def test_schedule_skips_when_disabled(self, eval_config, mock_ollama, mock_feedback) -> None:
         eval_config.enabled = False
-        ev = AutoEvaluator(config=eval_config, ollama=mock_ollama, feedback_manager=mock_feedback)
+        ev = AutoEvaluator(config=eval_config, llm_client=mock_ollama, feedback_manager=mock_feedback)
         ev.schedule_evaluation(111, 1, "질문", "충분히 긴 응답입니다")
         assert (111, 1) not in ev._in_flight
 

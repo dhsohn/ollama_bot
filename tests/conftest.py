@@ -36,8 +36,6 @@ def app_settings(security_config: SecurityConfig) -> AppSettings:
     return AppSettings(
         telegram_bot_token="test_token_123",
         allowed_telegram_users="111,222",
-        ollama_host="http://localhost:11434",
-        ollama_model="test-model",
         log_level="DEBUG",
         data_dir="/tmp/test_data",
         bot=BotConfig(max_conversation_length=10),

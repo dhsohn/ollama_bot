@@ -64,7 +64,7 @@ async def memory(tmp_path: Path) -> MemoryManager:
 def engine(app_settings, mock_ollama, memory, mock_skills) -> Engine:
     return Engine(
         config=app_settings,
-        ollama=mock_ollama,
+        llm_client=mock_ollama,
         memory=memory,
         skills=mock_skills,
     )
@@ -127,6 +127,47 @@ class TestProcessMessage:
         assert call_args.kwargs.get("model") == "other-model"
 
     @pytest.mark.asyncio
+    async def test_image_input_bypasses_semantic_cache(
+        self, app_settings: AppSettings, mock_ollama, memory: MemoryManager, mock_skills,
+    ) -> None:
+        semantic_cache = AsyncMock()
+        semantic_cache.is_cacheable = MagicMock(return_value=True)
+        semantic_cache.get = AsyncMock(
+            return_value=SimpleNamespace(response="cached response", cache_id=91),
+        )
+        semantic_cache.put = AsyncMock()
+
+        model_router = AsyncMock()
+        model_router.route = AsyncMock(return_value=SimpleNamespace(
+            selected_model="vision-model",
+            selected_role="vision",
+            trigger="image",
+            confidence=1.0,
+            fallback_used=False,
+            classifier_used=False,
+        ))
+
+        mock_ollama.chat = AsyncMock(return_value=ChatResponse(content="vision response"))
+
+        engine = Engine(
+            config=app_settings,
+            llm_client=mock_ollama,
+            memory=memory,
+            skills=mock_skills,
+            semantic_cache=semantic_cache,
+            model_router=model_router,
+        )
+
+        result = await engine.process_message(111, "이미지 분석", images=[b"fake-image"])
+
+        assert result == "vision response"
+        semantic_cache.get.assert_not_awaited()
+        semantic_cache.put.assert_not_awaited()
+        model_router.route.assert_awaited_once()
+        call_args = mock_ollama.chat.call_args
+        assert call_args.kwargs.get("model") == "vision-model"
+
+    @pytest.mark.asyncio
     async def test_stream_uses_default_timeout(
         self, engine: Engine, mock_ollama, app_settings: AppSettings
     ) -> None:
@@ -181,7 +222,7 @@ class TestProcessMessage:
 
         engine = Engine(
             config=app_settings,
-            ollama=mock_ollama,
+            llm_client=mock_ollama,
             memory=memory,
             skills=mock_skills,
             semantic_cache=semantic_cache,
@@ -223,7 +264,7 @@ class TestProcessMessage:
 
         engine = Engine(
             config=app_settings,
-            ollama=mock_ollama,
+            llm_client=mock_ollama,
             memory=memory,
             skills=mock_skills,
         )
@@ -274,7 +315,7 @@ class TestProcessMessage:
 
         engine = Engine(
             config=app_settings,
-            ollama=mock_ollama,
+            llm_client=mock_ollama,
             memory=memory,
             skills=mock_skills,
         )
@@ -419,6 +460,32 @@ class TestGetStatus:
         assert "degraded_components" in status
 
 
+class TestPlanInterfaces:
+    @pytest.mark.asyncio
+    async def test_route_request_default_shape(self, engine: Engine) -> None:
+        decision = await engine.route_request("안녕하세요")
+        assert decision["selected_model"] == "test-model"
+        assert decision["selected_role"] == "default"
+        assert decision["trigger"] == "router_disabled"
+
+    @pytest.mark.asyncio
+    async def test_retrieve_without_rag_pipeline(self, engine: Engine) -> None:
+        result = await engine.retrieve("문서 검색")
+        assert result["candidates"] == []
+        assert result["contexts"] == []
+        assert result["rag_trace_partial"]["rag_used"] is False
+
+    @pytest.mark.asyncio
+    async def test_generate_returns_plan_output_shape(
+        self, engine: Engine,
+    ) -> None:
+        result = await engine.generate("테스트 질문")
+        assert result["answer"] == "LLM response"
+        assert "routing_decision" in result
+        assert "rag_trace" in result
+        assert result["rag_trace"]["rag_used"] is False
+
+
 # ── V2: DICL 주입 테스트 ──
 
 
@@ -435,7 +502,7 @@ def mock_feedback_manager() -> AsyncMock:
 def engine_with_dicl(app_settings, mock_ollama, memory, mock_skills, mock_feedback_manager) -> Engine:
     return Engine(
         config=app_settings,
-        ollama=mock_ollama,
+        llm_client=mock_ollama,
         memory=memory,
         skills=mock_skills,
         feedback_manager=mock_feedback_manager,
@@ -463,7 +530,7 @@ class TestDICLInjection:
         app_settings.feedback.dicl_enabled = False
         engine = Engine(
             config=app_settings,
-            ollama=mock_ollama,
+            llm_client=mock_ollama,
             memory=memory,
             skills=mock_skills,
             feedback_manager=mock_feedback_manager,

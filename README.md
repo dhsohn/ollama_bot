@@ -1,220 +1,253 @@
 # ollama_bot
 
-로컬 LLM(Ollama) 기반 24시간 자동화 텔레그램 봇
+로컬/자체 호스팅 LLM(Ollama 또는 Lemonade OpenAI-compatible) 기반 텔레그램 private-chat 봇입니다.
 
-현재 코드베이스는 **단일 ollama_bot 앱 + provider 선택형** 구조입니다.
-- `apps/ollama_bot`: 단일 앱 진입점
-- `core/`: shared core
-- `LLM_PROVIDER`: `ollama` 또는 `lemonade` 선택
-- `packages/hw_amd_npu`: AMD NPU 런타임 프로파일 모듈
+현재 코드베이스는 **단일 앱 구조**입니다.
+- 엔트리포인트: `apps/ollama_bot/main.py` (`main.py`는 레거시 호환용 래퍼)
+- 코어 로직: `core/`
+- LLM provider 선택: `config/config.yaml`의 `llm_provider`
+- 컨테이너 실행 기본: `docker compose -f docker-compose.yml up -d`
 
----
+## 핵심 기능
 
-## 주요 기능
+- 텔레그램 1:1(private chat) 기반 대화
+- 스킬 시스템(YAML): `skills/_builtin`, `skills/custom`
+- 자동화 시스템(YAML + APScheduler): `auto/_builtin`, `auto/custom`
+- 피드백 버튼(👍/👎) + 부정 피드백 사유 수집(옵션)
+- 계층형 응답 최적화
+  - Tier 0: 스킬 트리거
+  - Tier 1: 규칙 기반 즉시 응답(InstantResponder)
+  - Tier 2: 인텐트 라우팅(IntentRouter)
+  - Tier 3: 시맨틱 캐시(SemanticCache)
+  - Tier 4: Full LLM + 컨텍스트 압축(ContextCompressor)
+- 장기 메모리/대화 보관(SQLite)
+- 보안 기본값
+  - 화이트리스트 사용자 인증(`ALLOWED_TELEGRAM_USERS`)
+  - 레이트리밋/전역 동시성 제한
+  - 경로 검증, 입력 정제
+- Docker 하드닝(읽기 전용 루트, no-new-privileges, cap_drop)
 
-- **로컬 LLM 대화** — Ollama를 통한 완전 로컬 AI 채팅 (외부 API 의존 없음)
-- **Private Chat 전용** — 텔레그램 1:1 대화만 지원 (그룹/채널 미지원)
-- **스킬 시스템** — YAML 기반 확장 가능한 전문 기능 (요약, 번역, 코드 리뷰 등)
-- **자동화** — cron 스케줄 기반 자동 작업 (일일 요약, 헬스체크)
-- **보안 내재화** — Chat ID 화이트리스트 인증, 입력 검증, 경로 격리
-- **Docker 지원** — 컨테이너 격리 실행, 보안 하드닝 적용
+## 사전 요구사항
 
----
+- Python 3.11+
+- Docker / Docker Compose
+- 텔레그램 봇 토큰 (`@BotFather`)
+- LLM 백엔드 중 하나
+  - Ollama (`ollama serve`)
+  - Lemonade(OpenAI-compatible API)
 
 ## 빠른 시작
 
-### 사전 요구사항
-
-- Python 3.11+
-- [Ollama](https://ollama.com/) 설치 및 실행
-- 텔레그램 봇 토큰 ([BotFather](https://t.me/BotFather)에서 발급)
-
-### 1. 설치
+### 1) 설치
 
 ```bash
-git clone <repository-url>
+git clone <repo-url>
 cd ollama_bot
-pip install -r requirements-dev.txt
+bash scripts/setup.sh
 ```
 
-### 2. 설정
+또는 수동 설치:
 
 ```bash
+pip install -r requirements-dev.txt
 cp .env.example .env
+mkdir -p data/conversations data/memory data/logs data/reports
 ```
 
-`.env` 파일을 편집합니다:
+### 2) `.env` 설정
+
+`.env`는 텔레그램 관련 시크릿만 사용합니다:
 
 ```env
-TELEGRAM_BOT_TOKEN=your_bot_token_here
-ALLOWED_TELEGRAM_USERS=your_telegram_chat_id_here
-LOG_LEVEL=INFO
-SCHEDULER_TIMEZONE=Asia/Seoul
-
-LLM_PROVIDER=ollama            # ollama | lemonade
-OLLAMA_HOST=http://localhost:11434
-OLLAMA_MODEL=gpt-oss:20b
-
-LEMONADE_HOST=http://localhost:8000
-LEMONADE_MODEL=
-LEMONADE_API_KEY=
-AMD_NPU_PROFILE=balanced
+TELEGRAM_BOT_TOKEN=...
+ALLOWED_TELEGRAM_USERS=123456789
 ```
 
-> `ALLOWED_TELEGRAM_USERS`를 placeholder 그대로 두거나 형식이 잘못되면 봇은 시작되지 않습니다(fail-fast).
+- `ALLOWED_TELEGRAM_USERS`는 **숫자 Chat ID CSV**만 허용됩니다.
+- placeholder(`your_telegram_chat_id_here`) 상태면 시작 시 fail-fast로 종료됩니다.
+- 런타임 일반 설정(provider/model/host/log/data_dir 등)은 `config/config.yaml`에서 관리합니다.
 
-> 텔레그램 ID 확인: [@userinfobot](https://t.me/userinfobot)에게 메시지를 보내면 확인할 수 있습니다.
+### 3) LLM 백엔드 준비
 
-### 3. Ollama 모델 준비
+#### Ollama 사용 시
 
 ```bash
 ollama pull gpt-oss:20b
 ollama serve
 ```
 
-### 4. 앱 실행
+- `config/config.yaml`의 `ollama.model`에 지정된 기본 모델이 서버에 없으면 앱이 시작되지 않습니다.
+
+#### Lemonade 사용 시
+
+`config/config.yaml`에서 `llm_provider: "lemonade"`로 변경합니다.
+
+- 기본 모델 우선순위: `lemonade.model` -> 비어있으면 `ollama.model`
+- 선택된 기본 모델이 Lemonade `/models` 목록에 없으면 시작되지 않습니다.
+
+### 4) 실행
 
 ```bash
 docker compose -f docker-compose.yml up --build -d
 ```
 
-> 실행 provider는 `.env`의 `LLM_PROVIDER` 값(`ollama`/`lemonade`)을 사용합니다.
-> 보안/운영 정책상 컨테이너 외부에서 `python main.py` 실행은 차단됩니다.
-> `main.py`는 레거시 호환 엔트리포인트이며 내부적으로 `apps/ollama_bot/main.py`를 호출합니다.
-
-### 5. WSL 부팅 시 자동 실행 (선택)
-
-`scripts/up.sh`는 WSL 환경에서 Windows 게이트웨이 IP를 읽어 `.env`의 `OLLAMA_HOST`를 자동 갱신한 뒤
-`docker compose -f docker-compose.yml up -d`를 실행합니다.
+로그 확인:
 
 ```bash
-sudo bash scripts/install_boot_service.sh
+docker compose logs -f ollama_bot
 ```
 
 상태 확인:
 
 ```bash
-systemctl status ollama_bot.service
+docker compose ps
 ```
 
-수동 실행:
+## 실행 정책/제약
+
+- 기본 정책은 **컨테이너 내부 실행 전용**입니다.
+- 로컬 직접 실행 우회가 필요하면 `ALLOW_LOCAL_RUN=1` 환경변수를 사용합니다.
+- 텔레그램은 private chat(1:1)만 처리합니다. 그룹/채널 메시지는 거절됩니다.
+
+## CLI 점검
 
 ```bash
-bash scripts/up.sh
+python -m apps.cli chat
+python -m apps.cli dry-run "테스트 질문"
+python -m apps.cli test
 ```
 
-#### Windows 재부팅 후 WSL 자동 기동
-
-`ollama_bot.service`를 `systemd`로 자동 시작(`enable`)해도, 먼저 WSL 인스턴스가 떠 있어야 서비스가 실행됩니다.
-Windows 로그인 시 WSL을 1회 기동하려면 작업 스케줄러를 등록하세요.
-
-```powershell
-schtasks /Create /TN "WSL AutoStart" /SC ONLOGON /RU "$env:USERDOMAIN\$env:USERNAME" /TR "wsl.exe -d Ubuntu-20.04 -u root --exec /usr/bin/true" /F
-```
-
-배포판 이름은 `wsl -l -q`로 확인해서 `Ubuntu-20.04` 부분을 본인 환경에 맞게 바꾸면 됩니다.
-
-#### `systemd` 서비스 vs `/etc/wsl.conf`의 `[boot] command`
-
-- `systemd` 서비스: 프로세스 생명주기 관리(자동 재시작, 의존성, 로그, 상태 확인)에 적합
-- `[boot] command`: WSL 시작 시 단발성 명령 실행 훅
-
-`ollama_bot`처럼 계속 실행되어야 하는 프로세스는 `systemd` 방식이 권장됩니다.
-
----
+- CLI는 `llm_provider` 설정(`ollama` 또는 `lemonade`)을 그대로 사용합니다.
+- `model_routing`/`rag`는 Lemonade(OpenAI-compatible) provider일 때만 활성화됩니다.
 
 ## 텔레그램 명령어
 
 | 명령어 | 설명 |
-|--------|------|
-| `/start` | 봇 시작 |
-| `/help` | 도움말 표시 |
-| `/skills` | 스킬 목록/리로드 (`/skills`, `/skills reload`) |
-| `/auto` | 자동화 관리 (`/auto list`, `/auto disable <이름>`, `/auto reload`) |
-| `/model` | 모델 확인/변경 (`/model list`, `/model <모델명>`) |
-| `/memory` | 메모리 관리 (`/memory clear`, `/memory export`) |
-| `/feedback` | 피드백 통계 확인 (설정 `feedback.enabled: true`일 때 노출) |
-| `/status` | 시스템 상태 확인 |
+|---|---|
+| `/start` | 시작 안내 |
+| `/help` | 도움말 |
+| `/skills` | 스킬 목록 |
+| `/skills reload` | 스킬 strict 리로드 |
+| `/auto` 또는 `/auto list` | 자동화 목록 |
+| `/auto disable <name>` | 자동화 비활성화 |
+| `/auto reload` | 자동화 strict 리로드 |
+| `/model` | 현재 모델 확인 |
+| `/model list` | 모델 목록 조회 |
+| `/model <name>` | 기본 모델 전환 |
+| `/memory` | 메모리 통계 |
+| `/memory clear` | 현재 채팅 대화 기록 삭제 |
+| `/memory export` | 현재 채팅 기록 markdown 내보내기 |
+| `/status` | 시스템 상태 |
+| `/feedback` | 피드백 통계 (`feedback.enabled: true`일 때) |
+| `/skip` | 부정 피드백 사유 입력 건너뛰기 (`collect_reason: true`일 때) |
 
-명령어 없이 자유롭게 메시지를 보내면 일반 대화 모드로 작동합니다.
-단, private chat(1:1)에서만 동작합니다.
+## 내장 스킬 (`skills/_builtin`)
 
----
+| 이름 | 트리거 |
+|---|---|
+| `summarize` | `/summarize`, `요약해줘` |
+| `translate` | `/translate`, `번역해줘` |
+| `code_review` | `/review`, `코드 리뷰` |
 
-## 내장 스킬
+## 내장 자동화 (`auto/_builtin`)
 
-| 스킬 | 트리거 | 설명 |
-|------|--------|------|
-| summarize | `/summarize`, `요약해줘` | 텍스트 요약 |
-| translate | `/translate`, `번역해줘` | 다국어 번역 |
-| code_review | `/review`, `코드 리뷰` | 코드 리뷰 및 개선 제안 |
+기본 타임존은 `scheduler.timezone`(기본 `Asia/Seoul`) 기준입니다.
 
-사용 예시:
-```
-/summarize 여기에 긴 텍스트를 붙여넣으세요...
-번역해줘 Hello, how are you?
-/review def foo(x): return x+1
-```
-
----
+| 이름 | 스케줄(cron) | 설명 |
+|---|---|---|
+| `preference_extraction` | `0 0 * * *` | 선호도/고정 정보 추출 |
+| `feedback_analysis` | `0 2 * * *` | 피드백 분석 후 가이드라인 갱신 |
+| `memory_hygiene` | `30 3 * * *` | 메모리 정리 |
+| `memory_consolidation` | `0 4 * * sun` | 메모리 통합 압축 |
+| `export_training_data` | `0 3 * * 0` | KTO 학습 데이터 내보내기 |
+| `daily_summary` | `0 9 * * *` | 전일 대화 요약 |
+| `error_log_triage` | `0 */6 * * *` | 오류 로그 triage |
+| `health_check` | `*/30 * * * *` | 주기 헬스체크 |
 
 ## 커스텀 스킬 추가
 
-`skills/custom/` 디렉토리에 YAML 파일을 생성합니다:
+`skills/custom/my_skill.yaml` 예시:
 
 ```yaml
-# skills/custom/my_skill.yaml
 name: "my_skill"
-description: "나만의 스킬"
+description: "내 스킬"
 version: "1.0"
 triggers:
   - "/myskill"
   - "내 스킬"
 system_prompt: |
-  당신은 특정 작업을 수행하는 전문가입니다.
+  당신은 특정 업무를 수행하는 전문가입니다.
 allowed_tools: []
+parameters:
+  - name: "input_text"
+    type: "string"
+    required: true
+    description: "입력"
 timeout: 30
 security_level: "safe"
 ```
 
-파일 변경 후 `/skills reload`로 다시 로드하고 `/skills`로 확인할 수 있습니다.
-
-> 스킬 `name` 또는 `triggers`가 기존 스킬과 중복되면 로드가 실패합니다(오류 처리).
-> `/skills reload`는 strict 모드로 동작하며, YAML 오류/보안 위반이 1건이라도 있으면 전체 리로드를 실패 처리합니다.
-
----
+주의사항:
+- `name` 중복 불가
+- 트리거 중복 불가
+- `/skills reload`는 strict 모드라 오류가 하나라도 있으면 실패합니다.
 
 ## 커스텀 자동화 추가
 
-`auto/custom/` 디렉토리에 YAML 파일을 생성합니다:
+`auto/custom/my_auto.yaml` 예시:
 
 ```yaml
-# auto/custom/my_auto.yaml
-name: "my_automation"
-description: "매일 아침 인사"
+name: "my_auto"
+description: "매일 리포트"
 enabled: true
-schedule: "0 8 * * *"          # cron 표현식: 매일 08:00
+schedule: "0 8 * * *"
 action:
-  type: "prompt"               # skill | prompt | callable
-  target: "오늘의 동기부여 명언을 알려줘"
+  type: "prompt"   # skill | prompt | callable | command
+  target: "오늘의 핵심 이슈를 요약해줘"
+  parameters: {}
 output:
   send_to_telegram: true
+  save_to_file: "reports/my_auto_{date}.md"
 retry:
   max_attempts: 2
   delay_seconds: 30
-timeout: 60
+timeout: 120
 ```
 
-파일 변경 후 `/auto reload`로 다시 로드할 수 있습니다.
+주의사항:
+- `name` 중복 불가
+- `schedule`은 유효한 cron이어야 함
+- `/auto reload`는 strict 모드
+- `command` 액션 타입은 현재 버전(v0.1)에서 보안상 비활성화되어 실제 시스템 명령을 실행하지 않습니다.
+- `save_to_file` 경로는 `DATA_DIR` 기준으로 검증됩니다(`{date}` 플레이스홀더 지원).
 
-> 자동화 `name`이 기존 자동화와 중복되면 로드가 실패합니다(오류 처리).
-> `/auto reload`는 strict 모드로 동작하며, cron/YAML 오류가 있으면 전체 리로드를 실패 처리합니다.
+## 설정 파일
 
----
+- `config/config.yaml`: 전역 런타임 설정
+- `.env`: 텔레그램 시크릿(`TELEGRAM_BOT_TOKEN`, `ALLOWED_TELEGRAM_USERS`)
 
-## 품질/운영 검증
+주요 섹션:
+- `bot`, `ollama`, `lemonade`, `telegram`, `security`, `memory`, `scheduler`
+- `feedback`, `auto_evaluation`
+- `instant_responder`, `semantic_cache`, `intent_router`, `context_compressor`
 
-로컬에서 코드 품질 게이트를 먼저 통과시키세요:
+`.env` 우선순위 관련:
+- `APP_ENV_FILE` 또는 `APP_ENV_FILES`(CSV)로 로드 파일 지정 가능
+- `.env`에서 반영되는 값은 텔레그램 시크릿 2개뿐입니다.
+
+## 운영 스크립트
+
+| 스크립트 | 용도 |
+|---|---|
+| `scripts/setup.sh` | 초기 설정(.env 생성, 디렉토리 준비) |
+| `scripts/up.sh` | 컨테이너 실행 |
+| `scripts/install_boot_service.sh` | systemd 부팅 서비스 설치 |
+| `scripts/healthcheck.sh` | 컨테이너 헬스체크 |
+| `scripts/soak_monitor.sh` | 장시간 안정성 모니터링 |
+| `scripts/finetune_unsloth.py` | KTO 파인튜닝(선택) |
+| `scripts/deploy_finetuned.sh` | 파인튜닝 모델 Ollama 배포(선택) |
+
+## 품질 검증
 
 ```bash
 ruff check .
@@ -222,113 +255,44 @@ mypy
 pytest -q
 ```
 
-장시간 운영 안정성(soak) 검증:
+장시간 모니터링 예시:
 
 ```bash
-# 기본: 3시간, 60초 간격
-bash scripts/soak_monitor.sh
-
-# 예시: 6시간, 재시작 0회, 구간 오류라인 0건 허용
-bash scripts/soak_monitor.sh --minutes 360 --max-restarts 0 --max-error-lines 0
+bash scripts/soak_monitor.sh --minutes 180 --max-restarts 0 --max-error-lines 0
 ```
 
----
+## 데이터/볼륨
+
+기본 데이터 경로(`DATA_DIR`)는 `/app/data`이며, compose에서 `./data`로 마운트됩니다.
+
+주요 산출물:
+- `data/memory/ollama_bot.db` (대화/장기 메모리)
+- `data/memory/feedback.db` (피드백)
+- `data/memory/cache.db` (시맨틱 캐시)
+- `data/conversations/` (내보낸 대화 markdown)
+- `data/reports/` (자동화 리포트)
+- `data/logs/` (애플리케이션 로그)
 
 ## 프로젝트 구조
 
-```
+```text
 ollama_bot/
-├── main.py                  # 레거시 호환 진입점 (ollama_bot 위임)
-├── .env.example
-├── apps/
-│   ├── ollama_bot/
-│   │   └── main.py          # 단일 앱 진입점
-├── config/config.yaml       # 전역 설정
-├── core/                    # shared core
-│   ├── engine.py            # 대화 오케스트레이션
-│   ├── ollama_client.py     # Ollama API 클라이언트
-│   ├── lemonade_client.py   # Lemonade(OpenAI-compatible) 클라이언트
-│   ├── telegram_handler.py  # 텔레그램 봇 핸들러
-│   ├── skill_manager.py     # 스킬 로더/실행기
-│   ├── auto_scheduler.py    # 자동화 스케줄러
-│   ├── memory.py            # 대화/장기 메모리 (SQLite)
-│   ├── security.py          # 보안 모듈
-│   └── config.py            # 설정 로더
-├── skills/                  # 스킬 디렉토리
-│   ├── _builtin/            # 내장 스킬 (YAML)
-│   └── custom/              # 사용자 커스텀 스킬
-├── auto/                    # 자동화 디렉토리
-│   ├── _builtin/            # 내장 자동화 (YAML)
-│   └── custom/              # 사용자 커스텀 자동화
-├── packages/
-│   └── hw_amd_npu/          # AMD NPU 런타임 프로파일
-├── data/                    # 런타임 데이터
-│   ├── conversations/       # 대화 내보내기
-│   ├── memory/              # SQLite DB
-│   └── logs/                # 로그
-├── tests/                   # 테스트
+├── apps/ollama_bot/main.py
+├── core/
+├── config/
+├── skills/
+│   ├── _builtin/
+│   └── custom/
+├── auto/
+│   ├── _builtin/
+│   └── custom/
+├── packages/hw_amd_npu/
+├── scripts/
+├── tests/
+├── docker-compose.yml
 ├── Dockerfile
-└── docker-compose.yml
+└── .env.example
 ```
-
----
-
-## 설정
-
-### config/config.yaml
-
-주요 설정 항목:
-
-```yaml
-bot:
-  max_conversation_length: 30    # 대화 컨텍스트 최대 메시지 수
-  response_timeout: 60           # LLM 응답 타임아웃 (초)
-
-ollama:
-  temperature: 0.7
-  max_tokens: 768
-  num_ctx: 4096
-
-security:
-  rate_limit: 30                 # 분당 최대 요청 수
-  max_concurrent_requests: 2     # CPU 환경 권장값
-
-scheduler:
-  timezone: "Asia/Seoul"         # 자동화 cron 실행 기준 타임존
-```
-
-### 환경변수 (.env)
-
-| 변수 | 설명 | 필수 |
-|------|------|------|
-| `TELEGRAM_BOT_TOKEN` | 텔레그램 봇 토큰 | O |
-| `ALLOWED_TELEGRAM_USERS` | 허용 사용자 ID (쉼표 구분) | O |
-| `LLM_PROVIDER` | LLM 백엔드 (`ollama`/`lemonade`) | X |
-| `OLLAMA_HOST` | Ollama 서버 주소 | X |
-| `OLLAMA_MODEL` | 기본 모델 | X |
-| `LEMONADE_HOST` | Lemonade 서버 주소(OpenAI-compatible) | X |
-| `LEMONADE_MODEL` | Lemonade 모델(비우면 `OLLAMA_MODEL` 사용) | X |
-| `LEMONADE_API_KEY` | Lemonade API 키(필요 시) | X |
-| `AMD_NPU_PROFILE` | NPU 프로파일 (`balanced`/`throughput`/`latency`) | X |
-| `SCHEDULER_TIMEZONE` | 자동화 스케줄 타임존 (IANA, 예: `Asia/Seoul`) | X |
-| `LOG_LEVEL` | 로그 레벨 (DEBUG/INFO/WARNING) | X |
-
----
-
-## 테스트
-
-```bash
-python3 -m pytest tests/ -v
-```
-
----
-
-## WSL2 참고사항
-
-WSL2 환경에서 Docker를 사용하는 경우, Ollama 서버는 호스트에서 실행하고
-`OLLAMA_HOST`를 `http://host.docker.internal:11434`로 설정하세요 (기본값).
-
----
 
 ## 라이선스
 

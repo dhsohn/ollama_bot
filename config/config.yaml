@@ -1,5 +1,7 @@
 # ollama_bot 전역 설정
 llm_provider: "ollama"
+log_level: "INFO"
+data_dir: "/app/data"
 
 bot:
   name: "ollama_bot"
@@ -104,3 +106,49 @@ context_compressor:
   summary_max_tokens: 200
   background_summarize: false
   summarize_concurrency: 1
+
+# ── 모델 라우팅 + RAG (Lemonade 전용) ──
+
+model_registry:
+  embedding_model: "Qwen3-Embedding-0.6B-GGUF"
+  reranker_model: "bge-reranker-v2-m3-GGUF"
+  vision_model: "Qwen3-VL-8B-Instruct-GGUF"
+  low_cost_model: "GLM-4.7-Flash-GGUF"
+  reasoning_model: "Qwen3-14B-Hybrid"
+  coding_model: "Qwen3-Coder-Next-GGUF"
+  fallback_chain:
+    low_cost: ["reasoning"]
+    reasoning: ["low_cost"]
+    coding: ["reasoning", "low_cost"]
+    vision: []
+
+model_routing:
+  enabled: true
+  anchors_path: "config/routing_anchors.yaml"
+  threshold: 0.45
+  margin: 0.05
+  embedding_cache_size: 5000
+
+rag:
+  enabled: true
+  kb_dir: "./kb"
+  chunk_min_tokens: 500
+  chunk_max_tokens: 1200
+  chunk_overlap_ratio: 0.15
+  retrieve_k0: 40
+  rerank_enabled: true
+  rerank_topk: 8
+  rerank_budget_ms: 1200
+  retrieval_score_floor: 0.3
+  supported_extensions:
+    - ".md"
+    - ".txt"
+    - ".pdf"
+    - ".docx"
+    - ".html"
+    - ".htm"
+    - ".json"
+    - ".csv"
+    - ".py"
+    - ".js"
+    - ".ts"

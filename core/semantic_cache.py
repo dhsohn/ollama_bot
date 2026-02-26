@@ -6,12 +6,12 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
+from core.async_utils import run_in_thread
 from core.logging_setup import get_logger
 
 if TYPE_CHECKING:
@@ -246,7 +246,7 @@ class SemanticCache:
             self._misses += 1
             return None
 
-        query_emb = await asyncio.to_thread(
+        query_emb = await run_in_thread(
             self._encoder.encode, query, normalize_embeddings=True
         )
         query_vec = np.array(query_emb, dtype=np.float32)
@@ -292,7 +292,7 @@ class SemanticCache:
         if not self._enabled:
             return -1
 
-        query_emb = await asyncio.to_thread(
+        query_emb = await run_in_thread(
             self._encoder.encode, query, normalize_embeddings=True
         )
         emb_blob = np.array(query_emb, dtype=np.float32).tobytes()

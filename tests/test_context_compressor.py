@@ -26,7 +26,7 @@ async def test_maybe_refresh_summary_advances_archive_pointer_incrementally() ->
     memory.store_summary = AsyncMock()
 
     compressor = ContextCompressor(
-        ollama=ollama,
+        llm_client=ollama,
         memory=memory,
         recent_keep=10,
         summary_refresh_interval=10,
@@ -54,7 +54,7 @@ async def test_maybe_refresh_summary_skips_when_new_archive_is_small() -> None:
     memory.store_summary = AsyncMock()
 
     compressor = ContextCompressor(
-        ollama=ollama,
+        llm_client=ollama,
         memory=memory,
         recent_keep=10,
         summary_refresh_interval=5,

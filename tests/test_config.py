@@ -23,8 +23,6 @@ def test_allowed_telegram_users_parsed_from_env(tmp_path: Path) -> None:
             [
                 "TELEGRAM_BOT_TOKEN=test_token",
                 "ALLOWED_TELEGRAM_USERS=123456789, 987654321",
-                "OLLAMA_HOST=http://localhost:11434",
-                "OLLAMA_MODEL=gpt-oss:20b",
             ]
         ),
         encoding="utf-8",
@@ -53,10 +51,18 @@ def test_allowed_telegram_users_invalid_value_raises(tmp_path: Path) -> None:
         load_config(config_path=str(config_path), env_file=str(env_path))
 
 
-def test_scheduler_timezone_loaded_from_env(tmp_path: Path) -> None:
+def test_scheduler_timezone_env_ignored_and_yaml_used(tmp_path: Path) -> None:
     config_path = tmp_path / "config.yaml"
     env_path = tmp_path / ".env"
-    _write_minimal_yaml(config_path)
+    config_path.write_text(
+        "\n".join(
+            [
+                "scheduler:",
+                "  timezone: \"UTC\"",
+            ]
+        ),
+        encoding="utf-8",
+    )
 
     env_path.write_text(
         "\n".join(
@@ -70,10 +76,10 @@ def test_scheduler_timezone_loaded_from_env(tmp_path: Path) -> None:
     )
 
     settings = load_config(config_path=str(config_path), env_file=str(env_path))
-    assert settings.scheduler.timezone == "Asia/Seoul"
+    assert settings.scheduler.timezone == "UTC"
 
 
-def test_scheduler_timezone_invalid_raises(tmp_path: Path) -> None:
+def test_scheduler_timezone_invalid_env_ignored(tmp_path: Path) -> None:
     config_path = tmp_path / "config.yaml"
     env_path = tmp_path / ".env"
     _write_minimal_yaml(config_path)
@@ -89,8 +95,8 @@ def test_scheduler_timezone_invalid_raises(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="Invalid timezone"):
-        load_config(config_path=str(config_path), env_file=str(env_path))
+    settings = load_config(config_path=str(config_path), env_file=str(env_path))
+    assert settings.scheduler.timezone == "Asia/Seoul"
 
 
 def test_yaml_values_preserved_when_env_not_set(tmp_path: Path) -> None:
@@ -124,7 +130,7 @@ def test_yaml_values_preserved_when_env_not_set(tmp_path: Path) -> None:
     assert settings.scheduler.timezone == "UTC"
 
 
-def test_env_values_override_yaml_when_explicitly_set(tmp_path: Path) -> None:
+def test_env_values_do_not_override_yaml(tmp_path: Path) -> None:
     config_path = tmp_path / "config.yaml"
     env_path = tmp_path / ".env"
     config_path.write_text(
@@ -153,9 +159,9 @@ def test_env_values_override_yaml_when_explicitly_set(tmp_path: Path) -> None:
     )
 
     settings = load_config(config_path=str(config_path), env_file=str(env_path))
-    assert settings.ollama.host == "http://env-host:11434"
-    assert settings.ollama.model == "env-model"
-    assert settings.scheduler.timezone == "Asia/Seoul"
+    assert settings.ollama.host == "http://yaml-host:11434"
+    assert settings.ollama.model == "yaml-model"
+    assert settings.scheduler.timezone == "UTC"
 
 
 def test_feedback_default_values() -> None:
@@ -287,8 +293,8 @@ def test_partial_feedback_section_preserves_defaults(tmp_path: Path) -> None:
     assert settings.feedback.preview_cache_ttl_hours == 24
 
 
-def test_llm_provider_and_lemonade_env_override(tmp_path: Path) -> None:
-    """provider/lemonade 관련 env override가 반영된다."""
+def test_llm_provider_and_lemonade_env_values_ignored(tmp_path: Path) -> None:
+    """provider/lemonade 관련 .env 값은 반영되지 않는다."""
     config_path = tmp_path / "config.yaml"
     env_path = tmp_path / ".env"
     _write_minimal_yaml(config_path)
@@ -309,25 +315,27 @@ def test_llm_provider_and_lemonade_env_override(tmp_path: Path) -> None:
     )
 
     settings = load_config(config_path=str(config_path), env_file=str(env_path))
-    assert settings.llm_provider == "lemonade"
-    assert settings.lemonade.host == "http://localhost:8000"
-    assert settings.lemonade.model == "llama-3.1-8b"
-    assert settings.lemonade.api_key == "secret"
+    assert settings.llm_provider == "ollama"
+    assert settings.lemonade.host == "http://host.docker.internal:8000"
+    assert settings.lemonade.model == ""
+    assert settings.lemonade.api_key == ""
     assert settings.lemonade.base_path == "/api/v1"
-    assert settings.lemonade.timeout_seconds == 45
+    assert settings.lemonade.timeout_seconds == 60
 
 
 def test_invalid_llm_provider_raises(tmp_path: Path) -> None:
-    """지원하지 않는 provider는 설정 로드 시 실패한다."""
+    """지원하지 않는 provider는 config.yaml 로드 시 실패한다."""
     config_path = tmp_path / "config.yaml"
     env_path = tmp_path / ".env"
-    _write_minimal_yaml(config_path)
+    config_path.write_text(
+        "llm_provider: unsupported",
+        encoding="utf-8",
+    )
     env_path.write_text(
         "\n".join(
             [
                 "TELEGRAM_BOT_TOKEN=test_token",
                 "ALLOWED_TELEGRAM_USERS=111",
-                "LLM_PROVIDER=unsupported",
             ]
         ),
         encoding="utf-8",

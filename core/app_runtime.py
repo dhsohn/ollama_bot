@@ -18,6 +18,7 @@ from typing import Any
 
 import aiosqlite
 
+from core.async_utils import run_in_thread
 from core.auto_evaluator import AutoEvaluator
 from core.automation_callables import register_builtin_callables
 from core.auto_scheduler import AutoScheduler
@@ -379,7 +380,7 @@ async def _build_runtime(
                     if semantic_cache is not None and semantic_cache.enabled
                     else None
                 )
-                intent_router = await asyncio.to_thread(
+                intent_router = await run_in_thread(
                     IntentRouter,
                     routes_path=config.intent_router.routes_path,
                     encoder_model=config.intent_router.encoder_model,
@@ -397,7 +398,7 @@ async def _build_runtime(
 
         if config.context_compressor.enabled:
             context_compressor = ContextCompressor(
-                ollama=llm,
+                llm_client=llm,
                 memory=memory,
                 recent_keep=config.context_compressor.recent_keep,
                 summary_refresh_interval=config.context_compressor.summary_refresh_interval,
@@ -406,9 +407,88 @@ async def _build_runtime(
             )
             logger.info("context_compressor_initialized")
 
+        # ── 모델 라우팅 + RAG (Lemonade 전용) ──
+        model_router = None
+        rag_pipeline = None
+        model_registry = None
+
+        if llm_provider == "lemonade" and config.model_routing.enabled:
+            try:
+                from core.model_registry import ModelRegistry
+                from core.model_router import ModelRouter
+
+                model_registry = ModelRegistry(config.model_registry, llm)
+                await model_registry.initialize()
+
+                model_router = ModelRouter(
+                    config=config.model_routing,
+                    registry=model_registry,
+                    client=llm,
+                    embedding_model=config.model_registry.embedding_model,
+                )
+                await model_router.initialize()
+                logger.info("model_router_initialized")
+            except Exception as exc:
+                logger.warning("model_router_init_failed", error=str(exc))
+                model_router = None
+
+        if llm_provider == "lemonade" and config.rag.enabled:
+            try:
+                from core.rag.context_builder import RAGContextBuilder
+                from core.rag.indexer import RAGIndexer
+                from core.rag.pipeline import RAGPipeline
+                from core.rag.reranker import RAGReranker
+                from core.rag.retriever import RAGRetriever
+
+                index_dir = config.rag.index_dir or str(
+                    Path(config.data_dir) / "rag_index"
+                )
+                rag_db_path = Path(index_dir) / "rag.db"
+
+                indexer = RAGIndexer(
+                    config.rag, llm, config.model_registry.embedding_model,
+                )
+                await indexer.initialize(str(rag_db_path))
+                cleanup_stack.push_async_callback(indexer.close)
+
+                # 시작 시 인덱싱
+                kb_path = Path(config.rag.kb_dir)
+                if kb_path.exists():
+                    await indexer.index_corpus(config.rag.kb_dir)
+
+                retriever = RAGRetriever(
+                    indexer, llm, config.model_registry.embedding_model,
+                )
+
+                reranker = None
+                if config.rag.rerank_enabled:
+                    # model_registry가 있으면 가용성 확인
+                    reranker_available = True
+                    if model_registry is not None:
+                        try:
+                            reranker_available = model_registry.is_available("reranker")
+                        except Exception:
+                            reranker_available = False
+                    if reranker_available:
+                        reranker = RAGReranker(
+                            llm, config.model_registry.reranker_model, config.rag,
+                        )
+
+                rag_pipeline = RAGPipeline(
+                    retriever, reranker, RAGContextBuilder(), config.rag,
+                )
+                logger.info(
+                    "rag_pipeline_initialized",
+                    chunks=indexer.chunk_count,
+                    reranker=reranker is not None,
+                )
+            except Exception as exc:
+                logger.warning("rag_pipeline_init_failed", error=str(exc))
+                rag_pipeline = None
+
         engine = Engine(
             config=config,
-            ollama=llm,
+            llm_client=llm,
             memory=memory,
             skills=skills,
             feedback_manager=feedback,
@@ -416,13 +496,15 @@ async def _build_runtime(
             semantic_cache=semantic_cache,
             intent_router=intent_router,
             context_compressor=context_compressor,
+            model_router=model_router,
+            rag_pipeline=rag_pipeline,
         )
 
         auto_evaluator: AutoEvaluator | None = None
         if config.auto_evaluation.enabled and feedback is not None:
             auto_evaluator = AutoEvaluator(
                 config=config.auto_evaluation,
-                ollama=llm,
+                llm_client=llm,
                 feedback_manager=feedback,
                 timezone_name=config.scheduler.timezone,
             )
@@ -447,7 +529,7 @@ async def _build_runtime(
             logger.error("scheduler_init_failed", error=str(exc))
             raise StartupError(
                 f"오류: 자동화 스케줄러 초기화 실패\n{exc}\n"
-                "SCHEDULER_TIMEZONE 설정을 확인하세요."
+                "config/config.yaml의 scheduler.timezone 설정을 확인하세요."
             ) from exc
 
         scheduler.set_dependencies(engine=engine, telegram=telegram)

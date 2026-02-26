@@ -401,6 +401,107 @@ class TestHandleMessage:
 
         assert captured["max_edit_length"] == 123
 
+    @pytest.mark.asyncio
+    async def test_handle_message_shows_runtime_warning_from_stream_meta(
+        self,
+        app_config: AppSettings,
+        mock_engine: AsyncMock,
+        security: SecurityManager,
+    ) -> None:
+        handler = TelegramHandler(config=app_config, engine=mock_engine, security=security)
+
+        async def _stream():
+            yield "ok"
+
+        handler._engine.process_message_stream = MagicMock(return_value=_stream())
+        handler._engine.consume_last_stream_meta = MagicMock(return_value={
+            "warnings": ["임베딩 모델이 없어 분류기 기반으로 동작 중입니다."],
+        })
+
+        chat = MagicMock()
+        chat.id = 111
+        chat.type = "private"
+        chat.send_action = AsyncMock()
+
+        sent_message = MagicMock()
+        sent_message.edit_text = AsyncMock()
+        sent_message.message_id = 42
+        sent_message.edit_reply_markup = AsyncMock()
+
+        message = MagicMock()
+        message.text = "hello"
+        message.reply_text = AsyncMock(return_value=sent_message)
+
+        update = MagicMock()
+        update.effective_chat = chat
+        update.effective_message = message
+
+        async def fake_stream_and_render(**kwargs):
+            return SimpleNamespace(
+                full_response="ok",
+                last_message=sent_message,
+                tier="full",
+                intent=None,
+                cache_id=None,
+                usage=None,
+            )
+
+        with patch("core.telegram_handler.stream_and_render", new=fake_stream_and_render):
+            await handler._handle_message(update, MagicMock())
+
+        assert message.reply_text.await_count == 2
+        warning_text = message.reply_text.await_args_list[1].args[0]
+        assert "실행 모드 알림" in warning_text
+
+    @pytest.mark.asyncio
+    async def test_handle_image_only_message_routes_with_empty_text(
+        self, telegram_handler: TelegramHandler,
+    ) -> None:
+        captured: dict[str, object] = {}
+
+        def _stream_call(*args, **kwargs):
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+
+            async def _stream():
+                yield "vision result"
+
+            return _stream()
+
+        telegram_handler._engine.process_message_stream = MagicMock(side_effect=_stream_call)
+
+        chat = MagicMock()
+        chat.id = 111
+        chat.type = "private"
+        chat.send_action = AsyncMock()
+
+        sent_message = MagicMock()
+        sent_message.edit_text = AsyncMock()
+        sent_message.message_id = 44
+        sent_message.edit_reply_markup = AsyncMock()
+
+        photo_file = MagicMock()
+        photo_file.download_as_bytearray = AsyncMock(return_value=bytearray(b"img-bytes"))
+        photo = MagicMock()
+        photo.get_file = AsyncMock(return_value=photo_file)
+
+        message = MagicMock()
+        message.text = None
+        message.caption = None
+        message.photo = [photo]
+        message.reply_text = AsyncMock(return_value=sent_message)
+
+        update = MagicMock()
+        update.effective_chat = chat
+        update.effective_message = message
+
+        await telegram_handler._handle_message(update, MagicMock())
+
+        assert captured["args"] == (111, "")
+        kwargs = captured["kwargs"]
+        assert isinstance(kwargs, dict)
+        assert kwargs["images"] == [b"img-bytes"]
+
 
 class TestFeedbackButtons:
     @pytest.fixture

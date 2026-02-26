@@ -15,22 +15,6 @@ if ! docker info >/dev/null 2>&1; then
   exit 1
 fi
 
-# WSL 환경에서는 Windows 게이트웨이 IP를 OLLAMA_HOST로 자동 반영한다.
-WIN_IP=""
-if grep -qi microsoft /proc/version 2>/dev/null || grep -qi microsoft /proc/sys/kernel/osrelease 2>/dev/null; then
-  WIN_IP="$(awk '/nameserver/{print $2; exit}' /etc/resolv.conf || true)"
-fi
-
-if [[ -n "${WIN_IP}" ]]; then
-  NEW_HOST="http://${WIN_IP}:11434"
-  if grep -q '^OLLAMA_HOST=' "${ENV_FILE}"; then
-    sed -i "s|^OLLAMA_HOST=.*|OLLAMA_HOST=${NEW_HOST}|" "${ENV_FILE}"
-  else
-    printf '\nOLLAMA_HOST=%s\n' "${NEW_HOST}" >> "${ENV_FILE}"
-  fi
-  echo "[up.sh] OLLAMA_HOST=${NEW_HOST}"
-fi
-
 mkdir -p \
   "${PROJECT_ROOT}/data/conversations" \
   "${PROJECT_ROOT}/data/memory" \

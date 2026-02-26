@@ -226,6 +226,11 @@ class TelegramHandler:
                 MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_message)
             )
 
+        # 사진 메시지 핸들러 (caption 포함 이미지)
+        self._app.add_handler(
+            MessageHandler(filters.PHOTO, self._handle_message)
+        )
+
         # 에러 핸들러
         self._app.add_error_handler(self._error_handler)
 
@@ -500,13 +505,13 @@ class TelegramHandler:
     @_auth_required
     async def _cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         status = await self._engine.get_status()
-        ollama = status["ollama"]
-        ollama_status = "🟢 정상" if ollama.get("status") == "ok" else "🔴 오류"
+        llm = status.get("llm", status["ollama"])
+        llm_status = "🟢 정상" if llm.get("status") == "ok" else "🔴 오류"
 
         text = (
             f"📊 <b>시스템 상태</b>\n\n"
             f"가동 시간: {status['uptime_human']}\n"
-            f"Ollama: {ollama_status}\n"
+            f"LLM 백엔드: {llm_status}\n"
             f"모델: <code>{self._escape_html(status['current_model'])}</code>\n"
             f"로드된 스킬: {status['skills_loaded']}개"
         )
@@ -553,13 +558,26 @@ class TelegramHandler:
     async def _handle_message_impl(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """자유 텍스트 메시지를 처리한다. 스트리밍 UX를 제공한다."""
         chat_id = update.effective_chat.id  # type: ignore[union-attr]
-        text = update.effective_message.text  # type: ignore[union-attr]
-        if text is None:
+        message = update.effective_message  # type: ignore[union-attr]
+        raw_text = message.text or message.caption or ""
+
+        # 이미지 처리
+        images: list[bytes] | None = None
+        if message.photo:
+            try:
+                photo = message.photo[-1]  # 최고 해상도
+                file = await photo.get_file()
+                image_bytes = await file.download_as_bytearray()
+                images = [bytes(image_bytes)]
+            except Exception:
+                pass  # 이미지 다운로드 실패 시 텍스트만 처리
+
+        if not raw_text and not images:
             return
 
         # 입력 정제
-        text = self._security.sanitize_input(text)
-        if not text.strip():
+        text = self._security.sanitize_input(raw_text) if raw_text else ""
+        if not text.strip() and not images:
             return
 
         # 타이핑 표시
@@ -583,7 +601,7 @@ class TelegramHandler:
             sent_message = await update.effective_message.reply_text(placeholder)  # type: ignore[union-attr]
 
             result = await stream_and_render(
-                stream=self._engine.process_message_stream(chat_id, text),
+                stream=self._engine.process_message_stream(chat_id, text, images=images),
                 sent_message=sent_message,
                 reply_text=update.effective_message.reply_text,  # type: ignore[union-attr]
                 split_message_fn=self._split_message,
@@ -601,6 +619,21 @@ class TelegramHandler:
                     result.intent = stream_meta.get("intent")
                     result.cache_id = stream_meta.get("cache_id")
                     result.usage = stream_meta.get("usage")
+                    runtime_warnings = stream_meta.get("warnings")
+                    if (
+                        isinstance(runtime_warnings, list)
+                        and runtime_warnings
+                    ):
+                        warning_lines = [
+                            f"- {self._escape_html(str(item))}"
+                            for item in runtime_warnings
+                            if str(item).strip()
+                        ]
+                        if warning_lines:
+                            await update.effective_message.reply_text(  # type: ignore[union-attr]
+                                "⚠️ <b>실행 모드 알림</b>\n" + "\n".join(warning_lines),
+                                parse_mode=ParseMode.HTML,
+                            )
 
             # 캐시 피드백 링크 저장
             if (

@@ -142,7 +142,7 @@ async def integration_runtime(tmp_path: Path, monkeypatch):
     ollama = _FakeOllama()
     engine = Engine(
         config=config,
-        ollama=ollama,
+        llm_client=ollama,
         memory=memory,
         skills=skills,
         instant_responder=instant_responder,

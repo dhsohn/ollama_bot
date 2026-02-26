@@ -429,6 +429,161 @@ class LemonadeClient:
                 "recovered": recovered,
             }
 
+    # ── Embeddings ──
+
+    async def embed(
+        self,
+        texts: list[str],
+        model: str | None = None,
+        timeout: int | None = None,
+    ) -> list[list[float]]:
+        """임베딩 벡터를 반환한다. POST /embeddings"""
+        client = self._require_client()
+        target_model = model or self._default_model
+        payload: dict[str, Any] = {"model": target_model, "input": texts}
+        try:
+            response = await client.post(
+                self._endpoint("/embeddings"),
+                json=payload,
+                timeout=timeout or self._timeout_default,
+            )
+            response.raise_for_status()
+        except (httpx.HTTPError, asyncio.TimeoutError, OSError) as exc:
+            self._mark_unhealthy(exc)
+            raise LemonadeClientError(
+                f"Embedding request failed for model '{target_model}': {exc}"
+            ) from exc
+        self._mark_healthy()
+        body = response.json()
+        data = body.get("data", [])
+        return [
+            item["embedding"]
+            for item in sorted(data, key=lambda x: x.get("index", 0))
+        ]
+
+    # ── Rerank ──
+
+    async def rerank(
+        self,
+        query: str,
+        documents: list[str],
+        model: str | None = None,
+        top_n: int | None = None,
+        timeout: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """리랭크 점수를 반환한다.
+
+        전용 /rerank endpoint를 우선 시도하고 없으면 chat 기반 폴백.
+        반환: [{"index": int, "score": float}, ...]  점수 내림차순 정렬.
+        """
+        client = self._require_client()
+        target_model = model or self._default_model
+        effective_timeout = timeout or self._timeout_default
+
+        # 1) 전용 /rerank endpoint 시도
+        try:
+            payload: dict[str, Any] = {
+                "model": target_model,
+                "query": query,
+                "documents": documents,
+            }
+            if top_n is not None:
+                payload["top_n"] = top_n
+            response = await client.post(
+                self._endpoint("/rerank"),
+                json=payload,
+                timeout=effective_timeout,
+            )
+            response.raise_for_status()
+            body = response.json()
+            results = body.get("results", body.get("data", []))
+            scored = []
+            for item in results:
+                scored.append({
+                    "index": int(item.get("index", 0)),
+                    "score": float(item.get("relevance_score", item.get("score", 0.0))),
+                })
+            scored.sort(key=lambda x: x["score"], reverse=True)
+            self._mark_healthy()
+            return scored
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code in (404, 405):
+                self._logger.debug("rerank_endpoint_not_available", status=exc.response.status_code)
+            else:
+                raise LemonadeClientError(
+                    f"Rerank request failed: {exc}"
+                ) from exc
+        except (httpx.HTTPError, asyncio.TimeoutError, OSError) as exc:
+            self._mark_unhealthy(exc)
+            raise LemonadeClientError(f"Rerank request failed: {exc}") from exc
+
+        # 2) chat 기반 폴백 (마지막 수단)
+        return await self._rerank_via_chat(
+            query, documents, target_model, top_n, effective_timeout,
+        )
+
+    async def _rerank_via_chat(
+        self,
+        query: str,
+        documents: list[str],
+        model: str,
+        top_n: int | None,
+        timeout: int,
+    ) -> list[dict[str, Any]]:
+        """chat/completions를 사용한 리랭크 폴백."""
+        doc_list = "\n".join(
+            f"[{i}] {doc[:500]}" for i, doc in enumerate(documents)
+        )
+        prompt = (
+            f"Query: {query}\n\n"
+            f"Documents:\n{doc_list}\n\n"
+            "위 각 문서의 query 관련성을 0.0~1.0 점수로 평가하세요.\n"
+            "JSON 배열만 출력: [{\"index\": 0, \"score\": 0.8}, ...]\n"
+            "다른 텍스트 없이 JSON만 출력하세요."
+        )
+        try:
+            chat_resp = await self.chat(
+                messages=[{"role": "user", "content": prompt}],
+                model=model,
+                max_tokens=256,
+                timeout=timeout,
+                response_format="json",
+            )
+            import json as _json
+            parsed = _json.loads(chat_resp.content)
+            if isinstance(parsed, list):
+                scored = [
+                    {"index": int(item.get("index", 0)), "score": float(item.get("score", 0.0))}
+                    for item in parsed
+                ]
+            elif isinstance(parsed, dict) and "results" in parsed:
+                scored = [
+                    {"index": int(item.get("index", 0)), "score": float(item.get("score", 0.0))}
+                    for item in parsed["results"]
+                ]
+            else:
+                raise LemonadeClientError("Unexpected rerank chat response format")
+            scored.sort(key=lambda x: x["score"], reverse=True)
+            if top_n is not None:
+                scored = scored[:top_n]
+            return scored
+        except (LemonadeClientError, json.JSONDecodeError, KeyError, ValueError) as exc:
+            raise LemonadeClientError(f"Chat-based rerank failed: {exc}") from exc
+
+    # ── Model availability ──
+
+    async def check_model_availability(self, model_names: list[str]) -> dict[str, bool]:
+        """주어진 모델 이름들의 가용성을 확인한다."""
+        client = self._require_client()
+        try:
+            available = await self._list_model_names(client)
+        except Exception:
+            return {name: False for name in model_names}
+        available_set = set(available)
+        return {name: name in available_set for name in model_names}
+
+    # ── Internal helpers ──
+
     async def _retry_with_backoff(
         self,
         coro_factory,

@@ -45,12 +45,12 @@ class AutoEvaluator:
     def __init__(
         self,
         config: AutoEvaluationConfig,
-        ollama: "OllamaClient",
+        llm_client: "OllamaClient",
         feedback_manager: "FeedbackManager",
         timezone_name: str = "UTC",
     ) -> None:
         self._config = config
-        self._ollama = ollama
+        self._llm_client = llm_client
         self._feedback = feedback_manager
         self._timezone_name = timezone_name
         self._logger = get_logger("auto_evaluator")
@@ -151,7 +151,7 @@ class AutoEvaluator:
             )
 
             try:
-                chat_response = await self._ollama.chat(
+                chat_response = await self._llm_client.chat(
                     messages=[
                         {"role": "system", "content": "응답 품질 평가 전문가입니다."},
                         {"role": "user", "content": prompt},

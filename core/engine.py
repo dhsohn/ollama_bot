@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from core.async_utils import run_in_thread
 from core.config import AppSettings
 from core.logging_setup import get_logger
 from core.memory import MemoryManager
@@ -36,6 +37,9 @@ if TYPE_CHECKING:
     from core.feedback_manager import FeedbackManager
     from core.instant_responder import InstantResponder
     from core.intent_router import ContextStrategy, IntentRouter, RouteResult
+    from core.model_router import ModelRouter, RoutingDecision as ModelRoutingDecision
+    from core.rag.pipeline import RAGPipeline
+    from core.rag.types import RAGTrace
     from core.semantic_cache import CacheContext, SemanticCache
 
 
@@ -57,6 +61,9 @@ class _StreamMeta:
     intent: str | None = None
     cache_id: int | None = None
     usage: Any = None  # ChatUsage | None
+    model_role: str | None = None
+    rag_trace: dict | None = None
+    warnings: list[str] | None = None
 
 
 @dataclass
@@ -68,6 +75,8 @@ class _RoutingDecision:
     instant: Any = None
     route: RouteResult | None = None
     cached: Any = None
+    model_routing: ModelRoutingDecision | None = None
+    rag_result: Any = None  # RAGResult | None
 
     @property
     def intent(self) -> str | None:
@@ -101,7 +110,7 @@ class Engine:
     def __init__(
         self,
         config: AppSettings,
-        ollama: OllamaClient,
+        llm_client: OllamaClient,
         memory: MemoryManager,
         skills: SkillManager,
         feedback_manager: FeedbackManager | None = None,
@@ -109,9 +118,11 @@ class Engine:
         semantic_cache: SemanticCache | None = None,
         intent_router: IntentRouter | None = None,
         context_compressor: ContextCompressor | None = None,
+        model_router: ModelRouter | None = None,
+        rag_pipeline: RAGPipeline | None = None,
     ) -> None:
         self._config = config
-        self._ollama = ollama
+        self._llm_client = llm_client
         self._memory = memory
         self._skills = skills
         self._feedback_manager = feedback_manager
@@ -119,7 +130,9 @@ class Engine:
         self._semantic_cache = semantic_cache
         self._intent_router = intent_router
         self._context_compressor = context_compressor
-        self._system_prompt = getattr(ollama, "system_prompt", config.ollama.system_prompt)
+        self._model_router = model_router
+        self._rag_pipeline = rag_pipeline
+        self._system_prompt = getattr(llm_client, "system_prompt", config.ollama.system_prompt)
         self._max_conversation_length = config.bot.max_conversation_length
         self._start_time = time.monotonic()
         self._logger = get_logger("engine")
@@ -134,6 +147,9 @@ class Engine:
         chat_id: int,
         text: str,
         model_override: str | None = None,
+        *,
+        images: list[bytes] | None = None,
+        metadata: dict | None = None,
     ) -> str:
         """사용자 메시지를 처리하고 응답을 반환한다.
 
@@ -142,7 +158,9 @@ class Engine:
         t0 = time.monotonic()
         async with self._track_request(chat_id, stream=False):
             try:
-                routing = await self._decide_routing(chat_id, text, model_override)
+                routing = await self._decide_routing(
+                    chat_id, text, model_override, images=images,
+                )
 
                 if routing.tier == "skill":
                     skill = routing.skill
@@ -150,7 +168,7 @@ class Engine:
                         raise RuntimeError("routing_decision_invalid: missing skill")
                     self._logger.info("skill_triggered", chat_id=chat_id, skill=skill.name)
                     messages = await self._build_context(chat_id, text, skill=skill)
-                    chat_response = await self._ollama.chat(
+                    chat_response = await self._llm_client.chat(
                         messages=messages, model=model_override, timeout=skill.timeout,
                     )
                     await self._persist_turn(chat_id, text, chat_response.content, skill=skill)
@@ -176,28 +194,55 @@ class Engine:
                     )
                     return cached.response
 
-                # [Tier 4] Full LLM
+                # [Tier 4] Full LLM + 모델 라우팅 + RAG
+                target_model = model_override
+                model_decision = None
+                rag_result = None
+
+                # 모델 라우팅
+                if self._model_router and not model_override:
+                    model_decision = await self._model_router.route(
+                        text, images=images, metadata=metadata,
+                    )
+                    target_model = model_decision.selected_model
+
+                # RAG 트리거 확인 + 실행
+                if self._rag_pipeline and self._rag_pipeline.should_trigger_rag(text, metadata):
+                    rag_result = await self._rag_pipeline.execute(text, metadata)
+
                 prepared = await self._prepare_request(
                     chat_id, text, stream=False, strategy=routing.strategy,
                 )
-                chat_response = await self._ollama.chat(
-                    messages=prepared.messages,
-                    model=model_override,
+
+                # RAG 컨텍스트 주입
+                messages = prepared.messages
+                if rag_result and rag_result.contexts:
+                    messages = self._inject_rag_context(messages, rag_result)
+
+                chat_response = await self._llm_client.chat(
+                    messages=messages,
+                    model=target_model,
                     timeout=prepared.timeout,
                     max_tokens=prepared.max_tokens,
                 )
                 await self._persist_turn(chat_id, text, chat_response.content)
 
                 # 캐시 저장
-                if self._semantic_cache is not None and self._semantic_cache.is_cacheable(text):
+                if (
+                    self._semantic_cache is not None
+                    and not images
+                    and self._semantic_cache.is_cacheable(text)
+                ):
                     cache_ctx = self._build_cache_context(model_override, routing.intent, chat_id)
                     await self._semantic_cache.put(
                         text, chat_response.content, context=cache_ctx,
                     )
 
                 self._log_request(
-                    t0, chat_id, "full", chat_response.usage, len(prepared.messages),
+                    t0, chat_id, "full", chat_response.usage, len(messages),
                     intent=routing.intent,
+                    model_routing=model_decision,
+                    rag_trace=rag_result.trace if rag_result else None,
                 )
 
                 # 백그라운드 요약 갱신
@@ -213,13 +258,18 @@ class Engine:
         chat_id: int,
         text: str,
         model_override: str | None = None,
+        *,
+        images: list[bytes] | None = None,
+        metadata: dict | None = None,
     ) -> AsyncGenerator[str, None]:
         """스트리밍 방식으로 메시지를 처리한다. 청크를 순차 반환한다."""
         t0 = time.monotonic()
         async with self._track_request(chat_id, stream=True):
             self._last_stream_meta.pop(chat_id, None)
             try:
-                routing = await self._decide_routing(chat_id, text, model_override)
+                routing = await self._decide_routing(
+                    chat_id, text, model_override, images=images,
+                )
 
                 if routing.tier == "skill":
                     skill = routing.skill
@@ -229,7 +279,7 @@ class Engine:
                     messages = await self._build_context(chat_id, text, skill=skill)
                     full_response = ""
                     stream_state = ChatStreamState()
-                    async for chunk in self._ollama.chat_stream(
+                    async for chunk in self._llm_client.chat_stream(
                         messages=messages,
                         model=model_override,
                         timeout=skill.timeout,
@@ -267,16 +317,33 @@ class Engine:
                     yield cached.response
                     return
 
-                # [Tier 4] Full LLM 스트리밍
+                # [Tier 4] Full LLM 스트리밍 + 모델 라우팅 + RAG
+                target_model = model_override
+                model_decision = None
+                rag_result = None
+
+                if self._model_router and not model_override:
+                    model_decision = await self._model_router.route(
+                        text, images=images, metadata=metadata,
+                    )
+                    target_model = model_decision.selected_model
+
+                if self._rag_pipeline and self._rag_pipeline.should_trigger_rag(text, metadata):
+                    rag_result = await self._rag_pipeline.execute(text, metadata)
+
                 prepared = await self._prepare_request(
                     chat_id, text, stream=True, strategy=routing.strategy,
                 )
 
+                messages = prepared.messages
+                if rag_result and rag_result.contexts:
+                    messages = self._inject_rag_context(messages, rag_result)
+
                 full_response = ""
                 stream_state = ChatStreamState()
-                async for chunk in self._ollama.chat_stream(
-                    messages=prepared.messages,
-                    model=model_override,
+                async for chunk in self._llm_client.chat_stream(
+                    messages=messages,
+                    model=target_model,
                     timeout=prepared.timeout,
                     stream_state=stream_state,
                 ):
@@ -287,16 +354,29 @@ class Engine:
 
                 # 캐시 저장
                 cache_id = None
-                if self._semantic_cache is not None and self._semantic_cache.is_cacheable(text):
+                if (
+                    self._semantic_cache is not None
+                    and not images
+                    and self._semantic_cache.is_cacheable(text)
+                ):
                     cache_ctx = self._build_cache_context(model_override, routing.intent, chat_id)
                     cache_id = await self._semantic_cache.put(text, full_response, context=cache_ctx)
 
                 usage = stream_state.usage
+                warnings = self._collect_runtime_warnings(
+                    model_decision=model_decision,
+                    rag_result=rag_result,
+                )
                 self._set_stream_meta(
                     chat_id, tier="full", intent=routing.intent, cache_id=cache_id, usage=usage,
+                    model_role=model_decision.selected_role if model_decision else None,
+                    rag_trace=rag_result.trace.to_dict() if rag_result else None,
+                    warnings=warnings or None,
                 )
                 self._log_request(
-                    t0, chat_id, "full", usage, len(prepared.messages), intent=routing.intent,
+                    t0, chat_id, "full", usage, len(messages), intent=routing.intent,
+                    model_routing=model_decision,
+                    rag_trace=rag_result.trace if rag_result else None,
                 )
 
                 # 백그라운드 요약 갱신
@@ -312,17 +392,124 @@ class Engine:
         route = await self._classify_route(text)
         return route.intent if route else None
 
+    async def route_request(
+        self,
+        text: str,
+        images: list[bytes] | None = None,
+        metadata: dict | None = None,
+    ) -> dict[str, Any]:
+        """PLAN 인터페이스: 입력 기반 라우팅 결정을 반환한다."""
+        if self._model_router is None:
+            return {
+                "selected_model": self._llm_client.default_model,
+                "selected_role": "default",
+                "trigger": "router_disabled",
+                "confidence": 0.0,
+                "anchor_scores": {},
+                "fallback_used": False,
+                "original_role": None,
+                "classifier_used": False,
+                "latency_ms": 0.0,
+                "degraded": False,
+                "degradation_reasons": [],
+            }
+        decision = await self._model_router.route(text, images=images, metadata=metadata)
+        return decision.to_dict()
+
+    async def retrieve(
+        self,
+        text: str,
+        metadata: dict | None = None,
+    ) -> dict[str, Any]:
+        """PLAN 인터페이스: RAG 검색 결과를 반환한다."""
+        if self._rag_pipeline is None:
+            return {
+                "candidates": [],
+                "contexts": [],
+                "rag_trace_partial": {
+                    "rag_used": False,
+                    "error": "rag_pipeline_disabled",
+                },
+            }
+
+        rag_result = await self._rag_pipeline.execute(text, metadata)
+        candidates = [
+            {
+                "chunk_text": item.chunk.text,
+                "retrieval_score": item.retrieval_score,
+                "rerank_score": item.rerank_score,
+                "metadata": {
+                    "doc_id": item.chunk.metadata.doc_id,
+                    "source_path": item.chunk.metadata.source_path,
+                    "chunk_id": item.chunk.metadata.chunk_id,
+                    "section_title": item.chunk.metadata.section_title,
+                    "tokens_estimate": item.chunk.metadata.tokens_estimate,
+                },
+            }
+            for item in rag_result.candidates
+        ]
+        return {
+            "candidates": candidates,
+            "contexts": rag_result.contexts,
+            "rag_trace_partial": rag_result.trace.to_dict(),
+        }
+
+    async def generate(
+        self,
+        text: str,
+        images: list[bytes] | None = None,
+        metadata: dict | None = None,
+    ) -> dict[str, Any]:
+        """PLAN 인터페이스: answer + routing_decision + rag_trace를 반환한다."""
+        routing_decision = await self.route_request(text, images=images, metadata=metadata)
+        target_model = routing_decision["selected_model"]
+
+        user_text = text.strip()
+        if not user_text and images:
+            user_text = "이미지를 분석해줘."
+
+        messages: list[dict[str, str]] = [
+            {"role": "system", "content": self._system_prompt},
+            {"role": "user", "content": user_text},
+        ]
+
+        rag_trace: dict[str, Any] = {"rag_used": False}
+        if self._rag_pipeline is not None and self._rag_pipeline.should_trigger_rag(text, metadata):
+            rag_result = await self._rag_pipeline.execute(text, metadata)
+            if rag_result.contexts:
+                messages = self._inject_rag_context(messages, rag_result)
+            rag_trace = rag_result.trace.to_dict()
+
+        chat_response = await self._llm_client.chat(
+            messages=messages,
+            model=target_model,
+            timeout=self._config.bot.response_timeout,
+        )
+
+        return {
+            "answer": chat_response.content,
+            "routing_decision": routing_decision,
+            "rag_trace": rag_trace,
+        }
+
     def consume_last_stream_meta(self, chat_id: int) -> dict[str, Any] | None:
         """스트리밍 처리 후 메타데이터를 1회성으로 반환한다."""
         meta = self._last_stream_meta.pop(chat_id, None)
         if meta is None:
             return None
-        return {
+        result: dict[str, Any] = {
             "tier": meta.tier,
             "intent": meta.intent,
             "cache_id": meta.cache_id,
             "usage": meta.usage,
         }
+        if meta.model_role is not None:
+            result["model_role"] = meta.model_role
+        if meta.rag_trace is not None:
+            result["rag_trace"] = meta.rag_trace
+        if meta.warnings:
+            result["warnings"] = meta.warnings
+        return result
 
     # ── 내부 메서드 ──
 
@@ -354,13 +541,15 @@ class Engine:
         """인텐트 분류를 이벤트 루프 밖 스레드에서 수행한다."""
         if self._intent_router is None:
             return None
-        return await asyncio.to_thread(self._intent_router.classify, text)
+        return await run_in_thread(self._intent_router.classify, text)
 
     async def _decide_routing(
         self,
         chat_id: int,
         text: str,
         model_override: str | None = None,
+        *,
+        images: list[bytes] | None = None,
     ) -> _RoutingDecision:
         """LLM 호출 전 라우팅 판정(스킬/즉시/인텐트/캐시)을 공통 처리한다."""
         skill = self._skills.match_trigger(text)
@@ -375,7 +564,11 @@ class Engine:
         route = await self._classify_route(text)
         intent = route.intent if route else None
 
-        if self._semantic_cache is not None and self._semantic_cache.is_cacheable(text):
+        if (
+            self._semantic_cache is not None
+            and not images
+            and self._semantic_cache.is_cacheable(text)
+        ):
             cache_ctx = self._build_cache_context(model_override, intent, chat_id)
             cached = await self._semantic_cache.get(text, context=cache_ctx)
             if cached is not None:
@@ -391,9 +584,13 @@ class Engine:
         intent: str | None = None,
         cache_id: int | None = None,
         usage: Any = None,
+        model_role: str | None = None,
+        rag_trace: dict | None = None,
+        warnings: list[str] | None = None,
     ) -> None:
         self._last_stream_meta[chat_id] = _StreamMeta(
             tier=tier, intent=intent, cache_id=cache_id, usage=usage,
+            model_role=model_role, rag_trace=rag_trace, warnings=warnings,
         )
 
     def _build_cache_context(
@@ -403,7 +600,7 @@ class Engine:
 
         scope = "global" if intent in {"chitchat", "simple_qa"} else "user"
         return CacheContext(
-            model=model_override or self._ollama.default_model,
+            model=model_override or self._llm_client.default_model,
             prompt_ver=self._config.ollama.prompt_version,
             intent=intent,
             scope=scope,
@@ -421,8 +618,29 @@ class Engine:
         intent: str | None = None,
         cache_hit: bool = False,
         rule: str | None = None,
+        model_routing: ModelRoutingDecision | None = None,
+        rag_trace: RAGTrace | None = None,
     ) -> None:
         elapsed_ms = (time.monotonic() - t0) * 1000
+        extra: dict[str, Any] = {}
+        if model_routing is not None:
+            extra["model_routing"] = {
+                "selected_model": model_routing.selected_model,
+                "selected_role": model_routing.selected_role,
+                "trigger": model_routing.trigger,
+                "confidence": round(model_routing.confidence, 4),
+                "fallback_used": model_routing.fallback_used,
+                "classifier_used": model_routing.classifier_used,
+                "degraded": bool(getattr(model_routing, "degraded", False)),
+                "degradation_reasons": list(getattr(model_routing, "degradation_reasons", [])),
+            }
+        if rag_trace is not None:
+            extra["rag_trace"] = {
+                "rag_used": rag_trace.rag_used,
+                "rerank_used": rag_trace.rerank_used,
+                "context_tokens": rag_trace.context_tokens_estimate,
+                "latency_ms": round(rag_trace.total_latency_ms, 1),
+            }
         self._logger.info(
             "request_completed",
             chat_id=chat_id,
@@ -434,7 +652,69 @@ class Engine:
             history_count=history_count,
             tokens_input=usage.prompt_eval_count if usage else None,
             tokens_output=usage.eval_count if usage else None,
+            **extra,
         )
+
+    def _collect_runtime_warnings(
+        self,
+        *,
+        model_decision: ModelRoutingDecision | None,
+        rag_result: Any,
+    ) -> list[str]:
+        """사용자에게 노출할 런타임 저하 경고를 수집한다."""
+        warnings: list[str] = []
+        if model_decision is not None:
+            for reason in model_decision.degradation_reasons:
+                msg = self._map_degradation_reason(reason)
+                if msg and msg not in warnings:
+                    warnings.append(msg)
+        if rag_result is not None and getattr(rag_result, "trace", None) is not None:
+            trace = rag_result.trace
+            if getattr(trace, "error", None):
+                msg = "RAG 처리 중 일부 단계가 실패해 축소 모드로 응답했습니다."
+                if msg not in warnings:
+                    warnings.append(msg)
+        return warnings
+
+    @staticmethod
+    def _map_degradation_reason(reason: str) -> str | None:
+        """내부 저하 코드를 사용자 메시지로 변환한다."""
+        mapping = {
+            "embedding_unavailable_classifier_only": (
+                "임베딩 모델이 없어 semantic routing 없이 분류기 기반으로 동작 중입니다."
+            ),
+            "semantic_router_not_initialized": "semantic routing 초기화 실패로 분류기 기반으로 동작 중입니다.",
+            "semantic_routing_failed": "semantic routing 실행 오류로 분류기 기반으로 동작했습니다.",
+            "low_cost_classifier_unavailable": "low_cost 분류 모델이 없어 라우팅 분류기를 사용할 수 없습니다.",
+            "forced_reasoning_without_classifier": "분류기 없이 reasoning 모델로 고정 라우팅되었습니다.",
+            "classifier_failed_fallback": "라우팅 분류 실패로 폴백 모델을 사용했습니다.",
+            "model_fallback_used": "요청 역할 모델이 없어 폴백 모델로 응답했습니다.",
+        }
+        return mapping.get(reason)
+
+    @staticmethod
+    def _inject_rag_context(
+        messages: list[dict[str, str]],
+        rag_result: Any,
+    ) -> list[dict[str, str]]:
+        """RAG 컨텍스트를 시스템 프롬프트에 주입한다."""
+        from core.rag.context_builder import RAGContextBuilder
+
+        if not rag_result or not rag_result.contexts:
+            return messages
+
+        context_text = rag_result.contexts[0]
+        suffix = RAGContextBuilder.build_rag_system_suffix(context_text)
+
+        result = list(messages)
+        if result and result[0].get("role") == "system":
+            result[0] = {
+                "role": "system",
+                "content": result[0]["content"] + suffix,
+            }
+        else:
+            result.insert(0, {"role": "system", "content": suffix})
+        return result
 
     def _trigger_background_summary(self, chat_id: int) -> None:
         """백그라운드에서 요약 갱신을 트리거한다."""
@@ -696,7 +976,7 @@ class Engine:
             {"role": "user", "content": input_text},
         ]
 
-        chat_response = await self._ollama.chat(
+        chat_response = await self._llm_client.chat(
             messages=messages,
             timeout=skill.timeout,
         )
@@ -722,7 +1002,7 @@ class Engine:
             {"role": "system", "content": self._system_prompt},
             {"role": "user", "content": prompt},
         ]
-        chat_response = await self._ollama.chat(
+        chat_response = await self._llm_client.chat(
             messages=messages,
             response_format=response_format,
             max_tokens=max_tokens,
@@ -732,7 +1012,7 @@ class Engine:
 
     async def change_model(self, model: str) -> dict:
         """런타임 기본 모델을 변경한다."""
-        models = await self._ollama.list_models()
+        models = await self._llm_client.list_models()
         available_names = [m["name"] for m in models]
 
         if model not in available_names:
@@ -742,8 +1022,8 @@ class Engine:
                 "available": available_names,
             }
 
-        old_model = self._ollama.default_model
-        self._ollama.default_model = model
+        old_model = self._llm_client.default_model
+        self._llm_client.default_model = model
 
         # 모델 변경 시 시맨틱 캐시 무효화
         if self._semantic_cache is not None:
@@ -756,11 +1036,11 @@ class Engine:
 
     async def list_models(self) -> list[dict]:
         """설치된 모델 목록을 반환한다."""
-        return await self._ollama.list_models()
+        return await self._llm_client.list_models()
 
     def get_current_model(self) -> str:
         """현재 기본 모델 이름을 반환한다."""
-        return self._ollama.default_model
+        return self._llm_client.default_model
 
     async def reload_skills(self, *, strict: bool = False) -> int:
         """스킬 정의를 다시 로드한다."""
@@ -795,15 +1075,16 @@ class Engine:
 
     async def get_status(self) -> dict:
         """시스템 전체 상태를 반환한다."""
-        ollama_health = await self._ollama.health_check()
+        llm_health = await self._llm_client.health_check()
         uptime_seconds = time.monotonic() - self._start_time
 
         status = {
             "uptime_seconds": int(uptime_seconds),
             "uptime_human": self._format_uptime(uptime_seconds),
-            "ollama": ollama_health,
+            "ollama": llm_health,
+            "llm": llm_health,
             "skills_loaded": self._skills.skill_count,
-            "current_model": self._ollama.default_model,
+            "current_model": self._llm_client.default_model,
         }
 
         tier_details = self._build_optimization_tier_details()
@@ -858,6 +1139,104 @@ class Engine:
                 instance=self._context_compressor,
                 unavailable_reason="init_failed",
             ),
+            "model_router": self._build_model_router_tier_detail(),
+            "rag_pipeline": self._build_rag_tier_detail(),
+        }
+
+    def _build_model_router_tier_detail(self) -> dict[str, Any]:
+        """모델 라우터의 저하 상태를 계산한다."""
+        name = "model_router"
+        if not self._config.model_routing.enabled:
+            return self._manual_tier_detail(name=name, configured=False, enabled=False, degraded=False)
+        if self._model_router is None:
+            return self._manual_tier_detail(
+                name=name,
+                configured=True,
+                enabled=False,
+                degraded=True,
+                reason="init_failed",
+            )
+        status_getter = getattr(self._model_router, "get_status", None)
+        if not callable(status_getter):
+            return self._manual_tier_detail(name=name, configured=True, enabled=True, degraded=False)
+
+        router_status = status_getter()
+        reasons: list[str] = []
+        if not bool(router_status.get("embedding_available", True)):
+            reasons.append("embedding_unavailable_classifier_only")
+        if not bool(router_status.get("classifier_available", True)):
+            reasons.append("low_cost_classifier_unavailable")
+        if bool(router_status.get("initialized")) is False and bool(router_status.get("embedding_available", True)):
+            reasons.append("semantic_router_not_initialized")
+
+        return self._manual_tier_detail(
+            name=name,
+            configured=True,
+            enabled=True,
+            degraded=bool(reasons),
+            reason=", ".join(reasons) if reasons else None,
+        )
+
+    def _build_rag_tier_detail(self) -> dict[str, Any]:
+        """RAG 파이프라인의 저하 상태를 계산한다."""
+        name = "rag_pipeline"
+        if not self._config.rag.enabled:
+            return self._manual_tier_detail(name=name, configured=False, enabled=False, degraded=False)
+        if self._rag_pipeline is None:
+            return self._manual_tier_detail(
+                name=name,
+                configured=True,
+                enabled=False,
+                degraded=True,
+                reason="init_failed",
+            )
+        has_reranker = bool(getattr(self._rag_pipeline, "has_reranker", False))
+        if self._config.rag.rerank_enabled and not has_reranker:
+            return self._manual_tier_detail(
+                name=name,
+                configured=True,
+                enabled=True,
+                degraded=True,
+                reason="reranker_unavailable",
+            )
+        return self._manual_tier_detail(name=name, configured=True, enabled=True, degraded=False)
+
+    def _manual_tier_detail(
+        self,
+        *,
+        name: str,
+        configured: bool,
+        enabled: bool,
+        degraded: bool,
+        reason: str | None = None,
+    ) -> dict[str, Any]:
+        """동적 판단 컴포넌트용 tier detail 생성."""
+        now = time.monotonic()
+        if not configured:
+            self._degraded_since.pop(name, None)
+            return {
+                "configured": False,
+                "enabled": False,
+                "degraded": False,
+                "reason": None,
+                "degraded_for_seconds": None,
+            }
+        if degraded:
+            since = self._degraded_since.setdefault(name, now)
+            return {
+                "configured": True,
+                "enabled": enabled,
+                "degraded": True,
+                "reason": reason or "degraded",
+                "degraded_for_seconds": int(now - since),
+            }
+        self._degraded_since.pop(name, None)
+        return {
+            "configured": True,
+            "enabled": enabled,
+            "degraded": False,
+            "reason": None,
+            "degraded_for_seconds": None,
         }
 
     def _make_tier_detail(

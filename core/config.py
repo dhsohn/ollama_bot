@@ -216,20 +216,85 @@ class ContextCompressorConfig(BaseModel):
     run_only_when_idle: bool = True
 
 
-class AppSettings(BaseSettings):
-    """루트 설정. .env에서 시크릿을, config.yaml에서 나머지를 로드한다."""
+class ModelRegistryConfig(BaseModel):
+    """Lemonade Server 모델 레지스트리 설정."""
+
+    embedding_model: str = "Qwen3-Embedding-0.6B-GGUF"
+    reranker_model: str = "bge-reranker-v2-m3-GGUF"
+    vision_model: str = "Qwen3-VL-8B-Instruct-GGUF"
+    low_cost_model: str = "GLM-4.7-Flash-GGUF"
+    reasoning_model: str = "Qwen3-14B-Hybrid"
+    coding_model: str = "Qwen3-Coder-Next-GGUF"
+    fallback_chain: dict[str, list[str]] = Field(default_factory=lambda: {
+        "low_cost": ["reasoning"],
+        "reasoning": ["low_cost"],
+        "coding": ["reasoning", "low_cost"],
+        "vision": [],
+    })
+
+
+class ModelRoutingConfig(BaseModel):
+    """모델 라우팅 설정."""
+
+    enabled: bool = True
+    anchors_path: str = "config/routing_anchors.yaml"
+    threshold: float = 0.45
+    margin: float = 0.05
+    embedding_cache_size: int = 5000
+    code_keywords: list[str] = Field(default_factory=lambda: [
+        "코드", "함수", "클래스", "디버그", "디버깅", "에러", "버그",
+        "리팩토링", "테스트", "빌드", "배포", "컴파일", "런타임",
+        "스택트레이스", "traceback", "exception", "TypeError",
+        "SyntaxError", "ValueError", "import ", "def ", "class ",
+        "return ", "async def", "await ", ".py", ".js", ".ts",
+    ])
+
+    @field_validator("threshold", "margin")
+    @classmethod
+    def validate_score_range(cls, value: float) -> float:
+        if not 0.0 <= value <= 1.0:
+            raise ValueError("threshold/margin must be between 0.0 and 1.0")
+        return value
+
+
+class RAGConfig(BaseModel):
+    """RAG 파이프라인 설정."""
+
+    enabled: bool = True
+    kb_dir: str = "./kb"
+    index_dir: str = ""
+    chunk_min_tokens: int = 500
+    chunk_max_tokens: int = 1200
+    chunk_overlap_ratio: float = 0.15
+    retrieve_k0: int = 40
+    rerank_enabled: bool = True
+    rerank_topk: int = 8
+    rerank_budget_ms: int = 1200
+    retrieval_score_floor: float = 0.3
+    supported_extensions: list[str] = Field(default_factory=lambda: [
+        ".md", ".txt", ".pdf", ".docx", ".html", ".htm",
+        ".json", ".csv", ".py", ".js", ".ts",
+    ])
+    trigger_keywords: list[str] = Field(default_factory=lambda: [
+        "문서", "프로젝트", "레포", "노트", "폴더", "논문",
+        "결과", "출처", "인용", "어디에 적혀", "내 파일",
+        "지식베이스", "kb", "검색해",
+    ])
+
+    @field_validator("chunk_overlap_ratio")
+    @classmethod
+    def validate_overlap(cls, value: float) -> float:
+        if not 0.0 <= value <= 0.5:
+            raise ValueError("chunk_overlap_ratio must be between 0.0 and 0.5")
+        return value
+
+
+class AppSettings(BaseModel):
+    """루트 설정. 런타임 설정은 YAML에서, 텔레그램 시크릿은 .env에서 로드한다."""
 
     telegram_bot_token: str = ""
     allowed_telegram_users: str = ""
     llm_provider: Literal["ollama", "lemonade"] = "ollama"
-    ollama_host: str = "http://host.docker.internal:11434"
-    ollama_model: str = "gpt-oss:20b"
-    lemonade_host: str = "http://host.docker.internal:8000"
-    lemonade_model: str = ""
-    lemonade_api_key: str = ""
-    lemonade_base_path: str = "/api/v1"
-    lemonade_timeout_seconds: int = 60
-    scheduler_timezone: str = "Asia/Seoul"
     log_level: str = "INFO"
     data_dir: str = "/app/data"
 
@@ -246,15 +311,29 @@ class AppSettings(BaseSettings):
     semantic_cache: SemanticCacheConfig = Field(default_factory=SemanticCacheConfig)
     intent_router: IntentRouterConfig = Field(default_factory=IntentRouterConfig)
     context_compressor: ContextCompressorConfig = Field(default_factory=ContextCompressorConfig)
+    model_registry: ModelRegistryConfig = Field(default_factory=ModelRegistryConfig)
+    model_routing: ModelRoutingConfig = Field(default_factory=ModelRoutingConfig)
+    rag: RAGConfig = Field(default_factory=RAGConfig)
 
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+
+class _TelegramEnvSecrets(BaseSettings):
+    """텔레그램 관련 시크릿만 .env에서 로드한다."""
+
+    telegram_bot_token: str = ""
+    allowed_telegram_users: str = ""
+
+    model_config = {
+        "env_file": ".env",
+        "env_file_encoding": "utf-8",
+        "extra": "ignore",
+    }
 
 
 def load_config(
     config_path: str = "config/config.yaml",
     env_file: str | Sequence[str] | None = ".env",
 ) -> AppSettings:
-    """config.yaml과 .env를 병합하여 AppSettings를 반환한다."""
+    """config.yaml과 .env(텔레그램 시크릿 전용)를 병합하여 AppSettings를 반환한다."""
     yaml_data: dict = {}
     config_file = Path(config_path)
     if config_file.exists():
@@ -275,58 +354,20 @@ def load_config(
         env_kwargs["_env_file"] = env_files[0]
     elif len(env_files) > 1:
         env_kwargs["_env_file"] = tuple(env_files)
+    else:
+        env_kwargs["_env_file"] = None
 
-    settings = AppSettings(**env_kwargs)
-    explicit_env_fields = set(settings.__pydantic_fields_set__)
+    # 일반 런타임 설정은 YAML 기준으로만 로드한다.
+    if not isinstance(yaml_data, dict):
+        raise ValueError("config.yaml 최상위 구조는 mapping(dict)이어야 합니다.")
+    settings = AppSettings.model_validate(yaml_data)
 
-    if "llm_provider" in yaml_data and "llm_provider" not in explicit_env_fields:
-        settings.llm_provider = yaml_data["llm_provider"]
-
-    # YAML 데이터를 서브 모델에 오버레이
-    if "bot" in yaml_data:
-        settings.bot = BotConfig(**yaml_data["bot"])
-    if "ollama" in yaml_data:
-        settings.ollama = OllamaConfig(**yaml_data["ollama"])
-    if "lemonade" in yaml_data:
-        settings.lemonade = LemonadeConfig(**yaml_data["lemonade"])
-    if "telegram" in yaml_data:
-        settings.telegram = TelegramConfig(**yaml_data["telegram"])
-    if "security" in yaml_data:
-        settings.security = SecurityConfig(**yaml_data["security"])
-    if "memory" in yaml_data:
-        settings.memory = MemoryConfig(**yaml_data["memory"])
-    if "scheduler" in yaml_data:
-        settings.scheduler = SchedulerConfig(**yaml_data["scheduler"])
-    if "feedback" in yaml_data:
-        settings.feedback = FeedbackConfig(**yaml_data["feedback"])
-    if "auto_evaluation" in yaml_data:
-        settings.auto_evaluation = AutoEvaluationConfig(**yaml_data["auto_evaluation"])
-    if "instant_responder" in yaml_data:
-        settings.instant_responder = InstantResponderConfig(**yaml_data["instant_responder"])
-    if "semantic_cache" in yaml_data:
-        settings.semantic_cache = SemanticCacheConfig(**yaml_data["semantic_cache"])
-    if "intent_router" in yaml_data:
-        settings.intent_router = IntentRouterConfig(**yaml_data["intent_router"])
-    if "context_compressor" in yaml_data:
-        settings.context_compressor = ContextCompressorConfig(**yaml_data["context_compressor"])
-
-    # 명시적으로 지정된 env 값만 YAML보다 우선
-    if "ollama_host" in explicit_env_fields and settings.ollama_host:
-        settings.ollama.host = settings.ollama_host
-    if "ollama_model" in explicit_env_fields and settings.ollama_model:
-        settings.ollama.model = settings.ollama_model
-    if "lemonade_host" in explicit_env_fields and settings.lemonade_host:
-        settings.lemonade.host = settings.lemonade_host
-    if "lemonade_model" in explicit_env_fields and settings.lemonade_model:
-        settings.lemonade.model = settings.lemonade_model
-    if "lemonade_api_key" in explicit_env_fields:
-        settings.lemonade.api_key = settings.lemonade_api_key
-    if "lemonade_base_path" in explicit_env_fields and settings.lemonade_base_path:
-        settings.lemonade.base_path = settings.lemonade_base_path
-    if "lemonade_timeout_seconds" in explicit_env_fields:
-        settings.lemonade.timeout_seconds = settings.lemonade_timeout_seconds
-    if "scheduler_timezone" in explicit_env_fields and settings.scheduler_timezone:
-        settings.scheduler = SchedulerConfig(timezone=settings.scheduler_timezone)
+    # .env는 텔레그램 관련 시크릿만 반영한다.
+    env_secrets = _TelegramEnvSecrets(**env_kwargs)
+    if env_secrets.telegram_bot_token:
+        settings.telegram_bot_token = env_secrets.telegram_bot_token
+    if env_secrets.allowed_telegram_users:
+        settings.allowed_telegram_users = env_secrets.allowed_telegram_users
 
     # ALLOWED_TELEGRAM_USERS CSV → security.allowed_users 리스트
     if settings.allowed_telegram_users:
