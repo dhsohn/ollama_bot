@@ -37,7 +37,7 @@ def mock_ollama() -> AsyncMock:
     client = AsyncMock()
     client.default_model = "test-model"
     client.system_prompt = "You are a test bot."
-    client.chat = AsyncMock(return_value=ChatResponse(content="LLM response"))
+    client.chat = AsyncMock(return_value=ChatResponse(content="LLM 응답"))
     client.health_check = AsyncMock(return_value={"status": "ok"})
     client.list_models = AsyncMock(return_value=[{"name": "test-model", "size": 1024}])
     return client
@@ -74,8 +74,24 @@ class TestProcessMessage:
     @pytest.mark.asyncio
     async def test_free_conversation(self, engine: Engine, mock_ollama) -> None:
         result = await engine.process_message(111, "안녕하세요")
-        assert result == "LLM response"
+        assert result == "LLM 응답"
         mock_ollama.chat.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_process_message_retries_when_response_is_low_quality(
+        self,
+        engine: Engine,
+        mock_ollama,
+    ) -> None:
+        mock_ollama.chat = AsyncMock(side_effect=[
+            ChatResponse(content="ㅊ...번역 ... The conversation is now ended.."),
+            ChatResponse(content="네, 가능합니다. 화학 DFT 데이터 분석/정리를 도와드릴 수 있어요."),
+        ])
+
+        result = await engine.process_message(111, "너한테 화학 dft 데이터 분석시킬거야 잘할수 있지?")
+
+        assert result == "네, 가능합니다. 화학 DFT 데이터 분석/정리를 도와드릴 수 있어요."
+        assert mock_ollama.chat.await_count == 2
 
     @pytest.mark.asyncio
     async def test_process_message_sanitizes_internal_channel_tokens(
@@ -110,7 +126,7 @@ class TestProcessMessage:
         assert history[0]["role"] == "user"
         assert history[0]["content"] == "테스트 메시지"
         assert history[1]["role"] == "assistant"
-        assert history[1]["content"] == "LLM response"
+        assert history[1]["content"] == "LLM 응답"
 
     @pytest.mark.asyncio
     async def test_skill_triggered(self, engine: Engine, mock_skills, mock_ollama) -> None:
@@ -124,13 +140,27 @@ class TestProcessMessage:
         mock_skills.match_trigger.return_value = skill
 
         result = await engine.process_message(111, "/summarize 이 텍스트를 요약해줘")
-        assert result == "LLM response"
+        assert result == "LLM 응답"
 
         # 시스템 프롬프트가 스킬의 것으로 변경되었는지 확인
         call_args = mock_ollama.chat.call_args
         messages = call_args.kwargs.get("messages") or call_args[1].get("messages")
         system_msg = [m for m in messages if m["role"] == "system"]
-        assert system_msg[0]["content"] == "You are a summarizer."
+        assert "You are a summarizer." in system_msg[0]["content"]
+
+    @pytest.mark.asyncio
+    async def test_process_message_injects_korean_language_policy(
+        self,
+        engine: Engine,
+        mock_ollama,
+    ) -> None:
+        await engine.process_message(111, "테스트")
+
+        call_args = mock_ollama.chat.call_args
+        messages = call_args.kwargs.get("messages") or call_args[1].get("messages")
+        system_content = messages[0]["content"]
+        assert "[언어 정책]" in system_content
+        assert "한국어로만 답하세요" in system_content
 
     @pytest.mark.asyncio
     async def test_context_includes_history(self, engine: Engine, memory: MemoryManager, mock_ollama) -> None:
@@ -172,7 +202,7 @@ class TestProcessMessage:
             classifier_used=False,
         ))
 
-        mock_ollama.chat = AsyncMock(return_value=ChatResponse(content="vision response"))
+        mock_ollama.chat = AsyncMock(return_value=ChatResponse(content="비전 응답"))
 
         engine = Engine(
             config=app_settings,
@@ -185,7 +215,7 @@ class TestProcessMessage:
 
         result = await engine.process_message(111, "이미지 분석", images=[b"fake-image"])
 
-        assert result == "vision response"
+        assert result == "비전 응답"
         semantic_cache.get.assert_not_awaited()
         semantic_cache.put.assert_not_awaited()
         model_router.route.assert_awaited_once()
@@ -351,6 +381,34 @@ class TestProcessMessage:
         assert history[-1]["content"] == "한국어 최종 답변입니다."
 
     @pytest.mark.asyncio
+    async def test_stream_low_quality_response_sets_repaired_meta_and_persists_repaired(
+        self,
+        engine: Engine,
+        mock_ollama,
+        memory: MemoryManager,
+    ) -> None:
+        async def _stream():
+            yield "ㅊ...번역 ... The conversation is now ended.."
+
+        mock_ollama.chat_stream = MagicMock(return_value=_stream())
+        mock_ollama.chat = AsyncMock(return_value=ChatResponse(
+            content="네, 가능합니다. 화학 DFT 데이터 분석/정리를 도와드릴 수 있어요."
+        ))
+
+        chunks = []
+        async for chunk in engine.process_message_stream(111, "너한테 화학 dft 데이터 분석시킬거야 잘할수 있지?"):
+            chunks.append(chunk)
+
+        assert chunks == ["ㅊ...번역 ... The conversation is now ended.."]
+        meta = engine.consume_last_stream_meta(111)
+        assert meta is not None
+        assert meta.get("repaired_response") == "네, 가능합니다. 화학 DFT 데이터 분석/정리를 도와드릴 수 있어요."
+
+        history = await memory.get_conversation(111)
+        assert history[-1]["role"] == "assistant"
+        assert history[-1]["content"] == "네, 가능합니다. 화학 DFT 데이터 분석/정리를 도와드릴 수 있어요."
+
+    @pytest.mark.asyncio
     async def test_stream_empty_and_chat_empty_raises(
         self,
         engine: Engine,
@@ -378,7 +436,7 @@ class TestProcessMessage:
         semantic_cache = AsyncMock()
         semantic_cache.is_cacheable = MagicMock(return_value=True)
         semantic_cache.get = AsyncMock(
-            return_value=SimpleNamespace(response="cached response", cache_id=99)
+            return_value=SimpleNamespace(response="캐시된 응답입니다.", cache_id=99)
         )
         semantic_cache.put = AsyncMock()
 
@@ -394,12 +452,107 @@ class TestProcessMessage:
         async for chunk in engine.process_message_stream(111, "반복 질문"):
             chunks.append(chunk)
 
-        assert chunks == ["cached response"]
+        assert chunks == ["캐시된 응답입니다."]
         meta = engine.consume_last_stream_meta(111)
         assert meta is not None
         assert meta["tier"] == "cache"
         assert meta["cache_id"] == 99
         mock_ollama.chat_stream.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_cache_hit_low_quality_is_invalidated_and_bypassed(
+        self,
+        app_settings: AppSettings,
+        mock_ollama: AsyncMock,
+        memory: MemoryManager,
+        mock_skills: MagicMock,
+    ) -> None:
+        semantic_cache = AsyncMock()
+        semantic_cache.is_cacheable = MagicMock(return_value=True)
+        semantic_cache.get = AsyncMock(return_value=SimpleNamespace(
+            response="ㅎㅎ…(I’ll keep it short!)!)",
+            cache_id=77,
+        ))
+        semantic_cache.invalidate_by_id = AsyncMock(return_value=True)
+        semantic_cache.put = AsyncMock()
+        mock_ollama.chat = AsyncMock(return_value=ChatResponse(content="한국어로 정상 응답합니다."))
+
+        engine = Engine(
+            config=app_settings,
+            llm_client=mock_ollama,
+            memory=memory,
+            skills=mock_skills,
+            semantic_cache=semantic_cache,
+        )
+
+        result = await engine.process_message(111, "너한테 화학 dft 데이터 분석시킬거야 잘할수 있지?")
+
+        assert result == "한국어로 정상 응답합니다."
+        semantic_cache.invalidate_by_id.assert_awaited_once_with(77)
+        mock_ollama.chat.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_low_quality_response_repaired_before_semantic_cache_store(
+        self,
+        app_settings: AppSettings,
+        mock_ollama: AsyncMock,
+        memory: MemoryManager,
+        mock_skills: MagicMock,
+    ) -> None:
+        semantic_cache = AsyncMock()
+        semantic_cache.is_cacheable = MagicMock(return_value=True)
+        semantic_cache.get = AsyncMock(return_value=None)
+        semantic_cache.put = AsyncMock()
+        mock_ollama.chat = AsyncMock(return_value=ChatResponse(content=(
+            "예! 아래 기본 흐름으로 진행하실 수 있어요...\n\n"
+            "The first part is what you are supposed to do.."
+        )))
+
+        engine = Engine(
+            config=app_settings,
+            llm_client=mock_ollama,
+            memory=memory,
+            skills=mock_skills,
+            semantic_cache=semantic_cache,
+        )
+
+        _ = await engine.process_message(111, "너한테 화학 dft 데이터 분석시킬거야 잘할수 있지?")
+
+        semantic_cache.put.assert_awaited_once()
+        put_call = semantic_cache.put.await_args
+        stored_response = put_call.args[1]
+        assert "The first part is what you are supposed to do" not in stored_response
+        assert "번역" not in stored_response
+
+    @pytest.mark.asyncio
+    async def test_short_mixed_language_response_repaired_before_semantic_cache_store(
+        self,
+        app_settings: AppSettings,
+        mock_ollama: AsyncMock,
+        memory: MemoryManager,
+        mock_skills: MagicMock,
+    ) -> None:
+        semantic_cache = AsyncMock()
+        semantic_cache.is_cacheable = MagicMock(return_value=True)
+        semantic_cache.get = AsyncMock(return_value=None)
+        semantic_cache.put = AsyncMock()
+        mock_ollama.chat = AsyncMock(return_value=ChatResponse(content="ㅎㅎ…(I’ll keep it short!)!)"))
+
+        engine = Engine(
+            config=app_settings,
+            llm_client=mock_ollama,
+            memory=memory,
+            skills=mock_skills,
+            semantic_cache=semantic_cache,
+        )
+
+        _ = await engine.process_message(111, "너한테 화학 dft 데이터 분석시킬거야 잘할수 있지?")
+
+        semantic_cache.put.assert_awaited_once()
+        put_call = semantic_cache.put.await_args
+        stored_response = put_call.args[1]
+        assert "keep it short" not in stored_response.lower()
+        assert "네, 가능합니다." in stored_response
 
     @pytest.mark.asyncio
     async def test_stream_usage_isolated_per_concurrent_requests(
@@ -506,7 +659,7 @@ class TestExecuteSkill:
         mock_skills.get_skill.return_value = skill
 
         result = await engine.execute_skill("summarize", {"input_text": "테스트"})
-        assert result == "LLM response"
+        assert result == "LLM 응답"
 
     @pytest.mark.asyncio
     async def test_execute_skill_not_found(self, engine: Engine, mock_skills) -> None:
@@ -642,7 +795,7 @@ class TestPlanInterfaces:
         self, engine: Engine,
     ) -> None:
         result = await engine.generate("테스트 질문")
-        assert result["answer"] == "LLM response"
+        assert result["answer"] == "LLM 응답"
         assert "routing_decision" in result
         assert "rag_trace" in result
         assert result["rag_trace"]["rag_used"] is False

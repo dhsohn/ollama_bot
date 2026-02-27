@@ -66,6 +66,7 @@ class _StreamMeta:
     model_role: str | None = None
     rag_trace: dict | None = None
     warnings: list[str] | None = None
+    repaired_response: str | None = None
 
 
 @dataclass
@@ -96,6 +97,15 @@ _INJECTION_RE = _re.compile(
     _re.IGNORECASE,
 )
 _CODE_FENCE_RE = _re.compile(r"```(?:json|markdown|md|text)?|```", _re.IGNORECASE)
+_CODE_BLOCK_RE = _re.compile(r"```.*?```", _re.DOTALL)
+_ENGLISH_REQUEST_RE = _re.compile(
+    r"(영어|영문|in\s+english|english|translate|번역)",
+    _re.IGNORECASE,
+)
+_LOW_QUALITY_HINT_RE = _re.compile(
+    r"(i[’']?ll\s+keep\s+it\s+short|conversation\s+is\s+now\s+ended|^\s*ㅊ\.\.\.)",
+    _re.IGNORECASE,
+)
 
 
 def _strip_prompt_injection(text: str) -> str:
@@ -249,6 +259,15 @@ class Engine:
                     max_tokens=prepared.max_tokens,
                 )
                 content = sanitize_model_output(chat_response.content)
+                if not self._is_cache_response_acceptable(text, content):
+                    repaired = await self._retry_low_quality_response(
+                        messages=messages,
+                        query=text,
+                        model=target_model,
+                        timeout=prepared.timeout,
+                        max_tokens=prepared.max_tokens,
+                    )
+                    content = repaired or self._build_guardrail_fallback(text)
                 await self._persist_turn(chat_id, text, content)
 
                 # 캐시 저장
@@ -257,10 +276,13 @@ class Engine:
                     and not images
                     and self._semantic_cache.is_cacheable(text)
                 ):
-                    cache_ctx = self._build_cache_context(model_override, routing.intent, chat_id)
-                    await self._semantic_cache.put(
-                        text, content, context=cache_ctx,
-                    )
+                    if self._is_cache_response_acceptable(text, content):
+                        cache_ctx = self._build_cache_context(model_override, routing.intent, chat_id)
+                        await self._semantic_cache.put(
+                            text, content, context=cache_ctx,
+                        )
+                    else:
+                        self._logger.info("semantic_cache_put_skipped_low_quality", chat_id=chat_id)
 
                 self._log_request(
                     t0, chat_id, "full", chat_response.usage, len(messages),
@@ -433,6 +455,7 @@ class Engine:
                     messages = self._inject_rag_context(messages, rag_result)
 
                 full_response = ""
+                repaired_response = None
                 stream_state = ChatStreamState()
                 usage = None
                 stream_error: Exception | None = None
@@ -495,6 +518,16 @@ class Engine:
                 if not full_response.strip():
                     raise RuntimeError("empty_response_from_llm")
                 full_response = sanitize_model_output(full_response)
+                if not self._is_cache_response_acceptable(text, full_response):
+                    repaired = await self._retry_low_quality_response(
+                        messages=messages,
+                        query=text,
+                        model=target_model,
+                        timeout=prepared.timeout,
+                        max_tokens=prepared.max_tokens,
+                    )
+                    repaired_response = repaired or self._build_guardrail_fallback(text)
+                    full_response = repaired_response
 
                 await self._persist_turn(chat_id, text, full_response)
 
@@ -505,8 +538,11 @@ class Engine:
                     and not images
                     and self._semantic_cache.is_cacheable(text)
                 ):
-                    cache_ctx = self._build_cache_context(model_override, routing.intent, chat_id)
-                    cache_id = await self._semantic_cache.put(text, full_response, context=cache_ctx)
+                    if self._is_cache_response_acceptable(text, full_response):
+                        cache_ctx = self._build_cache_context(model_override, routing.intent, chat_id)
+                        cache_id = await self._semantic_cache.put(text, full_response, context=cache_ctx)
+                    else:
+                        self._logger.info("semantic_cache_put_skipped_low_quality", chat_id=chat_id)
 
                 warnings = self._collect_runtime_warnings(
                     model_decision=model_decision,
@@ -517,6 +553,7 @@ class Engine:
                     model_role=model_decision.selected_role if model_decision else None,
                     rag_trace=rag_result.trace.to_dict() if rag_result else None,
                     warnings=warnings or None,
+                    repaired_response=repaired_response,
                 )
                 self._log_request(
                     t0, chat_id, "full", usage, len(messages), intent=routing.intent,
@@ -613,8 +650,9 @@ class Engine:
         if not user_text and images:
             user_text = "이미지를 분석해줘."
 
+        system_prompt = self._inject_language_policy(self._system_prompt)
         messages: list[dict[str, str]] = [
-            {"role": "system", "content": self._system_prompt},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_text},
         ]
 
@@ -655,6 +693,8 @@ class Engine:
             result["rag_trace"] = meta.rag_trace
         if meta.warnings:
             result["warnings"] = meta.warnings
+        if meta.repaired_response:
+            result["repaired_response"] = meta.repaired_response
         return result
 
     # ── 내부 메서드 ──
@@ -718,7 +758,23 @@ class Engine:
             cache_ctx = self._build_cache_context(model_override, intent, chat_id)
             cached = await self._semantic_cache.get(text, context=cache_ctx)
             if cached is not None:
-                return _RoutingDecision(tier="cache", route=route, cached=cached)
+                if not self._is_cache_response_acceptable(text, cached.response):
+                    self._logger.info(
+                        "semantic_cache_entry_rejected",
+                        chat_id=chat_id,
+                        cache_id=cached.cache_id,
+                    )
+                    try:
+                        await self._semantic_cache.invalidate_by_id(cached.cache_id)
+                    except Exception as exc:
+                        self._logger.debug(
+                            "semantic_cache_rejected_entry_invalidate_failed",
+                            chat_id=chat_id,
+                            cache_id=cached.cache_id,
+                            error=str(exc),
+                        )
+                else:
+                    return _RoutingDecision(tier="cache", route=route, cached=cached)
 
         return _RoutingDecision(tier="full", route=route)
 
@@ -733,10 +789,12 @@ class Engine:
         model_role: str | None = None,
         rag_trace: dict | None = None,
         warnings: list[str] | None = None,
+        repaired_response: str | None = None,
     ) -> None:
         self._last_stream_meta[chat_id] = _StreamMeta(
             tier=tier, intent=intent, cache_id=cache_id, usage=usage,
             model_role=model_role, rag_trace=rag_trace, warnings=warnings,
+            repaired_response=repaired_response,
         )
 
     def _build_cache_context(
@@ -752,6 +810,112 @@ class Engine:
             scope=scope,
             chat_id=chat_id if scope == "user" else None,
         )
+
+    @staticmethod
+    def _is_response_incomplete_for_cache(response: str) -> bool:
+        stripped = response.strip()
+        if not stripped:
+            return True
+        if stripped.endswith(("..", "...", "…", ":", "：", "-", "—", "•", "*")):
+            return True
+        return False
+
+    @staticmethod
+    def _query_requests_english(query: str) -> bool:
+        return bool(_ENGLISH_REQUEST_RE.search(query))
+
+    def _is_language_consistent_for_cache(self, query: str, response: str) -> bool:
+        language = self._normalize_language(self._config.bot.language)
+        if language != "ko":
+            return True
+        if self._query_requests_english(query):
+            return True
+
+        probe = _CODE_BLOCK_RE.sub("", response)
+        lowered_probe = probe.lower()
+        if "i'll keep it short" in lowered_probe or "i’ll keep it short" in lowered_probe:
+            return False
+
+        hangul_count = len(_re.findall(r"[가-힣]", probe))
+        latin_count = len(_re.findall(r"[A-Za-z]", probe))
+        query_hangul_count = len(_re.findall(r"[가-힣]", query))
+
+        if hangul_count >= 8 and latin_count > hangul_count * 2:
+            return False
+        if query_hangul_count >= 4 and hangul_count < 8 and latin_count >= 60:
+            return False
+        if query_hangul_count >= 4 and len(probe) < 60 and latin_count >= 8 and hangul_count < 10:
+            return False
+        if query_hangul_count >= 4 and len(probe) < 40 and latin_count >= 4:
+            return False
+        return True
+
+    def _is_response_suspicious(self, response: str) -> bool:
+        stripped = sanitize_model_output(response).strip()
+        if not stripped:
+            return True
+        if _LOW_QUALITY_HINT_RE.search(stripped):
+            return True
+        if self._is_response_incomplete_for_cache(stripped):
+            return True
+        return False
+
+    def _build_guardrail_fallback(self, query: str) -> str:
+        if self._normalize_language(self._config.bot.language) == "ko":
+            return (
+                "네, 가능합니다. 화학 DFT 데이터 전처리, 결과 요약, 이상치/오류 점검까지 도와드릴 수 있어요. "
+                "원하시면 사용 중인 파일 형식과 목표 지표를 알려주세요."
+            )
+        return (
+            "Yes, I can help. I can support DFT data preprocessing, result summarization, and anomaly/error checks. "
+            "Share your file format and target metrics to start."
+        )
+
+    async def _retry_low_quality_response(
+        self,
+        *,
+        messages: list[dict[str, str]],
+        query: str,
+        model: str | None,
+        timeout: int,
+        max_tokens: int | None,
+    ) -> str | None:
+        retry_messages = list(messages)
+        retry_messages.append({
+            "role": "user",
+            "content": (
+                "직전 답변이 품질이 낮았습니다. 내부 주석/번역 문구/영어 혼용을 제거하고, "
+                "사용자 질문에 대해 한국어로 완결된 3~6문장 답변을 다시 작성하세요."
+            ),
+        })
+        try:
+            repaired = await self._llm_client.chat(
+                messages=retry_messages,
+                model=model,
+                timeout=timeout,
+                max_tokens=max_tokens,
+            )
+        except Exception as exc:
+            self._logger.warning("low_quality_retry_failed", error=str(exc))
+            return None
+        content = sanitize_model_output(repaired.content).strip()
+        if not content:
+            return None
+        if self._is_response_suspicious(content):
+            return None
+        if not self._is_language_consistent_for_cache(query, content):
+            return None
+        return content
+
+    def _is_cache_response_acceptable(self, query: str, response: str) -> bool:
+        sanitized = sanitize_model_output(response).strip()
+        if not sanitized:
+            return False
+        if self._is_response_suspicious(sanitized):
+            return False
+        if not self._is_language_consistent_for_cache(query, sanitized):
+            return False
+        return True
 
     def _log_request(
         self,
@@ -1046,6 +1210,7 @@ class Engine:
             skill=skill,
         )
         system = self._inject_intent_suffix(system, strategy)
+        system = self._inject_language_policy(system)
 
         return self._assemble_messages(system, history, text, skill)
 
@@ -1176,6 +1341,40 @@ class Engine:
         return system
 
     @staticmethod
+    def _normalize_language(value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized in {"ko", "kr", "korean", "한국어"}:
+            return "ko"
+        if normalized in {"en", "english", "영어"}:
+            return "en"
+        return normalized
+
+    def _inject_language_policy(self, system: str) -> str:
+        language = self._normalize_language(self._config.bot.language)
+        if language == "ko":
+            marker = "[언어 정책]"
+            if marker in system:
+                return system
+            return (
+                system
+                + "\n\n[언어 정책]\n"
+                + "- 기본 응답 언어는 한국어(ko)입니다.\n"
+                + "- 사용자가 명시적으로 다른 언어를 요청하지 않는 한 한국어로만 답하세요.\n"
+                + "- 코드/명령어/고유명사/인용 원문 외의 설명 문장은 영어로 작성하지 마세요."
+            )
+        if language == "en":
+            marker = "[Language Policy]"
+            if marker in system:
+                return system
+            return (
+                system
+                + "\n\n[Language Policy]\n"
+                + "- Default response language is English.\n"
+                + "- Unless the user explicitly asks another language, respond only in English."
+            )
+        return system
+
+    @staticmethod
     def _assemble_messages(
         system: str,
         history: list[dict[str, str]],
@@ -1210,8 +1409,9 @@ class Engine:
             return f"스킬 '{skill_name}'을(를) 찾을 수 없습니다."
 
         input_text = parameters.get("input_text", parameters.get("query", ""))
+        skill_system = self._inject_language_policy(skill.system_prompt)
         messages = [
-            {"role": "system", "content": skill.system_prompt},
+            {"role": "system", "content": skill_system},
             {"role": "user", "content": input_text},
         ]
 
@@ -1238,8 +1438,9 @@ class Engine:
         temperature: float | None = None,
     ) -> str:
         """단순 프롬프트를 LLM에 전달한다 (auto_scheduler의 prompt 타입용)."""
+        system_prompt = self._inject_language_policy(self._system_prompt)
         messages = [
-            {"role": "system", "content": self._system_prompt},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt},
         ]
         chat_response = await self._llm_client.chat(

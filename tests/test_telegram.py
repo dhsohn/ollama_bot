@@ -454,6 +454,57 @@ class TestHandleMessage:
         assert "실행 모드 알림" in warning_text
 
     @pytest.mark.asyncio
+    async def test_handle_message_applies_repaired_response_from_stream_meta(
+        self,
+        app_config: AppSettings,
+        mock_engine: AsyncMock,
+        security: SecurityManager,
+    ) -> None:
+        handler = TelegramHandler(config=app_config, engine=mock_engine, security=security)
+
+        async def _stream():
+            yield "bad"
+
+        handler._engine.process_message_stream = MagicMock(return_value=_stream())
+        handler._engine.consume_last_stream_meta = MagicMock(return_value={
+            "repaired_response": "수정된 최종 답변입니다.",
+        })
+
+        chat = MagicMock()
+        chat.id = 111
+        chat.type = "private"
+        chat.send_action = AsyncMock()
+
+        sent_message = MagicMock()
+        sent_message.edit_text = AsyncMock()
+        sent_message.message_id = 42
+        sent_message.edit_reply_markup = AsyncMock()
+
+        message = MagicMock()
+        message.text = "hello"
+        message.reply_text = AsyncMock(return_value=sent_message)
+
+        update = MagicMock()
+        update.effective_chat = chat
+        update.effective_message = message
+
+        async def fake_stream_and_render(**kwargs):
+            return SimpleNamespace(
+                full_response="bad",
+                last_message=sent_message,
+                tier="full",
+                intent=None,
+                cache_id=None,
+                usage=None,
+            )
+
+        with patch("core.telegram_handler.stream_and_render", new=fake_stream_and_render):
+            await handler._handle_message(update, MagicMock())
+
+        edited_texts = [call.args[0] for call in sent_message.edit_text.await_args_list]
+        assert "수정된 최종 답변입니다." in edited_texts
+
+    @pytest.mark.asyncio
     async def test_handle_image_only_message_routes_with_empty_text(
         self, telegram_handler: TelegramHandler,
     ) -> None:
