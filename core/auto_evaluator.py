@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 import time
 from datetime import datetime, timedelta, timezone, tzinfo
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from core.config import AutoEvaluationConfig
@@ -16,7 +16,7 @@ from core.logging_setup import get_logger
 
 if TYPE_CHECKING:
     from core.feedback_manager import FeedbackManager
-    from core.ollama_client import OllamaClient
+    from core.llm_protocol import LLMClientProtocol
 
 _EVAL_PROMPT_TEMPLATE = """\
 당신은 AI 응답 품질 평가자입니다.
@@ -46,7 +46,7 @@ class AutoEvaluator:
     def __init__(
         self,
         config: AutoEvaluationConfig,
-        llm_client: "OllamaClient",
+        llm_client: "LLMClientProtocol",
         feedback_manager: "FeedbackManager",
         timezone_name: str = "UTC",
     ) -> None:
@@ -57,6 +57,7 @@ class AutoEvaluator:
         self._logger = get_logger("auto_evaluator")
         self._semaphore = asyncio.Semaphore(config.max_concurrency)
         self._in_flight: set[tuple[int, int]] = set()
+        self._tasks: set[asyncio.Task[Any]] = set()
         self._consecutive_failures = 0
         self._cooldown_until: float = 0.0
 
@@ -83,10 +84,15 @@ class AutoEvaluator:
             return
 
         self._in_flight.add(key)
-        asyncio.create_task(
+        task = asyncio.create_task(
             self._evaluate_and_cleanup(chat_id, bot_message_id, user_input, bot_response),
             name=f"auto_eval_{chat_id}_{bot_message_id}",
         )
+        self._tasks.add(task)
+        task.add_done_callback(self._on_task_done)
+
+    def _on_task_done(self, task: asyncio.Task[Any]) -> None:
+        self._tasks.discard(task)
 
     async def _evaluate_and_cleanup(
         self,
@@ -243,13 +249,11 @@ class AutoEvaluator:
 
     async def shutdown(self) -> None:
         """진행 중인 평가가 완료될 때까지 대기한다."""
-        if self._in_flight:
+        if self._tasks:
             self._logger.info(
                 "auto_eval_shutdown_waiting",
-                pending=len(self._in_flight),
+                pending=len(self._tasks),
             )
-            # 최대 10초 대기
-            for _ in range(20):
-                if not self._in_flight:
-                    break
-                await asyncio.sleep(0.5)
+            tasks = tuple(self._tasks)
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._tasks.clear()

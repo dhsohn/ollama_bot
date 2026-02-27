@@ -119,3 +119,30 @@ class TestSemanticCache:
         assert global_hit is not None
         assert user_hit.response == "사용자 응답"
         assert global_hit.response == "전역 응답"
+
+    @pytest.mark.asyncio
+    async def test_put_uses_batch_eviction_under_capacity_pressure(
+        self, semantic_cache: SemanticCache,
+    ) -> None:
+        ctx = CacheContext(
+            model="test-model",
+            prompt_ver="v1",
+            intent="simple_qa",
+            scope="user",
+            chat_id=333,
+        )
+
+        # max_entries=100, eviction_batch_size=5
+        for idx in range(101):
+            await semantic_cache.put(f"질문-{idx}", f"응답-{idx}", context=ctx)
+
+        assert semantic_cache._eviction_batch_size == 5
+        assert len(semantic_cache._ids) == 96
+        assert semantic_cache._ids[0] > 1
+
+        async with semantic_cache._db.execute(
+            "SELECT COUNT(*) FROM semantic_cache"
+        ) as cursor:
+            row = await cursor.fetchone()
+        assert row is not None
+        assert row[0] == 96

@@ -51,6 +51,25 @@ def test_allowed_telegram_users_invalid_value_raises(tmp_path: Path) -> None:
         load_config(config_path=str(config_path), env_file=str(env_path))
 
 
+def test_allowed_telegram_users_negative_ids_parsed(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    env_path = tmp_path / ".env"
+    _write_minimal_yaml(config_path)
+
+    env_path.write_text(
+        "\n".join(
+            [
+                "TELEGRAM_BOT_TOKEN=test_token",
+                "ALLOWED_TELEGRAM_USERS=-100123, 456",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    settings = load_config(config_path=str(config_path), env_file=str(env_path))
+    assert settings.security.allowed_users == [-100123, 456]
+
+
 def test_scheduler_timezone_env_ignored_and_yaml_used(tmp_path: Path) -> None:
     config_path = tmp_path / "config.yaml"
     env_path = tmp_path / ".env"
@@ -175,6 +194,48 @@ def test_feedback_default_values() -> None:
     assert cfg.preview_cache_max_size == 500
     assert cfg.preview_cache_ttl_hours == 24
     assert cfg.retention_days == 90
+
+
+def test_runtime_maintenance_loaded_from_yaml(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    env_path = tmp_path / ".env"
+    config_path.write_text(
+        "\n".join([
+            "runtime_maintenance:",
+            "  memory_maintenance_interval_seconds: 300",
+            "  llm_recovery_interval_seconds: 15",
+            "  memory_maintenance_jitter_ratio: 0.2",
+        ]),
+        encoding="utf-8",
+    )
+    env_path.write_text(
+        "TELEGRAM_BOT_TOKEN=test_token\nALLOWED_TELEGRAM_USERS=111",
+        encoding="utf-8",
+    )
+
+    settings = load_config(config_path=str(config_path), env_file=str(env_path))
+    assert settings.runtime_maintenance.memory_maintenance_interval_seconds == 300
+    assert settings.runtime_maintenance.llm_recovery_interval_seconds == 15
+    assert settings.runtime_maintenance.memory_maintenance_jitter_ratio == 0.2
+
+
+def test_runtime_maintenance_invalid_jitter_raises(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    env_path = tmp_path / ".env"
+    config_path.write_text(
+        "\n".join([
+            "runtime_maintenance:",
+            "  memory_maintenance_jitter_ratio: 1.5",
+        ]),
+        encoding="utf-8",
+    )
+    env_path.write_text(
+        "TELEGRAM_BOT_TOKEN=test_token\nALLOWED_TELEGRAM_USERS=111",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="memory_maintenance_jitter_ratio"):
+        load_config(config_path=str(config_path), env_file=str(env_path))
 
 
 def test_security_invalid_numeric_value_raises(tmp_path: Path) -> None:

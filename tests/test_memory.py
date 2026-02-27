@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -166,3 +167,44 @@ class TestDeleteMemoriesByCategory:
         )
         with pytest.raises(RuntimeError):
             await manager.delete_memories_by_category(1, "preferences")
+
+
+class TestMemoryTransactions:
+    @pytest.mark.asyncio
+    async def test_store_memory_without_nested_begin_conflict(
+        self,
+        memory_manager: MemoryManager,
+    ) -> None:
+        # 외부 write가 트랜잭션을 열어둔 상태를 만든다.
+        assert memory_manager._db is not None
+        await memory_manager._db.execute(
+            "INSERT INTO conversations (chat_id, role, content, metadata) VALUES (?, ?, ?, ?)",
+            (999, "user", "pending-write", None),
+        )
+
+        # 기존 구현(BEGIN IMMEDIATE)에서는 여기서 nested transaction 오류가 날 수 있었다.
+        await memory_manager.store_memory(999, "k1", "v1", category="preferences")
+
+        # store_memory 커밋 시 pending-write도 함께 정상 커밋되어야 한다.
+        history = await memory_manager.get_conversation(999, limit=10)
+        assert any(item["content"] == "pending-write" for item in history)
+
+    @pytest.mark.asyncio
+    async def test_concurrent_writes_are_serialized(
+        self,
+        memory_manager: MemoryManager,
+    ) -> None:
+        async def _add(idx: int) -> None:
+            await memory_manager.add_message(777, "user", f"m{idx}")
+
+        async def _store(idx: int) -> None:
+            await memory_manager.store_memory(777, f"k{idx}", f"v{idx}")
+
+        tasks = []
+        for idx in range(30):
+            tasks.append(asyncio.create_task(_add(idx)))
+            tasks.append(asyncio.create_task(_store(idx)))
+
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        errors = [result for result in results if isinstance(result, Exception)]
+        assert errors == []

@@ -69,7 +69,7 @@ class _AutoEvaluatorLike(Protocol):
 
 
 def _auth_required(func: Callable) -> Callable:
-    """인증, 레이트리밋, 입력 검증을 적용하는 데코레이터."""
+    """private chat + 인증 + 레이트리밋을 적용하는 데코레이터."""
 
     @functools.wraps(func)
     async def wrapper(self: TelegramHandler, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -95,8 +95,7 @@ def _auth_required(func: Callable) -> Callable:
         chat_id = chat.id
 
         try:
-            self._security.authenticate(chat_id)
-            self._security.check_rate_limit(chat_id)
+            self._authorize_chat_id(chat_id)
         except AuthenticationError:
             self._logger.warning("unauthorized_access", chat_id=chat_id)
             return  # 미인증 사용자에게는 아무 응답도 하지 않음
@@ -106,21 +105,33 @@ def _auth_required(func: Callable) -> Callable:
             )
             return
 
-        acquired_global_slot = False
-        try:
-            await self._security.acquire_global_slot(chat_id)
-            acquired_global_slot = True
-        except GlobalConcurrencyError:
-            await update.effective_message.reply_text(
-                "현재 요청이 많습니다. 잠시 후 다시 시도해주세요."
-            )
+        return await func(self, update, context)
+
+    return wrapper
+
+
+def _global_slot_required(func: Callable) -> Callable:
+    """전역 동시성 슬롯을 적용하는 데코레이터."""
+
+    @functools.wraps(func)
+    async def wrapper(self: TelegramHandler, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not update.effective_chat:
             return
 
+        chat_id = update.effective_chat.id
         try:
-            return await func(self, update, context)
-        finally:
-            if acquired_global_slot:
-                self._security.release_global_slot()
+            async with self._security.global_slot(chat_id):
+                return await func(self, update, context)
+        except GlobalConcurrencyError:
+            query = update.callback_query
+            if query is not None:
+                await query.answer("현재 요청이 많습니다. 잠시 후 다시 시도해주세요.", show_alert=True)
+                return
+            if update.effective_message is not None:
+                await update.effective_message.reply_text(
+                    "현재 요청이 많습니다. 잠시 후 다시 시도해주세요."
+                )
+            return
 
     return wrapper
 
@@ -164,6 +175,11 @@ class TelegramHandler:
     @property
     def _feedback_enabled(self) -> bool:
         return self._feedback is not None and self._config.feedback.enabled
+
+    def _authorize_chat_id(self, chat_id: int) -> None:
+        """chat_id 인증 + 레이트리밋 검사를 수행한다."""
+        self._security.authenticate(chat_id)
+        self._security.check_rate_limit(chat_id)
 
     def _build_command_handlers(self) -> list:
         handlers = [
@@ -244,6 +260,7 @@ class TelegramHandler:
     # ── 명령어 핸들러 ──
 
     @_auth_required
+    @_global_slot_required
     async def _cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         welcome = (
             f"안녕하세요! {self._config.bot.name} 입니다.\n\n"
@@ -253,6 +270,7 @@ class TelegramHandler:
         await update.effective_message.reply_text(welcome)  # type: ignore[union-attr]
 
     @_auth_required
+    @_global_slot_required
     async def _cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         command_lines = [
             "/start — 봇 시작",
@@ -281,6 +299,7 @@ class TelegramHandler:
         )
 
     @_auth_required
+    @_global_slot_required
     async def _cmd_skills(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         args = context.args or []
         if args and args[0] == "reload":
@@ -319,6 +338,7 @@ class TelegramHandler:
         )
 
     @_auth_required
+    @_global_slot_required
     async def _cmd_auto(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not self._scheduler:
             await update.effective_message.reply_text("자동화 스케줄러가 초기화되지 않았습니다.")  # type: ignore[union-attr]
@@ -390,6 +410,7 @@ class TelegramHandler:
             )
 
     @_auth_required
+    @_global_slot_required
     async def _cmd_model(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         chat_id = update.effective_chat.id  # type: ignore[union-attr]
         args = context.args or []
@@ -468,6 +489,7 @@ class TelegramHandler:
         )
 
     @_auth_required
+    @_global_slot_required
     async def _cmd_memory(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         chat_id = update.effective_chat.id  # type: ignore[union-attr]
         args = context.args or []
@@ -503,6 +525,7 @@ class TelegramHandler:
             )
 
     @_auth_required
+    @_global_slot_required
     async def _cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         status = await self._engine.get_status()
         llm = status.get("llm", status["ollama"])
@@ -551,6 +574,7 @@ class TelegramHandler:
     # ── 일반 메시지 핸들러 (스트리밍) ──
 
     @_auth_required
+    @_global_slot_required
     async def _handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """자유 텍스트 메시지를 처리한다. 스트리밍 UX를 제공한다."""
         await self._handle_message_impl(update, context)
@@ -566,16 +590,26 @@ class TelegramHandler:
 
         # 이미지 처리
         images: list[bytes] | None = None
+        image_download_failed = False
         if message.photo:
             try:
                 photo = message.photo[-1]  # 최고 해상도
                 file = await photo.get_file()
                 image_bytes = await file.download_as_bytearray()
                 images = [bytes(image_bytes)]
-            except Exception:
-                pass  # 이미지 다운로드 실패 시 텍스트만 처리
+            except Exception as exc:
+                image_download_failed = True
+                self._logger.warning(
+                    "image_download_failed",
+                    chat_id=chat_id,
+                    error=str(exc),
+                )
 
         if not raw_text and not images:
+            if image_download_failed:
+                await message.reply_text(
+                    "이미지 다운로드에 실패했어요. 잠시 후 다시 시도해주세요."
+                )
             return
 
         # 입력 정제
@@ -734,6 +768,44 @@ class TelegramHandler:
 
     # ── 피드백 ──
 
+    def _cleanup_preview_cache(self) -> None:
+        """프리뷰 캐시의 TTL 만료 항목을 정리하고 크기 제한을 유지한다."""
+        self._cleanup_pending_reasons()
+        max_size = self._config.feedback.preview_cache_max_size
+        ttl_hours = self._config.feedback.preview_cache_ttl_hours
+        if max_size <= 0 or ttl_hours <= 0:
+            self._preview_cache.clear()
+            return
+
+        now = time.monotonic()
+        ttl_seconds = ttl_hours * 3600
+        expired = [
+            key for key, value in self._preview_cache.items()
+            if now - value["ts"] > ttl_seconds
+        ]
+        for key in expired:
+            del self._preview_cache[key]
+
+        while len(self._preview_cache) > max_size:
+            oldest_key = min(
+                self._preview_cache,
+                key=lambda key: self._preview_cache[key]["ts"],
+            )
+            del self._preview_cache[oldest_key]
+
+    def _cleanup_pending_reasons(self) -> None:
+        """사유 입력 대기 상태의 만료 항목을 주기적으로 정리한다."""
+        if not self._pending_reason:
+            return
+        now = time.monotonic()
+        expired_chat_ids = [
+            chat_id
+            for chat_id, pending in self._pending_reason.items()
+            if now > float(pending.get("expires", 0.0))
+        ]
+        for chat_id in expired_chat_ids:
+            del self._pending_reason[chat_id]
+
     def _cache_preview(self, chat_id: int, bot_message_id: int, user_text: str, bot_text: str) -> None:
         """프리뷰를 캐시에 저장한다. TTL 초과/크기 초과 시 정리."""
         max_chars = self._config.feedback.preview_max_chars
@@ -741,19 +813,14 @@ class TelegramHandler:
         ttl_hours = self._config.feedback.preview_cache_ttl_hours
         if max_chars <= 0 or max_size <= 0 or ttl_hours <= 0:
             return
-        now = time.monotonic()
-
-        # TTL 만료 항목 정리
-        ttl_seconds = ttl_hours * 3600
-        expired = [k for k, v in self._preview_cache.items() if now - v["ts"] > ttl_seconds]
-        for k in expired:
-            del self._preview_cache[k]
+        self._cleanup_preview_cache()
 
         # 최대 크기 초과 시 가장 오래된 항목 제거
         while len(self._preview_cache) >= max_size:
             oldest_key = min(self._preview_cache, key=lambda k: self._preview_cache[k]["ts"])
             del self._preview_cache[oldest_key]
 
+        now = time.monotonic()
         self._preview_cache[(chat_id, bot_message_id)] = {
             "user": user_text[:max_chars],
             "bot": bot_text[:max_chars],
@@ -772,8 +839,7 @@ class TelegramHandler:
 
     async def _authorize_feedback_callback(self, chat_id: int, query) -> bool:
         try:
-            self._security.authenticate(chat_id)
-            self._security.check_rate_limit(chat_id)
+            self._authorize_chat_id(chat_id)
         except AuthenticationError:
             await query.answer()
             return False
@@ -782,6 +848,7 @@ class TelegramHandler:
             return False
         return True
 
+    @_global_slot_required
     async def _handle_feedback_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """인라인 피드백 버튼 콜백을 처리한다."""
         query = update.callback_query
@@ -808,6 +875,7 @@ class TelegramHandler:
             await query.answer("지원하지 않는 피드백 값입니다.", show_alert=True)
             return
 
+        self._cleanup_preview_cache()
         preview = self._preview_cache.get((chat_id, bot_message_id), {})
         is_update = await self._feedback.store_feedback(
             chat_id=chat_id,
@@ -852,6 +920,17 @@ class TelegramHandler:
             and not is_update
             and self._config.feedback.collect_reason
         ):
+            existing_pending = self._pending_reason.get(chat_id)
+            replaced_pending = False
+            if existing_pending is not None:
+                previous_expires = float(existing_pending.get("expires", 0.0))
+                previous_bot_message_id = existing_pending.get("bot_message_id")
+                del self._pending_reason[chat_id]
+                replaced_pending = (
+                    time.monotonic() <= previous_expires
+                    and previous_bot_message_id != bot_message_id
+                )
+
             timeout = self._config.feedback.reason_timeout_seconds
             self._pending_reason[chat_id] = {
                 "bot_message_id": bot_message_id,
@@ -859,6 +938,10 @@ class TelegramHandler:
             }
             await query.answer("피드백 감사합니다!", show_alert=False)
             if query.message is not None and hasattr(query.message, "reply_text"):
+                if replaced_pending:
+                    await query.message.reply_text(
+                        "이전 사유 입력 요청은 자동 만료되어 최신 요청으로 교체되었어요."
+                    )
                 await query.message.reply_text(
                     "어떤 점이 아쉬웠나요? 사유를 입력해주세요.\n"
                     "건너뛰려면 /skip 을 입력하세요."
@@ -871,6 +954,7 @@ class TelegramHandler:
             await query.answer("피드백 감사합니다!", show_alert=False)
 
     @_auth_required
+    @_global_slot_required
     async def _cmd_feedback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """피드백 통계를 표시한다."""
         if self._feedback is None:
@@ -936,6 +1020,7 @@ class TelegramHandler:
         return True
 
     @_auth_required
+    @_global_slot_required
     async def _handle_reason_skip(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """사유 입력을 건너뛴다."""
         chat_id = update.effective_chat.id  # type: ignore[union-attr]
@@ -946,6 +1031,7 @@ class TelegramHandler:
             await update.effective_message.reply_text("건너뛸 사유 요청이 없습니다.")  # type: ignore[union-attr]
 
     @_auth_required
+    @_global_slot_required
     async def _handle_reason_or_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """사유 대기 상태이면 사유를 처리하고, 아니면 일반 메시지를 처리한다."""
         chat_id = update.effective_chat.id  # type: ignore[union-attr]
@@ -984,35 +1070,43 @@ class TelegramHandler:
         """HTML parse mode용 최소 이스케이프."""
         return escape_html(value)
 
+    @staticmethod
+    def _coerce_error_list(value: object) -> list[str]:
+        if isinstance(value, list):
+            return [str(item) for item in value]
+        return []
+
     def _get_skill_reload_errors(self) -> list[str]:
-        getter = self._engine.get_last_skill_load_errors
-        if inspect.iscoroutinefunction(getter):
+        getter = getattr(self._engine, "get_last_skill_load_errors", None)
+        if not callable(getter):
             return []
-        errors = getter()
+        try:
+            errors = getter()
+        except Exception:
+            return []
         if inspect.isawaitable(errors):
             closer = getattr(errors, "close", None)
             if callable(closer):
                 closer()
             return []
-        if isinstance(errors, list):
-            return [str(item) for item in errors]
-        return []
+        return self._coerce_error_list(errors)
 
     def _get_auto_reload_errors(self) -> list[str]:
         if self._scheduler is None:
             return []
-        getter = self._scheduler.get_last_load_errors
-        if inspect.iscoroutinefunction(getter):
+        getter = getattr(self._scheduler, "get_last_load_errors", None)
+        if not callable(getter):
             return []
-        errors = getter()
+        try:
+            errors = getter()
+        except Exception:
+            return []
         if inspect.isawaitable(errors):
             closer = getattr(errors, "close", None)
             if callable(closer):
                 closer()
             return []
-        if isinstance(errors, list):
-            return [str(item) for item in errors]
-        return []
+        return self._coerce_error_list(errors)
 
     @staticmethod
     def _format_reload_warnings(errors: list[str], max_items: int = 3) -> str:

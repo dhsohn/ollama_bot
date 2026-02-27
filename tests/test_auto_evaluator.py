@@ -124,6 +124,35 @@ class TestShutdown:
         await evaluator.shutdown()
         assert len(evaluator._in_flight) == 0
 
+    @pytest.mark.asyncio
+    async def test_shutdown_waits_for_running_tasks(
+        self,
+        evaluator,
+        mock_ollama,
+    ) -> None:
+        gate = asyncio.Event()
+        mock_ollama.chat = AsyncMock(side_effect=_slow_chat_response(gate))
+
+        evaluator.schedule_evaluation(111, 1, "질문", "충분히 긴 응답입니다")
+        await asyncio.sleep(0)
+
+        shutdown_task = asyncio.create_task(evaluator.shutdown())
+        await asyncio.sleep(0.05)
+        assert not shutdown_task.done()
+
+        gate.set()
+        await shutdown_task
+        assert len(evaluator._tasks) == 0
+        assert len(evaluator._in_flight) == 0
+
+
+def _slow_chat_response(gate: asyncio.Event):
+    async def _impl(*args, **kwargs):
+        await gate.wait()
+        return ChatResponse(content='{"score": 4, "explanation": "Good response"}')
+
+    return _impl
+
 
 class TestParseResult:
     def test_valid_json(self) -> None:

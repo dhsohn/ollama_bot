@@ -414,7 +414,8 @@ class LemonadeClient:
             prompt_eval_count=int(usage.get("prompt_tokens", 0) or 0),
             eval_count=int(usage.get("completion_tokens", 0) or 0),
             eval_duration=0,
-            total_duration=int(usage.get("total_tokens", 0) or 0),
+            # OpenAI-style usage에는 보통 total_duration이 없으므로 0 또는 동명 필드만 사용한다.
+            total_duration=int(usage.get("total_duration", 0) or 0),
         )
 
     def _build_chat_payload(

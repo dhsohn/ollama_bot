@@ -15,7 +15,7 @@ import random
 import signal
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import aiosqlite
 
@@ -29,6 +29,7 @@ from core.engine import Engine
 from core.feedback_manager import FeedbackManager
 from core.instant_responder import InstantResponder
 from core.lemonade_multi_client import build_lemonade_client
+from core.llm_protocol import LLMClientProtocol, RetrievalClientProtocol
 from core.logging_setup import get_logger, setup_logging
 from core.memory import MemoryManager
 from core.ollama_client import OllamaClient
@@ -37,9 +38,6 @@ from core.skill_manager import SkillManager
 from core.telegram_handler import TelegramHandler
 from packages.hw_amd_npu import apply_npu_profile
 
-_MEMORY_MAINTENANCE_INTERVAL_SECONDS = 6 * 60 * 60
-_LLM_RECOVERY_INTERVAL_SECONDS = 60
-_MEMORY_MAINTENANCE_JITTER_RATIO = 0.1
 _ALLOW_LOCAL_RUN_ENV = "ALLOW_LOCAL_RUN"
 _SUPPORTED_PROVIDERS = {"ollama", "lemonade"}
 
@@ -59,7 +57,7 @@ class RuntimeState:
     config: AppSettings
     logger: Any
     memory: MemoryManager
-    llm: Any
+    llm: LLMClientProtocol
     app: Any
     scheduler: AutoScheduler
     skill_count: int
@@ -152,7 +150,7 @@ def _model_for_provider(config: AppSettings, provider: str) -> str:
     return config.ollama.model
 
 
-def _create_llm_client(config: AppSettings, provider: str) -> Any:
+def _create_llm_client(config: AppSettings, provider: str) -> LLMClientProtocol:
     if provider == "ollama":
         return OllamaClient(config.ollama)
     if provider == "lemonade":
@@ -179,8 +177,8 @@ async def _open_sqlite_db(path: Path) -> aiosqlite.Connection:
 async def _memory_maintenance_loop(
     memory: MemoryManager,
     logger,
-    interval_seconds: int = _MEMORY_MAINTENANCE_INTERVAL_SECONDS,
-    jitter_ratio: float = _MEMORY_MAINTENANCE_JITTER_RATIO,
+    interval_seconds: int,
+    jitter_ratio: float,
     feedback: FeedbackManager | None = None,
     feedback_retention_days: int | None = None,
     semantic_cache: Any = None,
@@ -221,9 +219,9 @@ async def _memory_maintenance_loop(
 
 
 async def _llm_recovery_loop(
-    llm: Any,
+    llm: LLMClientProtocol,
     logger,
-    interval_seconds: int = _LLM_RECOVERY_INTERVAL_SECONDS,
+    interval_seconds: int,
 ) -> None:
     """LLM 백엔드 상태를 주기 점검하고 장애 시 재연결을 시도한다."""
     while True:
@@ -430,12 +428,13 @@ async def _build_runtime(
                 from core.model_registry import ModelRegistry
                 from core.model_router import ModelRouter
 
-                model_registry = ModelRegistry(config.model_registry, llm)
+                retrieval_llm = cast(RetrievalClientProtocol, llm)
+                model_registry = ModelRegistry(config.model_registry, retrieval_llm)
                 await model_registry.initialize()
                 # low_cost 모델은 시작 시 선로드해 첫 요청 지연을 줄인다.
                 low_cost_model = model_registry.get_model("low_cost")
                 if low_cost_model:
-                    prepare_model = getattr(llm, "prepare_model", None)
+                    prepare_model = getattr(retrieval_llm, "prepare_model", None)
                     if callable(prepare_model):
                         try:
                             maybe_result = prepare_model(
@@ -455,7 +454,7 @@ async def _build_runtime(
                 model_router = ModelRouter(
                     config=config.model_routing,
                     registry=model_registry,
-                    client=llm,
+                    client=retrieval_llm,
                     embedding_model=config.model_registry.embedding_model,
                 )
                 await model_router.initialize()
@@ -472,13 +471,14 @@ async def _build_runtime(
                 from core.rag.reranker import RAGReranker
                 from core.rag.retriever import RAGRetriever
 
+                retrieval_llm = cast(RetrievalClientProtocol, llm)
                 index_dir = config.rag.index_dir or str(
                     Path(config.data_dir) / "rag_index"
                 )
                 rag_db_path = Path(index_dir) / "rag.db"
 
                 indexer = RAGIndexer(
-                    config.rag, llm, config.model_registry.embedding_model,
+                    config.rag, retrieval_llm, config.model_registry.embedding_model,
                 )
                 await indexer.initialize(str(rag_db_path))
                 cleanup_stack.push_async_callback(indexer.close)
@@ -489,7 +489,7 @@ async def _build_runtime(
                     await indexer.index_corpus(config.rag.kb_dir)
 
                 retriever = RAGRetriever(
-                    indexer, llm, config.model_registry.embedding_model,
+                    indexer, retrieval_llm, config.model_registry.embedding_model,
                 )
 
                 reranker = None
@@ -503,7 +503,7 @@ async def _build_runtime(
                             reranker_available = False
                     if reranker_available:
                         reranker = RAGReranker(
-                            llm, config.model_registry.reranker_model, config.rag,
+                            retrieval_llm, config.model_registry.reranker_model, config.rag,
                         )
 
                 rag_pipeline = RAGPipeline(
@@ -757,6 +757,8 @@ async def async_main(
                 _memory_maintenance_loop(
                     runtime.memory,
                     logger,
+                    interval_seconds=runtime.config.runtime_maintenance.memory_maintenance_interval_seconds,
+                    jitter_ratio=runtime.config.runtime_maintenance.memory_maintenance_jitter_ratio,
                     feedback=runtime.feedback,
                     feedback_retention_days=runtime.config.feedback.retention_days,
                     semantic_cache=runtime.semantic_cache,
@@ -764,7 +766,11 @@ async def async_main(
                 name="memory_maintenance",
             )
             llm_recovery_task = asyncio.create_task(
-                _llm_recovery_loop(runtime.llm, logger),
+                _llm_recovery_loop(
+                    runtime.llm,
+                    logger,
+                    interval_seconds=runtime.config.runtime_maintenance.llm_recovery_interval_seconds,
+                ),
                 name="llm_recovery",
             )
 

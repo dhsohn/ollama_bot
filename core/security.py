@@ -11,7 +11,9 @@ import fnmatch
 import re
 import time
 import unicodedata
+from collections.abc import AsyncGenerator
 from collections import defaultdict, deque
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from core.config import SecurityConfig
@@ -56,6 +58,10 @@ class SecurityManager:
         self._max_file_size: int = config.max_file_size
         self._blocked_paths: list[str] = config.blocked_paths
         self._request_log: dict[int, deque[float]] = defaultdict(deque)
+        self._rate_limit_window_seconds = 60.0
+        self._request_log_ttl_seconds = 600.0
+        self._request_log_cleanup_every_calls = 256
+        self._rate_limit_checks_since_cleanup = 0
         self._global_semaphore = asyncio.Semaphore(self._max_concurrent_requests)
         self._global_in_flight = 0
         self._logger = get_logger("security")
@@ -88,11 +94,21 @@ class SecurityManager:
             RateLimitError: 초과 시.
         """
         now = time.monotonic()
-        window = self._request_log[chat_id]
+        self._rate_limit_checks_since_cleanup += 1
+        if self._rate_limit_checks_since_cleanup >= self._request_log_cleanup_every_calls:
+            self._cleanup_request_log(now)
+            self._rate_limit_checks_since_cleanup = 0
+
+        # defaultdict의 암시적 키 생성을 피해서, 불필요한 chat_id 항목 잔류를 줄인다.
+        window = self._request_log.get(chat_id)
+        if window is None:
+            window = deque()
 
         # 60초 이전 항목 제거
-        while window and now - window[0] >= 60.0:
+        while window and now - window[0] >= self._rate_limit_window_seconds:
             window.popleft()
+        if not window:
+            self._request_log.pop(chat_id, None)
 
         if len(window) >= self._rate_limit:
             self._logger.warning(
@@ -104,7 +120,18 @@ class SecurityManager:
             )
 
         window.append(now)
+        self._request_log[chat_id] = window
         return True
+
+    def _cleanup_request_log(self, now: float) -> None:
+        """오랫동안 요청이 없던 레이트리밋 윈도우를 제거한다."""
+        stale_chat_ids = [
+            chat_id
+            for chat_id, window in self._request_log.items()
+            if (not window) or (now - window[-1] >= self._request_log_ttl_seconds)
+        ]
+        for chat_id in stale_chat_ids:
+            self._request_log.pop(chat_id, None)
 
     async def acquire_global_slot(self, chat_id: int) -> None:
         """전역 동시 요청 슬롯을 획득한다.
@@ -133,6 +160,15 @@ class SecurityManager:
             return
         self._global_in_flight -= 1
         self._global_semaphore.release()
+
+    @asynccontextmanager
+    async def global_slot(self, chat_id: int) -> AsyncGenerator[None, None]:
+        """전역 동시 요청 슬롯을 요청 범위에 묶어 안전하게 관리한다."""
+        await self.acquire_global_slot(chat_id)
+        try:
+            yield
+        finally:
+            self.release_global_slot()
 
     # ── 입력 검증 ──
 

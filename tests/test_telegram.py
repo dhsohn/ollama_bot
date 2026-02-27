@@ -553,6 +553,37 @@ class TestHandleMessage:
         assert isinstance(kwargs, dict)
         assert kwargs["images"] == [b"img-bytes"]
 
+    @pytest.mark.asyncio
+    async def test_handle_image_only_download_failure_notifies_user(
+        self, telegram_handler: TelegramHandler,
+    ) -> None:
+        telegram_handler._engine.process_message_stream = MagicMock()
+
+        chat = MagicMock()
+        chat.id = 111
+        chat.type = "private"
+        chat.send_action = AsyncMock()
+
+        photo = MagicMock()
+        photo.get_file = AsyncMock(side_effect=RuntimeError("download fail"))
+
+        message = MagicMock()
+        message.text = None
+        message.caption = None
+        message.photo = [photo]
+        message.reply_text = AsyncMock()
+
+        update = MagicMock()
+        update.effective_chat = chat
+        update.effective_message = message
+
+        await telegram_handler._handle_message(update, MagicMock())
+
+        message.reply_text.assert_awaited_once_with(
+            "이미지 다운로드에 실패했어요. 잠시 후 다시 시도해주세요."
+        )
+        telegram_handler._engine.process_message_stream.assert_not_called()
+
 
 class TestFeedbackButtons:
     @pytest.fixture
@@ -731,7 +762,11 @@ class TestFeedbackButtons:
     async def test_callback_new_feedback(self, feedback_handler: TelegramHandler, mock_feedback) -> None:
         """콜백으로 새 피드백이 저장된다."""
         # 프리뷰 캐시에 항목 추가
-        feedback_handler._preview_cache[(111, 42)] = {"user": "q", "bot": "a", "ts": 0}
+        feedback_handler._preview_cache[(111, 42)] = {
+            "user": "q",
+            "bot": "a",
+            "ts": time.monotonic(),
+        }
 
         query = MagicMock()
         query.data = "fb:1:42"
@@ -752,6 +787,78 @@ class TestFeedbackButtons:
             chat_id=111, bot_message_id=42, rating=1, user_preview="q", bot_preview="a",
         )
         query.answer.assert_awaited_once_with("피드백 감사합니다!", show_alert=False)
+
+    @pytest.mark.asyncio
+    async def test_callback_prunes_expired_preview_cache(
+        self,
+        feedback_handler: TelegramHandler,
+        mock_feedback,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        feedback_handler._config.feedback.preview_cache_ttl_hours = 1
+        feedback_handler._preview_cache[(111, 42)] = {"user": "q", "bot": "a", "ts": 0.0}
+        feedback_handler._pending_reason[111] = {
+            "bot_message_id": 41,
+            "expires": 1.0,
+        }
+        monkeypatch.setattr("core.telegram_handler.time.monotonic", lambda: 7201.0)
+
+        query = MagicMock()
+        query.data = "fb:1:42"
+        query.answer = AsyncMock()
+
+        chat = MagicMock()
+        chat.id = 111
+        chat.type = "private"
+
+        update = MagicMock()
+        update.callback_query = query
+        update.effective_chat = chat
+
+        context = MagicMock()
+        await feedback_handler._handle_feedback_callback(update, context)
+
+        mock_feedback.store_feedback.assert_awaited_once_with(
+            chat_id=111, bot_message_id=42, rating=1, user_preview=None, bot_preview=None,
+        )
+        assert (111, 42) not in feedback_handler._preview_cache
+        assert 111 not in feedback_handler._pending_reason
+
+    @pytest.mark.asyncio
+    async def test_callback_negative_feedback_replaces_existing_pending_with_notice(
+        self,
+        feedback_handler: TelegramHandler,
+        mock_feedback,
+    ) -> None:
+        feedback_handler._pending_reason[111] = {
+            "bot_message_id": 40,
+            "expires": time.monotonic() + 60,
+        }
+        mock_feedback.store_feedback = AsyncMock(return_value=False)
+
+        query = MagicMock()
+        query.data = "fb:-1:42"
+        query.answer = AsyncMock()
+        query.message = MagicMock()
+        query.message.reply_text = AsyncMock()
+
+        chat = MagicMock()
+        chat.id = 111
+        chat.type = "private"
+
+        update = MagicMock()
+        update.callback_query = query
+        update.effective_chat = chat
+
+        context = MagicMock()
+        await feedback_handler._handle_feedback_callback(update, context)
+
+        assert feedback_handler._pending_reason[111]["bot_message_id"] == 42
+        assert query.message.reply_text.await_count == 2
+        first_notice = query.message.reply_text.await_args_list[0].args[0]
+        second_prompt = query.message.reply_text.await_args_list[1].args[0]
+        assert "자동 만료" in first_notice
+        assert "사유를 입력" in second_prompt
 
     @pytest.mark.asyncio
     async def test_callback_update_feedback(self, feedback_handler: TelegramHandler, mock_feedback) -> None:

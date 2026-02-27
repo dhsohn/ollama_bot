@@ -9,7 +9,7 @@ from core.logging_setup import get_logger
 from core.rag.types import RetrievedItem
 
 if TYPE_CHECKING:
-    from core.lemonade_client import LemonadeClient
+    from core.llm_protocol import RetrievalClientProtocol
 
 
 class RAGReranker:
@@ -17,7 +17,7 @@ class RAGReranker:
 
     def __init__(
         self,
-        client: LemonadeClient,
+        client: RetrievalClientProtocol,
         reranker_model: str,
         config: RAGConfig,
     ) -> None:

@@ -105,6 +105,7 @@ class TestChat:
             assert response.usage is not None
             assert response.usage.prompt_eval_count == 11
             assert response.usage.eval_count == 22
+            assert response.usage.total_duration == 0
             assert captured_payload is not None
             assert captured_payload["response_format"] == {"type": "json_object"}
         finally:
@@ -152,5 +153,6 @@ class TestChat:
             assert state.usage is not None
             assert state.usage.prompt_eval_count == 1
             assert state.usage.eval_count == 2
+            assert state.usage.total_duration == 0
         finally:
             await client.close()

@@ -46,6 +46,15 @@ class TestRateLimiting:
         # 다른 유저는 영향 없음
         assert security_manager.check_rate_limit(222) is True
 
+    def test_cleanup_stale_request_log_entries(self, security_manager: SecurityManager) -> None:
+        security_manager._request_log[111].append(1.0)
+        security_manager._request_log[222].append(100.0)
+
+        security_manager._cleanup_request_log(now=800.0)
+
+        assert 111 not in security_manager._request_log
+        assert 222 not in security_manager._request_log
+
 
 class TestInputSanitization:
     def test_strip_null_bytes(self, security_manager: SecurityManager) -> None:
@@ -168,5 +177,25 @@ class TestGlobalConcurrency:
 
         await manager.acquire_global_slot(111)
         manager.release_global_slot()
+        await manager.acquire_global_slot(111)
+        manager.release_global_slot()
+
+    @pytest.mark.asyncio
+    async def test_global_slot_context_releases_on_exception(self) -> None:
+        manager = SecurityManager(
+            SecurityConfig(
+                allowed_users=[111],
+                rate_limit=10,
+                max_concurrent_requests=1,
+                max_file_size=10_485_760,
+                blocked_paths=["/etc/*", "/proc/*", "/sys/*"],
+            )
+        )
+
+        with pytest.raises(RuntimeError):
+            async with manager.global_slot(111):
+                raise RuntimeError("boom")
+
+        # context manager 종료 후 슬롯이 반환되어야 다음 획득이 가능하다.
         await manager.acquire_global_slot(111)
         manager.release_global_slot()

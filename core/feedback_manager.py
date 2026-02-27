@@ -5,13 +5,9 @@
 
 from __future__ import annotations
 
-import asyncio
-from datetime import datetime, timezone
-from pathlib import Path
-import shutil
-
 import aiosqlite
 
+from core.db_migrations import MigrationRunner, MigrationStep
 from core.logging_setup import get_logger
 from core.pii import redact_pii
 
@@ -33,13 +29,6 @@ CREATE INDEX IF NOT EXISTS idx_feedback_rating
     ON message_feedback(rating);
 """
 
-_MIGRATIONS_TABLE_SQL = """
-CREATE TABLE IF NOT EXISTS schema_migrations (
-    version INTEGER PRIMARY KEY,
-    applied_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-"""
-
 _AUTO_EVAL_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS auto_evaluation (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -59,6 +48,7 @@ CREATE INDEX IF NOT EXISTS idx_auto_eval_score
 """
 
 _PREVIEW_MAX_CHARS = 500
+_TABLE_INFO_WHITELIST = frozenset({"message_feedback", "auto_evaluation"})
 
 
 def _sanitize_preview(text: str | None) -> str | None:
@@ -71,28 +61,26 @@ def _sanitize_preview(text: str | None) -> str | None:
 
 async def _has_column(db: aiosqlite.Connection, table: str, column: str) -> bool:
     """PRAGMA table_info로 특정 컬럼 존재 여부를 확인한다."""
+    if table not in _TABLE_INFO_WHITELIST:
+        raise ValueError(f"unsupported table for pragma table_info: {table}")
     async with db.execute(f"PRAGMA table_info({table})") as cursor:
         rows = await cursor.fetchall()
     return any(row[1] == column for row in rows)
 
 
-async def _get_applied_versions(db: aiosqlite.Connection) -> set[int]:
-    """적용된 마이그레이션 버전 목록을 반환한다."""
-    try:
-        async with db.execute("SELECT version FROM schema_migrations") as cursor:
-            rows = await cursor.fetchall()
-        return {row[0] for row in rows}
-    except aiosqlite.OperationalError:
-        return set()
+async def _apply_feedback_v1(db: aiosqlite.Connection) -> None:
+    await db.executescript(_FEEDBACK_SCHEMA_SQL)
 
 
-async def _table_exists(db: aiosqlite.Connection, table: str) -> bool:
-    """sqlite_master에 지정 테이블이 존재하는지 확인한다."""
-    async with db.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
-        (table,),
-    ) as cursor:
-        return await cursor.fetchone() is not None
+async def _apply_feedback_v2(db: aiosqlite.Connection) -> None:
+    if not await _has_column(db, "message_feedback", "reason"):
+        await db.execute(
+            "ALTER TABLE message_feedback ADD COLUMN reason TEXT"
+        )
+
+
+async def _apply_feedback_v3(db: aiosqlite.Connection) -> None:
+    await db.executescript(_AUTO_EVAL_SCHEMA_SQL)
 
 
 class FeedbackManager:
@@ -104,93 +92,15 @@ class FeedbackManager:
 
     async def initialize_schema(self) -> None:
         """피드백 테이블을 생성하고 마이그레이션을 적용한다."""
-        had_feedback_table = await _table_exists(self._db, "message_feedback")
-        had_migrations_table = await _table_exists(self._db, "schema_migrations")
-
-        await self._db.executescript(_FEEDBACK_SCHEMA_SQL)
-        await self._db.executescript(_MIGRATIONS_TABLE_SQL)
-        await self._db.commit()
-
-        applied = await _get_applied_versions(self._db)
-        needs_v2 = 2 not in applied
-        needs_v3 = 3 not in applied
-        pending_versions = [v for v, needed in ((2, needs_v2), (3, needs_v3)) if needed]
-
-        if pending_versions and (had_feedback_table or had_migrations_table):
-            await self._backup_before_migration(pending_versions)
-
-        # V2: reason 컬럼 추가
-        if needs_v2:
-            if not await _has_column(self._db, "message_feedback", "reason"):
-                await self._db.execute(
-                    "ALTER TABLE message_feedback ADD COLUMN reason TEXT"
-                )
-            await self._db.execute(
-                "INSERT OR IGNORE INTO schema_migrations (version) VALUES (2)"
-            )
-            await self._db.commit()
-
-        # V3: auto_evaluation 테이블 추가
-        if needs_v3:
-            await self._db.executescript(_AUTO_EVAL_SCHEMA_SQL)
-            await self._db.execute(
-                "INSERT OR IGNORE INTO schema_migrations (version) VALUES (3)"
-            )
-            await self._db.commit()
-
-    async def _backup_before_migration(self, pending_versions: list[int]) -> None:
-        """마이그레이션 적용 전 DB 파일을 백업한다."""
-        db_path = await self._resolve_main_db_path()
-        if db_path is None:
-            self._logger.info(
-                "schema_backup_skipped",
-                reason="in_memory_or_unknown_db",
-                pending_versions=pending_versions,
-            )
-            return
-
-        source = Path(db_path)
-        if not source.exists():
-            self._logger.warning(
-                "schema_backup_skipped",
-                reason="db_file_missing",
-                db_path=str(source),
-                pending_versions=pending_versions,
-            )
-            return
-
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        backup = source.with_name(f"{source.name}.pre_migration_{stamp}.bak")
-
-        await self._db.commit()
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(
-            None,
-            shutil.copy2,
-            str(source),
-            str(backup),
+        runner = MigrationRunner(self._db, self._logger, db_label="feedback")
+        await runner.run(
+            [
+                MigrationStep(1, _apply_feedback_v1, "create_message_feedback"),
+                MigrationStep(2, _apply_feedback_v2, "add_feedback_reason_column"),
+                MigrationStep(3, _apply_feedback_v3, "create_auto_evaluation"),
+            ],
+            backup_tables={"message_feedback", "auto_evaluation"},
         )
-        self._logger.info(
-            "schema_backup_created",
-            source=str(source),
-            backup=str(backup),
-            pending_versions=pending_versions,
-        )
-
-    async def _resolve_main_db_path(self) -> str | None:
-        """PRAGMA database_list에서 main DB 파일 경로를 반환한다."""
-        async with self._db.execute("PRAGMA database_list") as cursor:
-            rows = await cursor.fetchall()
-
-        for row in rows:
-            name = row[1]
-            db_path = row[2]
-            if name != "main":
-                continue
-            if not db_path or db_path == ":memory:":
-                return None
-            return str(db_path)
-        return None
 
     async def store_feedback(
         self,
@@ -378,41 +288,36 @@ class FeedbackManager:
 
         # LIKE 기반 매칭: 각 키워드가 user 또는 bot preview에 포함된 횟수를 점수로 사용
         score_clauses = []
-        params: list = [chat_id, f"-{recent_days} days", min_preview_length]
-        for kw in keywords:
-            pattern = f"%{kw}%"
+        kw_params: list[str] = []
+        for keyword in keywords:
+            pattern = f"%{keyword}%"
             score_clauses.append(
                 "(CASE WHEN user_message_preview LIKE ? THEN 1 ELSE 0 END "
                 "+ CASE WHEN bot_response_preview LIKE ? THEN 1 ELSE 0 END)"
             )
-            params.extend([pattern, pattern])
+            kw_params.extend([pattern, pattern])
 
         score_expr = " + ".join(score_clauses)
-        params.append(limit * 3)  # 중복 제거를 위해 넉넉히 가져옴
 
         query = (
-            f"SELECT user_message_preview, bot_response_preview, "
+            f"WITH scored AS ( "
+            f"SELECT user_message_preview, bot_response_preview, updated_at, "
             f"({score_expr}) AS relevance "
             f"FROM message_feedback "
             f"WHERE chat_id = ? AND rating = 1 "
             f"AND created_at >= datetime('now', ?) "
             f"AND LENGTH(COALESCE(bot_response_preview, '')) >= ? "
-            f"AND ({score_expr}) > 0 "
+            f") "
+            f"SELECT user_message_preview, bot_response_preview, relevance "
+            f"FROM scored "
+            f"WHERE relevance > 0 "
             f"ORDER BY relevance DESC, updated_at DESC "
             f"LIMIT ?"
         )
 
-        # 파라미터 순서: score_expr 파라미터(WHERE 절) + chat_id + days + min_len + score_expr 파라미터(ORDER 절) + limit
-        # 실제로 SQL에서 score_expr이 두 번 나오므로 keyword 파라미터도 두 번 필요
-        kw_params = []
-        for kw in keywords:
-            pattern = f"%{kw}%"
-            kw_params.extend([pattern, pattern])
-
         final_params = tuple(
-            kw_params  # SELECT 절의 score_expr
+            kw_params
             + [chat_id, f"-{recent_days} days", min_preview_length]
-            + kw_params  # WHERE 절의 score_expr
             + [limit * 3]
         )
 

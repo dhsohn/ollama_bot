@@ -9,7 +9,7 @@ import aiosqlite
 import pytest
 import pytest_asyncio
 
-from core.feedback_manager import FeedbackManager
+from core.feedback_manager import FeedbackManager, _has_column
 
 
 @pytest_asyncio.fixture
@@ -218,6 +218,12 @@ class TestSchemaMigration:
             versions = [row[0] for row in await cursor.fetchall()]
         assert 2 in versions
         assert 3 in versions
+
+    @pytest.mark.asyncio
+    async def test_has_column_rejects_non_whitelisted_table(self, feedback_db) -> None:
+        _, db = feedback_db
+        with pytest.raises(ValueError):
+            await _has_column(db, "message_feedback;DROP TABLE message_feedback", "reason")
 
     @pytest.mark.asyncio
     async def test_migration_creates_backup_for_legacy_db(self, tmp_path: Path) -> None:

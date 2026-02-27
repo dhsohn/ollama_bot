@@ -11,7 +11,7 @@ from core.logging_setup import get_logger
 from core.rag.types import RetrievedItem
 
 if TYPE_CHECKING:
-    from core.lemonade_client import LemonadeClient
+    from core.llm_protocol import RetrievalClientProtocol
     from core.rag.indexer import RAGIndexer
     from core.rag.types import Chunk
 
@@ -24,7 +24,7 @@ class RAGRetriever:
     def __init__(
         self,
         indexer: RAGIndexer,
-        client: LemonadeClient,
+        client: RetrievalClientProtocol,
         embedding_model: str,
     ) -> None:
         self._indexer = indexer

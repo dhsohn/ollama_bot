@@ -14,7 +14,7 @@ from core.config import ModelRegistryConfig
 from core.logging_setup import get_logger
 
 if TYPE_CHECKING:
-    from core.lemonade_client import LemonadeClient
+    from core.llm_protocol import RetrievalClientProtocol
 
 _ROLE_TO_CONFIG_ATTR = {
     "embedding": "embedding_model",
@@ -42,7 +42,7 @@ class ModelRegistry:
     def __init__(
         self,
         config: ModelRegistryConfig,
-        client: LemonadeClient,
+        client: RetrievalClientProtocol,
     ) -> None:
         self._config = config
         self._client = client

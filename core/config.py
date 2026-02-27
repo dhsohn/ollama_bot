@@ -201,6 +201,31 @@ class AutoEvaluationConfig(BaseModel):
         return value
 
 
+class RuntimeMaintenanceConfig(BaseModel):
+    """런타임 유지보수 루프 주기 설정."""
+
+    memory_maintenance_interval_seconds: int = 6 * 60 * 60
+    llm_recovery_interval_seconds: int = 60
+    memory_maintenance_jitter_ratio: float = 0.1
+
+    @field_validator(
+        "memory_maintenance_interval_seconds",
+        "llm_recovery_interval_seconds",
+    )
+    @classmethod
+    def validate_positive_ints(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("runtime maintenance intervals must be >= 1")
+        return value
+
+    @field_validator("memory_maintenance_jitter_ratio")
+    @classmethod
+    def validate_jitter_ratio(cls, value: float) -> float:
+        if not 0.0 <= value <= 1.0:
+            raise ValueError("memory_maintenance_jitter_ratio must be between 0.0 and 1.0")
+        return value
+
+
 class SchedulerConfig(BaseModel):
     timezone: str = "Asia/Seoul"
 
@@ -347,6 +372,7 @@ class AppSettings(BaseModel):
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
     security: SecurityConfig = Field(default_factory=SecurityConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
+    runtime_maintenance: RuntimeMaintenanceConfig = Field(default_factory=RuntimeMaintenanceConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
     feedback: FeedbackConfig = Field(default_factory=FeedbackConfig)
     auto_evaluation: AutoEvaluationConfig = Field(default_factory=AutoEvaluationConfig)
@@ -415,13 +441,18 @@ def load_config(
     # ALLOWED_TELEGRAM_USERS CSV → security.allowed_users 리스트
     if settings.allowed_telegram_users:
         raw_ids = [uid.strip() for uid in settings.allowed_telegram_users.split(",") if uid.strip()]
-        invalid_ids = [uid for uid in raw_ids if not uid.isdigit()]
+        user_ids: list[int] = []
+        invalid_ids: list[str] = []
+        for raw in raw_ids:
+            try:
+                user_ids.append(int(raw))
+            except ValueError:
+                invalid_ids.append(raw)
         if invalid_ids:
             raise ValueError(
-                "ALLOWED_TELEGRAM_USERS에는 숫자 Chat ID만 사용할 수 있습니다: "
+                "ALLOWED_TELEGRAM_USERS에는 정수 Chat ID만 사용할 수 있습니다: "
                 f"{', '.join(invalid_ids)}"
             )
-        user_ids = [int(uid) for uid in raw_ids]
         settings.security.allowed_users = user_ids
 
     return settings

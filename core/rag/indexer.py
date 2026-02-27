@@ -20,7 +20,7 @@ from core.rag.chunker import DocumentChunker
 from core.rag.types import Chunk, ChunkMetadata
 
 if TYPE_CHECKING:
-    from core.lemonade_client import LemonadeClient
+    from core.llm_protocol import RetrievalClientProtocol
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS rag_chunks (
@@ -50,7 +50,7 @@ class RAGIndexer:
     def __init__(
         self,
         config: RAGConfig,
-        client: LemonadeClient,
+        client: RetrievalClientProtocol,
         embedding_model: str,
     ) -> None:
         self._config = config

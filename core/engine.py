@@ -28,9 +28,10 @@ import structlog
 
 from core.async_utils import run_in_thread
 from core.config import AppSettings
+from core.llm_protocol import LLMClientProtocol
 from core.logging_setup import get_logger
 from core.memory import MemoryManager
-from core.ollama_client import ChatStreamState, OllamaClient
+from core.ollama_client import ChatStreamState
 from core.skill_manager import SkillDefinition, SkillManager
 from core.text_utils import sanitize_model_output
 
@@ -56,6 +57,18 @@ class _PreparedRequest:
 
 
 @dataclass
+class _PreparedFullRequest:
+    """Tier 4(full LLM) 공통 준비 결과."""
+
+    messages: list[dict[str, str]]
+    timeout: int
+    max_tokens: int | None
+    target_model: str | None
+    model_decision: ModelRoutingDecision | None = None
+    rag_result: Any = None  # RAGResult | None
+
+
+@dataclass
 class _StreamMeta:
     """최근 스트리밍 요청 메타데이터."""
 
@@ -67,6 +80,7 @@ class _StreamMeta:
     rag_trace: dict | None = None
     warnings: list[str] | None = None
     repaired_response: str | None = None
+    created_at: float = 0.0
 
 
 @dataclass
@@ -96,7 +110,6 @@ _INJECTION_RE = _re.compile(
     r"|(?:^|\n)\s*(?:system|user|assistant|human)\s*:",
     _re.IGNORECASE,
 )
-_CODE_FENCE_RE = _re.compile(r"```(?:json|markdown|md|text)?|```", _re.IGNORECASE)
 _CODE_BLOCK_RE = _re.compile(r"```.*?```", _re.DOTALL)
 _ENGLISH_REQUEST_RE = _re.compile(
     r"(영어|영문|in\s+english|english|translate|번역)",
@@ -106,12 +119,31 @@ _LOW_QUALITY_HINT_RE = _re.compile(
     r"(i[’']?ll\s+keep\s+it\s+short|conversation\s+is\s+now\s+ended|^\s*ㅊ\.\.\.)",
     _re.IGNORECASE,
 )
+_STREAM_META_TTL_SECONDS = 600.0
+_STREAM_META_MAX_ENTRIES = 2048
 
 
 def _strip_prompt_injection(text: str) -> str:
-    """프리뷰 텍스트에서 프롬프트 인젝션 패턴을 제거한다."""
-    sanitized = _INJECTION_RE.sub("", text)
-    sanitized = _CODE_FENCE_RE.sub("", sanitized)
+    """프리뷰 텍스트에서 코드블록을 보존한 채 인젝션 패턴만 제거한다."""
+    if not text:
+        return ""
+
+    parts: list[str] = []
+    last = 0
+    for match in _CODE_BLOCK_RE.finditer(text):
+        outside = text[last:match.start()]
+        outside = _INJECTION_RE.sub("", outside)
+        outside = _re.sub(r"\n{3,}", "\n\n", outside)
+        parts.append(outside)
+        parts.append(match.group(0))
+        last = match.end()
+
+    tail = text[last:]
+    tail = _INJECTION_RE.sub("", tail)
+    tail = _re.sub(r"\n{3,}", "\n\n", tail)
+    parts.append(tail)
+
+    sanitized = "".join(parts)
     sanitized = _re.sub(r"\n{3,}", "\n\n", sanitized)
     return sanitized.strip()
 
@@ -122,7 +154,7 @@ class Engine:
     def __init__(
         self,
         config: AppSettings,
-        llm_client: OllamaClient,
+        llm_client: LLMClientProtocol,
         memory: MemoryManager,
         skills: SkillManager,
         feedback_manager: FeedbackManager | None = None,
@@ -149,7 +181,13 @@ class Engine:
         self._start_time = time.monotonic()
         self._logger = get_logger("engine")
         self._last_stream_meta: dict[int, _StreamMeta] = {}
+        self._stream_meta_ttl_seconds = _STREAM_META_TTL_SECONDS
+        self._stream_meta_max_entries = _STREAM_META_MAX_ENTRIES
         self._active_request_count = 0
+        summary_concurrency = max(1, int(config.context_compressor.summarize_concurrency))
+        # 요약 태스크가 무제한 생성되지 않도록 생성량 상한을 둔다.
+        self._summary_task_limit = max(2, summary_concurrency * 3)
+        self._summary_tasks: set[asyncio.Task[Any]] = set()
         self._degraded_since: dict[str, float] = {}
 
     # ── 메시지 처리 (계층형 라우팅) ──
@@ -212,83 +250,46 @@ class Engine:
                     )
                     return cached.response
 
-                # [Tier 4] Full LLM + 모델 라우팅 + RAG
-                target_model = model_override
-                model_decision = None
-                rag_result = None
-
-                # 모델 라우팅
-                if self._model_router and not model_override:
-                    model_decision = await self._model_router.route(
-                        text, images=images, metadata=metadata,
-                    )
-                    target_model = model_decision.selected_model
-
-                # RAG 트리거 확인 + 실행
-                if self._rag_pipeline and self._rag_pipeline.should_trigger_rag(text, metadata):
-                    rag_result = await self._rag_pipeline.execute(text, metadata)
-
-                prepared = await self._prepare_request(
-                    chat_id, text, stream=False, strategy=routing.strategy,
+                prepared_full = await self._prepare_full_request(
+                    chat_id=chat_id,
+                    text=text,
+                    model_override=model_override,
+                    images=images,
+                    metadata=metadata,
+                    strategy=routing.strategy,
+                    stream=False,
                 )
-                target_model, prepared_role = await self._prepare_target_model(
-                    model=target_model,
-                    role=model_decision.selected_role if model_decision else None,
-                    timeout=prepared.timeout,
-                )
-                if (
-                    model_decision is not None
-                    and prepared_role is not None
-                    and prepared_role != model_decision.selected_role
-                ):
-                    original_role = model_decision.selected_role
-                    model_decision.selected_role = prepared_role
-                    model_decision.selected_model = target_model or model_decision.selected_model
-                    model_decision.fallback_used = True
-                    model_decision.original_role = original_role
-
-                # RAG 컨텍스트 주입
-                messages = prepared.messages
-                if rag_result and rag_result.contexts:
-                    messages = self._inject_rag_context(messages, rag_result)
 
                 chat_response = await self._llm_client.chat(
-                    messages=messages,
-                    model=target_model,
-                    timeout=prepared.timeout,
-                    max_tokens=prepared.max_tokens,
+                    messages=prepared_full.messages,
+                    model=prepared_full.target_model,
+                    timeout=prepared_full.timeout,
+                    max_tokens=prepared_full.max_tokens,
                 )
-                content = sanitize_model_output(chat_response.content)
-                if not self._is_cache_response_acceptable(text, content):
-                    repaired = await self._retry_low_quality_response(
-                        messages=messages,
-                        query=text,
-                        model=target_model,
-                        timeout=prepared.timeout,
-                        max_tokens=prepared.max_tokens,
-                    )
-                    content = repaired or self._build_guardrail_fallback(text)
+                content, _ = await self._finalize_response_content(
+                    query=text,
+                    raw_response=chat_response.content,
+                    messages=prepared_full.messages,
+                    target_model=prepared_full.target_model,
+                    timeout=prepared_full.timeout,
+                    max_tokens=prepared_full.max_tokens,
+                )
                 await self._persist_turn(chat_id, text, content)
 
-                # 캐시 저장
-                if (
-                    self._semantic_cache is not None
-                    and not images
-                    and self._semantic_cache.is_cacheable(text)
-                ):
-                    if self._is_cache_response_acceptable(text, content):
-                        cache_ctx = self._build_cache_context(model_override, routing.intent, chat_id)
-                        await self._semantic_cache.put(
-                            text, content, context=cache_ctx,
-                        )
-                    else:
-                        self._logger.info("semantic_cache_put_skipped_low_quality", chat_id=chat_id)
+                await self._maybe_store_semantic_cache(
+                    chat_id=chat_id,
+                    text=text,
+                    response=content,
+                    images=images,
+                    model_override=model_override,
+                    intent=routing.intent,
+                )
 
                 self._log_request(
-                    t0, chat_id, "full", chat_response.usage, len(messages),
+                    t0, chat_id, "full", chat_response.usage, len(prepared_full.messages),
                     intent=routing.intent,
-                    model_routing=model_decision,
-                    rag_trace=rag_result.trace if rag_result else None,
+                    model_routing=prepared_full.model_decision,
+                    rag_trace=prepared_full.rag_result.trace if prepared_full.rag_result else None,
                 )
 
                 # 백그라운드 요약 갱신
@@ -311,11 +312,17 @@ class Engine:
         """스트리밍 방식으로 메시지를 처리한다. 청크를 순차 반환한다."""
         t0 = time.monotonic()
         async with self._track_request(chat_id, stream=True):
+            self._cleanup_stream_meta()
             self._last_stream_meta.pop(chat_id, None)
+            turn_persisted = False
+            routing_tier: str | None = None
+            active_skill: SkillDefinition | None = None
             try:
                 routing = await self._decide_routing(
                     chat_id, text, model_override, images=images,
                 )
+                routing_tier = routing.tier
+                active_skill = getattr(routing, "skill", None)
 
                 if routing.tier == "skill":
                     skill = routing.skill
@@ -389,6 +396,7 @@ class Engine:
                         raise RuntimeError("empty_response_from_llm")
                     full_response = sanitize_model_output(full_response)
                     await self._persist_turn(chat_id, text, full_response, skill=skill)
+                    turn_persisted = True
                     self._set_stream_meta(chat_id, tier="skill", usage=usage)
                     self._log_request(t0, chat_id, "skill", usage, len(messages))
                     return
@@ -398,6 +406,7 @@ class Engine:
                     if instant is None:
                         raise RuntimeError("routing_decision_invalid: missing instant")
                     await self._persist_turn(chat_id, text, instant.response)
+                    turn_persisted = True
                     self._set_stream_meta(chat_id, tier="instant")
                     self._log_request(t0, chat_id, "instant", None, 0, rule=instant.rule_name)
                     yield instant.response
@@ -408,6 +417,7 @@ class Engine:
                     if cached is None:
                         raise RuntimeError("routing_decision_invalid: missing cache")
                     await self._persist_turn(chat_id, text, cached.response)
+                    turn_persisted = True
                     self._set_stream_meta(
                         chat_id, tier="cache", intent=routing.intent, cache_id=cached.cache_id,
                     )
@@ -417,42 +427,15 @@ class Engine:
                     yield cached.response
                     return
 
-                # [Tier 4] Full LLM 스트리밍 + 모델 라우팅 + RAG
-                target_model = model_override
-                model_decision = None
-                rag_result = None
-
-                if self._model_router and not model_override:
-                    model_decision = await self._model_router.route(
-                        text, images=images, metadata=metadata,
-                    )
-                    target_model = model_decision.selected_model
-
-                if self._rag_pipeline and self._rag_pipeline.should_trigger_rag(text, metadata):
-                    rag_result = await self._rag_pipeline.execute(text, metadata)
-
-                prepared = await self._prepare_request(
-                    chat_id, text, stream=True, strategy=routing.strategy,
+                prepared_full = await self._prepare_full_request(
+                    chat_id=chat_id,
+                    text=text,
+                    model_override=model_override,
+                    images=images,
+                    metadata=metadata,
+                    strategy=routing.strategy,
+                    stream=True,
                 )
-                target_model, prepared_role = await self._prepare_target_model(
-                    model=target_model,
-                    role=model_decision.selected_role if model_decision else None,
-                    timeout=prepared.timeout,
-                )
-                if (
-                    model_decision is not None
-                    and prepared_role is not None
-                    and prepared_role != model_decision.selected_role
-                ):
-                    original_role = model_decision.selected_role
-                    model_decision.selected_role = prepared_role
-                    model_decision.selected_model = target_model or model_decision.selected_model
-                    model_decision.fallback_used = True
-                    model_decision.original_role = original_role
-
-                messages = prepared.messages
-                if rag_result and rag_result.contexts:
-                    messages = self._inject_rag_context(messages, rag_result)
 
                 full_response = ""
                 repaired_response = None
@@ -461,10 +444,10 @@ class Engine:
                 stream_error: Exception | None = None
                 try:
                     async for chunk in self._llm_client.chat_stream(
-                        messages=messages,
-                        model=target_model,
-                        timeout=prepared.timeout,
-                        max_tokens=prepared.max_tokens,
+                        messages=prepared_full.messages,
+                        model=prepared_full.target_model,
+                        timeout=prepared_full.timeout,
+                        max_tokens=prepared_full.max_tokens,
                         stream_state=stream_state,
                     ):
                         full_response += chunk
@@ -486,10 +469,10 @@ class Engine:
                             error=str(exc),
                         )
                         chat_response = await self._llm_client.chat(
-                            messages=messages,
-                            model=target_model,
-                            timeout=prepared.timeout,
-                            max_tokens=prepared.max_tokens,
+                            messages=prepared_full.messages,
+                            model=prepared_full.target_model,
+                            timeout=prepared_full.timeout,
+                            max_tokens=prepared_full.max_tokens,
                         )
                         full_response = sanitize_model_output(chat_response.content)
                         usage = chat_response.usage
@@ -504,10 +487,10 @@ class Engine:
                         chat_id=chat_id,
                     )
                     chat_response = await self._llm_client.chat(
-                        messages=messages,
-                        model=target_model,
-                        timeout=prepared.timeout,
-                        max_tokens=prepared.max_tokens,
+                        messages=prepared_full.messages,
+                        model=prepared_full.target_model,
+                        timeout=prepared_full.timeout,
+                        max_tokens=prepared_full.max_tokens,
                     )
                     full_response = sanitize_model_output(chat_response.content)
                     usage = chat_response.usage or usage
@@ -517,53 +500,61 @@ class Engine:
                     raise stream_error
                 if not full_response.strip():
                     raise RuntimeError("empty_response_from_llm")
-                full_response = sanitize_model_output(full_response)
-                if not self._is_cache_response_acceptable(text, full_response):
-                    repaired = await self._retry_low_quality_response(
-                        messages=messages,
-                        query=text,
-                        model=target_model,
-                        timeout=prepared.timeout,
-                        max_tokens=prepared.max_tokens,
-                    )
-                    repaired_response = repaired or self._build_guardrail_fallback(text)
-                    full_response = repaired_response
+                full_response, repaired_response = await self._finalize_response_content(
+                    query=text,
+                    raw_response=full_response,
+                    messages=prepared_full.messages,
+                    target_model=prepared_full.target_model,
+                    timeout=prepared_full.timeout,
+                    max_tokens=prepared_full.max_tokens,
+                )
 
                 await self._persist_turn(chat_id, text, full_response)
+                turn_persisted = True
 
-                # 캐시 저장
-                cache_id = None
-                if (
-                    self._semantic_cache is not None
-                    and not images
-                    and self._semantic_cache.is_cacheable(text)
-                ):
-                    if self._is_cache_response_acceptable(text, full_response):
-                        cache_ctx = self._build_cache_context(model_override, routing.intent, chat_id)
-                        cache_id = await self._semantic_cache.put(text, full_response, context=cache_ctx)
-                    else:
-                        self._logger.info("semantic_cache_put_skipped_low_quality", chat_id=chat_id)
+                cache_id = await self._maybe_store_semantic_cache(
+                    chat_id=chat_id,
+                    text=text,
+                    response=full_response,
+                    images=images,
+                    model_override=model_override,
+                    intent=routing.intent,
+                )
 
                 warnings = self._collect_runtime_warnings(
-                    model_decision=model_decision,
-                    rag_result=rag_result,
+                    model_decision=prepared_full.model_decision,
+                    rag_result=prepared_full.rag_result,
                 )
                 self._set_stream_meta(
                     chat_id, tier="full", intent=routing.intent, cache_id=cache_id, usage=usage,
-                    model_role=model_decision.selected_role if model_decision else None,
-                    rag_trace=rag_result.trace.to_dict() if rag_result else None,
+                    model_role=(
+                        prepared_full.model_decision.selected_role
+                        if prepared_full.model_decision else None
+                    ),
+                    rag_trace=(
+                        prepared_full.rag_result.trace.to_dict()
+                        if prepared_full.rag_result else None
+                    ),
                     warnings=warnings or None,
                     repaired_response=repaired_response,
                 )
                 self._log_request(
-                    t0, chat_id, "full", usage, len(messages), intent=routing.intent,
-                    model_routing=model_decision,
-                    rag_trace=rag_result.trace if rag_result else None,
+                    t0, chat_id, "full", usage, len(prepared_full.messages), intent=routing.intent,
+                    model_routing=prepared_full.model_decision,
+                    rag_trace=prepared_full.rag_result.trace if prepared_full.rag_result else None,
                 )
 
                 # 백그라운드 요약 갱신
                 self._trigger_background_summary(chat_id)
             except Exception as exc:
+                if not turn_persisted:
+                    await self._persist_failed_turn(
+                        chat_id=chat_id,
+                        user_text=text,
+                        error=exc,
+                        tier=routing_tier,
+                        skill=active_skill,
+                    )
                 self._logger.error("request_failed", error=str(exc))
                 raise
 
@@ -678,6 +669,7 @@ class Engine:
 
     def consume_last_stream_meta(self, chat_id: int) -> dict[str, Any] | None:
         """스트리밍 처리 후 메타데이터를 1회성으로 반환한다."""
+        self._cleanup_stream_meta()
         meta = self._last_stream_meta.pop(chat_id, None)
         if meta is None:
             return None
@@ -716,7 +708,7 @@ class Engine:
         finally:
             self._active_request_count -= 1
             if self._active_request_count < 0:
-                self._logger.warning(
+                self._logger.error(
                     "active_request_count_underflow",
                     active_requests=self._active_request_count,
                 )
@@ -791,11 +783,37 @@ class Engine:
         warnings: list[str] | None = None,
         repaired_response: str | None = None,
     ) -> None:
+        now = time.monotonic()
         self._last_stream_meta[chat_id] = _StreamMeta(
             tier=tier, intent=intent, cache_id=cache_id, usage=usage,
             model_role=model_role, rag_trace=rag_trace, warnings=warnings,
-            repaired_response=repaired_response,
+            repaired_response=repaired_response, created_at=now,
         )
+        self._cleanup_stream_meta(now)
+
+    def _cleanup_stream_meta(self, now: float | None = None) -> None:
+        """미소비 스트리밍 메타데이터를 TTL/최대 개수 기준으로 정리한다."""
+        if not self._last_stream_meta:
+            return
+        now = time.monotonic() if now is None else now
+
+        expired_chat_ids = [
+            chat_id
+            for chat_id, meta in self._last_stream_meta.items()
+            if now - float(getattr(meta, "created_at", 0.0)) >= self._stream_meta_ttl_seconds
+        ]
+        for chat_id in expired_chat_ids:
+            self._last_stream_meta.pop(chat_id, None)
+
+        overflow = len(self._last_stream_meta) - self._stream_meta_max_entries
+        if overflow <= 0:
+            return
+        oldest_chat_ids = sorted(
+            self._last_stream_meta,
+            key=lambda cid: float(getattr(self._last_stream_meta[cid], "created_at", 0.0)),
+        )[:overflow]
+        for chat_id in oldest_chat_ids:
+            self._last_stream_meta.pop(chat_id, None)
 
     def _build_cache_context(
         self, model_override: str | None, intent: str | None, chat_id: int,
@@ -832,9 +850,6 @@ class Engine:
             return True
 
         probe = _CODE_BLOCK_RE.sub("", response)
-        lowered_probe = probe.lower()
-        if "i'll keep it short" in lowered_probe or "i’ll keep it short" in lowered_probe:
-            return False
 
         hangul_count = len(_re.findall(r"[가-힣]", probe))
         latin_count = len(_re.findall(r"[A-Za-z]", probe))
@@ -861,14 +876,15 @@ class Engine:
         return False
 
     def _build_guardrail_fallback(self, query: str) -> str:
+        _ = query
         if self._normalize_language(self._config.bot.language) == "ko":
             return (
-                "네, 가능합니다. 화학 DFT 데이터 전처리, 결과 요약, 이상치/오류 점검까지 도와드릴 수 있어요. "
-                "원하시면 사용 중인 파일 형식과 목표 지표를 알려주세요."
+                "죄송합니다. 답변 생성에 문제가 있었습니다. "
+                "다시 한번 질문해 주시면 더 나은 답변을 드리겠습니다."
             )
         return (
-            "Yes, I can help. I can support DFT data preprocessing, result summarization, and anomaly/error checks. "
-            "Share your file format and target metrics to start."
+            "Sorry, there was a problem generating the answer. "
+            "Please ask again and I will provide a better response."
         )
 
     async def _retry_low_quality_response(
@@ -1042,11 +1058,24 @@ class Engine:
                 active_requests=self._active_request_count,
             )
             return
+        if len(self._summary_tasks) >= self._summary_task_limit:
+            self._logger.debug(
+                "summary_refresh_skipped_task_limit",
+                chat_id=chat_id,
+                pending_summary_tasks=len(self._summary_tasks),
+                task_limit=self._summary_task_limit,
+            )
+            return
         task = asyncio.create_task(
             self._context_compressor.maybe_refresh_summary(chat_id),
             name=f"summary_refresh_{chat_id}",
         )
-        task.add_done_callback(self._handle_background_task_error)
+        self._summary_tasks.add(task)
+        task.add_done_callback(self._handle_summary_task_done)
+
+    def _handle_summary_task_done(self, task: asyncio.Task[Any]) -> None:
+        self._summary_tasks.discard(task)
+        self._handle_background_task_error(task)
 
     def _handle_background_task_error(self, task: asyncio.Task[Any]) -> None:
         """백그라운드 태스크 실패를 누락하지 않고 기록한다."""
@@ -1078,6 +1107,111 @@ class Engine:
             skill=None, messages=messages, timeout=timeout, max_tokens=max_tokens,
         )
 
+    async def _prepare_full_request(
+        self,
+        *,
+        chat_id: int,
+        text: str,
+        model_override: str | None,
+        images: list[bytes] | None,
+        metadata: dict | None,
+        strategy: ContextStrategy | None,
+        stream: bool,
+    ) -> _PreparedFullRequest:
+        """Tier 4(full LLM) 요청 준비를 공통 처리한다."""
+        target_model = model_override
+        model_decision = None
+        rag_result = None
+
+        if self._model_router and not model_override:
+            model_decision = await self._model_router.route(
+                text, images=images, metadata=metadata,
+            )
+            target_model = model_decision.selected_model
+
+        if self._rag_pipeline and self._rag_pipeline.should_trigger_rag(text, metadata):
+            rag_result = await self._rag_pipeline.execute(text, metadata)
+
+        prepared = await self._prepare_request(
+            chat_id, text, stream=stream, strategy=strategy,
+        )
+        target_model, prepared_role = await self._prepare_target_model(
+            model=target_model,
+            role=model_decision.selected_role if model_decision else None,
+            timeout=prepared.timeout,
+        )
+        if (
+            model_decision is not None
+            and prepared_role is not None
+            and prepared_role != model_decision.selected_role
+        ):
+            original_role = model_decision.selected_role
+            model_decision.selected_role = prepared_role
+            model_decision.selected_model = target_model or model_decision.selected_model
+            model_decision.fallback_used = True
+            model_decision.original_role = original_role
+
+        messages = prepared.messages
+        if rag_result and rag_result.contexts:
+            messages = self._inject_rag_context(messages, rag_result)
+
+        return _PreparedFullRequest(
+            messages=messages,
+            timeout=prepared.timeout,
+            max_tokens=prepared.max_tokens,
+            target_model=target_model,
+            model_decision=model_decision,
+            rag_result=rag_result,
+        )
+
+    async def _finalize_response_content(
+        self,
+        *,
+        query: str,
+        raw_response: str,
+        messages: list[dict[str, str]],
+        target_model: str | None,
+        timeout: int,
+        max_tokens: int | None,
+    ) -> tuple[str, str | None]:
+        """응답 정제 + 저품질 재시도/가드레일 폴백을 적용한다."""
+        content = sanitize_model_output(raw_response)
+        repaired_response: str | None = None
+        if not self._is_cache_response_acceptable(query, content):
+            repaired = await self._retry_low_quality_response(
+                messages=messages,
+                query=query,
+                model=target_model,
+                timeout=timeout,
+                max_tokens=max_tokens,
+            )
+            repaired_response = repaired or self._build_guardrail_fallback(query)
+            content = repaired_response
+        return content, repaired_response
+
+    async def _maybe_store_semantic_cache(
+        self,
+        *,
+        chat_id: int,
+        text: str,
+        response: str,
+        images: list[bytes] | None,
+        model_override: str | None,
+        intent: str | None,
+    ) -> int | None:
+        """응답을 시맨틱 캐시에 저장하고 cache_id를 반환한다."""
+        if (
+            self._semantic_cache is None
+            or images
+            or not self._semantic_cache.is_cacheable(text)
+        ):
+            return None
+        if not self._is_cache_response_acceptable(text, response):
+            self._logger.info("semantic_cache_put_skipped_low_quality", chat_id=chat_id)
+            return None
+        cache_ctx = self._build_cache_context(model_override, intent, chat_id)
+        return await self._semantic_cache.put(text, response, context=cache_ctx)
+
     async def _prepare_target_model(
         self,
         *,
@@ -1091,10 +1225,6 @@ class Engine:
         """
         target_model = model
         target_role = role
-        llm_type = type(self._llm_client)
-        has_prepare = any("prepare_model" in cls.__dict__ for cls in llm_type.__mro__)
-        if not has_prepare:
-            return target_model, target_role
         prepare_model = getattr(self._llm_client, "prepare_model", None)
         if not callable(prepare_model):
             return target_model, target_role
@@ -1154,12 +1284,6 @@ class Engine:
         """모델 사전 로드 실패 시 fallback_chain을 조회한다."""
         if self._model_router is None:
             return None, None
-        router_type = type(self._model_router)
-        has_method = any(
-            "resolve_fallback_model" in cls.__dict__ for cls in router_type.__mro__
-        )
-        if not has_method:
-            return None, None
         resolver = getattr(self._model_router, "resolve_fallback_model", None)
         if not callable(resolver):
             return None, None
@@ -1167,9 +1291,18 @@ class Engine:
             fallback = resolver(role)
         except Exception:
             return None, None
-        if fallback is None:
+        if (
+            fallback is None
+            or not isinstance(fallback, tuple)
+            or len(fallback) != 2
+        ):
             return None, None
-        return fallback
+        model_name, fallback_role = fallback
+        if not isinstance(model_name, str) or not model_name.strip():
+            return None, None
+        if not isinstance(fallback_role, str) or not fallback_role.strip():
+            return None, None
+        return model_name, fallback_role
 
     async def _persist_turn(
         self,
@@ -1182,6 +1315,41 @@ class Engine:
         metadata = {"skill": skill.name} if skill else None
         await self._memory.add_message(chat_id, "user", user_text, metadata=metadata)
         await self._memory.add_message(chat_id, "assistant", assistant_text)
+
+    async def _persist_failed_turn(
+        self,
+        chat_id: int,
+        user_text: str,
+        *,
+        error: Exception,
+        tier: str | None,
+        skill: SkillDefinition | None = None,
+    ) -> None:
+        """스트리밍 실패 시 사용자 턴만 실패 메타데이터와 함께 저장한다."""
+        if not user_text.strip():
+            return
+        metadata: dict[str, Any] = {
+            "turn_status": "failed",
+            "failure_path": "stream",
+            "error_type": type(error).__name__,
+        }
+        if tier is not None:
+            metadata["tier"] = tier
+        if skill is not None:
+            metadata["skill"] = skill.name
+        error_text = str(error).strip()
+        if error_text:
+            metadata["error"] = error_text[:200]
+        try:
+            await self._memory.add_message(
+                chat_id, "user", user_text, metadata=metadata
+            )
+        except Exception as persist_exc:
+            self._logger.warning(
+                "failed_turn_persist_failed",
+                chat_id=chat_id,
+                error=str(persist_exc),
+            )
 
     async def _build_context(
         self,

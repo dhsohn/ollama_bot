@@ -63,6 +63,11 @@ memory:
   max_long_term_entries: 1000
   conversation_retention_days: 30
 
+runtime_maintenance:
+  memory_maintenance_interval_seconds: 21600  # 6시간
+  llm_recovery_interval_seconds: 60
+  memory_maintenance_jitter_ratio: 0.1
+
 scheduler:
   timezone: "Asia/Seoul"
 

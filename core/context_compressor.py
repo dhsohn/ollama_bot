@@ -12,8 +12,8 @@ from typing import TYPE_CHECKING
 from core.logging_setup import get_logger
 
 if TYPE_CHECKING:
+    from core.llm_protocol import LLMClientProtocol
     from core.memory import MemoryManager
-    from core.ollama_client import OllamaClient
 
 _SUMMARY_SYSTEM_PROMPT = (
     "당신은 대화 요약 전문가입니다. "
@@ -28,7 +28,7 @@ class ContextCompressor:
 
     def __init__(
         self,
-        llm_client: OllamaClient,
+        llm_client: LLMClientProtocol,
         memory: MemoryManager,
         recent_keep: int = 10,
         summary_refresh_interval: int = 10,

@@ -20,7 +20,7 @@ from core.config import ModelRoutingConfig
 from core.logging_setup import get_logger
 
 if TYPE_CHECKING:
-    from core.lemonade_client import LemonadeClient
+    from core.llm_protocol import RetrievalClientProtocol
     from core.model_registry import ModelRegistry
 
 
@@ -101,7 +101,7 @@ class ModelRouter:
         self,
         config: ModelRoutingConfig,
         registry: ModelRegistry,
-        client: LemonadeClient,
+        client: RetrievalClientProtocol,
         embedding_model: str,
     ) -> None:
         self._config = config
@@ -138,7 +138,10 @@ class ModelRouter:
 
     @staticmethod
     def _build_code_pattern(keywords: list[str]) -> re.Pattern:
-        escaped = [re.escape(kw) for kw in keywords]
+        escaped = [re.escape(kw) for kw in keywords if kw]
+        if not escaped:
+            # 빈 패턴의 무한 매칭을 방지한다.
+            return re.compile(r"$^")
         return re.compile("|".join(escaped), re.IGNORECASE)
 
     async def initialize(self) -> None:
@@ -263,8 +266,12 @@ class ModelRouter:
             return True
         if _FILE_EXT_RE.search(text):
             return True
-        matches = self._code_keyword_pattern.findall(text)
-        return len(matches) >= 2
+        keyword_matches = 0
+        for _ in self._code_keyword_pattern.finditer(text):
+            keyword_matches += 1
+            if keyword_matches >= 2:
+                return True
+        return False
 
     async def _get_embedding(self, text: str) -> np.ndarray:
         """LRU 캐시 포함 임베딩 생성."""

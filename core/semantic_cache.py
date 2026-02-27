@@ -15,6 +15,7 @@ import numpy as np
 from fastembed import TextEmbedding
 
 from core.async_utils import run_in_thread
+from core.db_migrations import MigrationRunner, MigrationStep
 from core.embedding_utils import embed_texts
 from core.logging_setup import get_logger
 
@@ -43,7 +44,7 @@ class CacheResult:
     cache_id: int
 
 
-_SCHEMA_SQL = """
+_SEMANTIC_CACHE_SCHEMA_V1_SQL = """
 CREATE TABLE IF NOT EXISTS semantic_cache (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     scope       TEXT NOT NULL DEFAULT 'user',
@@ -59,7 +60,9 @@ CREATE TABLE IF NOT EXISTS semantic_cache (
 );
 CREATE INDEX IF NOT EXISTS idx_sc_scope_chat ON semantic_cache(scope, chat_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_sc_model ON semantic_cache(scope, model, prompt_ver, intent);
+"""
 
+_SEMANTIC_CACHE_SCHEMA_V2_SQL = """
 CREATE TABLE IF NOT EXISTS semantic_cache_feedback_links (
     chat_id        INTEGER NOT NULL,
     bot_message_id INTEGER NOT NULL,
@@ -76,6 +79,14 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_scfl_unique
     ON semantic_cache_feedback_links(chat_id, bot_message_id);
 CREATE INDEX IF NOT EXISTS idx_scfl_lookup ON semantic_cache_feedback_links(chat_id, bot_message_id);
 """
+
+
+async def _apply_semantic_cache_v1(db: aiosqlite.Connection) -> None:
+    await db.executescript(_SEMANTIC_CACHE_SCHEMA_V1_SQL)
+
+
+async def _apply_semantic_cache_v2(db: aiosqlite.Connection) -> None:
+    await db.executescript(_SEMANTIC_CACHE_SCHEMA_V2_SQL)
 
 
 class SemanticCache:
@@ -107,9 +118,11 @@ class SemanticCache:
 
         # 인메모리 인덱스
         self._ids: list[int] = []
-        self._embeddings: Any = None  # numpy array (N, dim)
-        self._meta: list[dict] = []  # scope, chat_id, model, prompt_ver, intent
-        self._positions_by_context: dict[tuple[str, int | None, str, str, str | None], list[int]] = {}
+        self._embeddings_by_id: dict[int, Any] = {}
+        self._meta_by_id: dict[int, dict[str, Any]] = {}
+        self._context_key_by_id: dict[int, tuple[str, int | None, str, str, str | None]] = {}
+        self._cache_ids_by_context: dict[tuple[str, int | None, str, str, str | None], list[int]] = {}
+        self._eviction_batch_size = max(1, min(64, max(1, self._max_entries // 20)))
 
         # 통계
         self._hits = 0
@@ -125,8 +138,14 @@ class SemanticCache:
 
     async def initialize(self) -> None:
         """테이블 생성 + 인코더 로드 + 인메모리 인덱스 빌드."""
-        await self._db.executescript(_SCHEMA_SQL)
-        await self._db.commit()
+        runner = MigrationRunner(self._db, self._logger, db_label="semantic_cache")
+        await runner.run(
+            [
+                MigrationStep(1, _apply_semantic_cache_v1, "create_semantic_cache_tables"),
+                MigrationStep(2, _apply_semantic_cache_v2, "create_cache_feedback_links"),
+            ],
+            backup_tables={"semantic_cache", "semantic_cache_feedback_links"},
+        )
 
         try:
             self._encoder = TextEmbedding(
@@ -149,27 +168,19 @@ class SemanticCache:
         )
         rows = await cursor.fetchall()
 
-        self._ids = []
-        embeddings_list = []
-        self._meta = []
+        self._clear_index()
 
         for row in rows:
             rid, scope, chat_id, emb_blob, model, prompt_ver, intent = row
-            self._ids.append(rid)
-            embeddings_list.append(np.frombuffer(emb_blob, dtype=np.float32))
-            self._meta.append({
-                "scope": scope,
-                "chat_id": chat_id,
-                "model": model,
-                "prompt_ver": prompt_ver,
-                "intent": intent,
-            })
-
-        if embeddings_list:
-            self._embeddings = np.stack(embeddings_list)
-        else:
-            self._embeddings = None
-        self._rebuild_context_lookup()
+            self._append_index_entry(
+                cache_id=int(rid),
+                embedding=np.frombuffer(emb_blob, dtype=np.float32),
+                scope=scope,
+                chat_id=chat_id,
+                model=model,
+                prompt_ver=prompt_ver,
+                intent=intent,
+            )
 
         self._logger.info("semantic_cache_index_built", entries=len(self._ids))
 
@@ -186,16 +197,12 @@ class SemanticCache:
 
     def _rebuild_context_lookup(self) -> None:
         lookup: dict[tuple[str, int | None, str, str, str | None], list[int]] = {}
-        for idx, meta in enumerate(self._meta):
-            key = self._make_context_key(
-                scope=meta["scope"],
-                chat_id=meta["chat_id"],
-                model=meta["model"],
-                prompt_ver=meta["prompt_ver"],
-                intent=meta["intent"],
-            )
-            lookup.setdefault(key, []).append(idx)
-        self._positions_by_context = lookup
+        for cache_id in self._ids:
+            key = self._context_key_by_id.get(cache_id)
+            if key is None:
+                continue
+            lookup.setdefault(key, []).append(cache_id)
+        self._cache_ids_by_context = lookup
 
     def _select_candidate_positions(self, context: CacheContext) -> list[int]:
         lookup_chat_id = context.chat_id if context.scope == "user" else None
@@ -206,7 +213,72 @@ class SemanticCache:
             prompt_ver=context.prompt_ver,
             intent=context.intent,
         )
-        return self._positions_by_context.get(key, [])
+        return self._cache_ids_by_context.get(key, [])
+
+    def _append_index_entry(
+        self,
+        *,
+        cache_id: int,
+        embedding: Any,
+        scope: str,
+        chat_id: int | None,
+        model: str,
+        prompt_ver: str,
+        intent: str | None,
+    ) -> None:
+        effective_chat_id = chat_id if scope == "user" else None
+        key = self._make_context_key(
+            scope=scope,
+            chat_id=effective_chat_id,
+            model=model,
+            prompt_ver=prompt_ver,
+            intent=intent,
+        )
+        self._ids.append(cache_id)
+        self._embeddings_by_id[cache_id] = np.asarray(embedding, dtype=np.float32)
+        self._meta_by_id[cache_id] = {
+            "scope": scope,
+            "chat_id": chat_id,
+            "model": model,
+            "prompt_ver": prompt_ver,
+            "intent": intent,
+        }
+        self._context_key_by_id[cache_id] = key
+        self._cache_ids_by_context.setdefault(key, []).append(cache_id)
+
+    def _drop_index_entry(self, cache_id: int, *, remove_from_order: bool) -> bool:
+        removed = False
+        if remove_from_order:
+            try:
+                self._ids.remove(cache_id)
+                removed = True
+            except ValueError:
+                pass
+
+        if self._embeddings_by_id.pop(cache_id, None) is not None:
+            removed = True
+        if self._meta_by_id.pop(cache_id, None) is not None:
+            removed = True
+
+        key = self._context_key_by_id.pop(cache_id, None)
+        if key is not None:
+            bucket = self._cache_ids_by_context.get(key)
+            if bucket is not None:
+                try:
+                    bucket.remove(cache_id)
+                    removed = True
+                except ValueError:
+                    pass
+                if not bucket:
+                    self._cache_ids_by_context.pop(key, None)
+        return removed
+
+    def _clear_index(self) -> None:
+        self._ids.clear()
+        self._embeddings_by_id.clear()
+        self._meta_by_id.clear()
+        self._context_key_by_id.clear()
+        self._cache_ids_by_context.clear()
 
     def is_cacheable(self, query: str) -> bool:
         """캐시 대상 여부를 판단한다."""
@@ -221,12 +293,16 @@ class SemanticCache:
 
     async def get(self, query: str, context: CacheContext) -> CacheResult | None:
         """유사한 캐시 항목을 검색한다."""
-        if not self._enabled or self._embeddings is None or len(self._ids) == 0:
+        if not self._enabled or len(self._ids) == 0:
             self._misses += 1
             return None
 
-        candidate_positions = self._select_candidate_positions(context)
-        if not candidate_positions:
+        candidate_cache_ids = [
+            cache_id
+            for cache_id in self._select_candidate_positions(context)
+            if cache_id in self._embeddings_by_id
+        ]
+        if not candidate_cache_ids:
             self._misses += 1
             return None
 
@@ -235,7 +311,9 @@ class SemanticCache:
         )[0]
 
         # 코사인 유사도 (정규화된 벡터 → 내적), 컨텍스트 후보군만 탐색
-        candidate_embeddings = self._embeddings[candidate_positions]
+        candidate_embeddings = np.stack(
+            [self._embeddings_by_id[cache_id] for cache_id in candidate_cache_ids]
+        )
         similarities = candidate_embeddings @ query_vec
         best_local_idx = int(np.argmax(similarities))
         best_sim = float(similarities[best_local_idx])
@@ -244,8 +322,7 @@ class SemanticCache:
             self._misses += 1
             return None
 
-        best_idx = candidate_positions[best_local_idx]
-        cache_id = self._ids[best_idx]
+        cache_id = candidate_cache_ids[best_local_idx]
 
         # DB에서 응답 조회 + last_hit_at 갱신
         cursor = await self._db.execute(
@@ -301,47 +378,45 @@ class SemanticCache:
         cache_id = int(cache_id_raw)
 
         # 인메모리 인덱스 갱신
-        self._ids.append(cache_id)
-        emb_vec = np.asarray(query_emb, dtype=np.float32).reshape(1, -1)
-        if self._embeddings is None:
-            self._embeddings = emb_vec
-        else:
-            self._embeddings = np.vstack([self._embeddings, emb_vec])
-        self._meta.append({
-            "scope": context.scope,
-            "chat_id": context.chat_id,
-            "model": context.model,
-            "prompt_ver": context.prompt_ver,
-            "intent": context.intent,
-        })
-        key = self._make_context_key(
+        self._append_index_entry(
+            cache_id=cache_id,
+            embedding=query_emb,
             scope=context.scope,
-            chat_id=context.chat_id if context.scope == "user" else None,
+            chat_id=context.chat_id,
             model=context.model,
             prompt_ver=context.prompt_ver,
             intent=context.intent,
         )
-        self._positions_by_context.setdefault(key, []).append(len(self._ids) - 1)
 
-        # 최대 항목 수 초과 시 LRU 제거
+        # 최대 항목 수 초과 시 배치 단위 제거(저수위까지)로 O(n) 재배열 빈도를 줄인다.
         if len(self._ids) > self._max_entries:
-            await self._evict_oldest()
+            low_watermark = max(self._max_entries - self._eviction_batch_size + 1, 0)
+            evict_count = max(1, len(self._ids) - low_watermark)
+            await self._evict_oldest(evict_count)
 
         return cache_id
 
-    async def _evict_oldest(self) -> None:
-        """가장 오래된 항목을 제거한다."""
+    async def _evict_oldest(self, count: int = 1) -> None:
+        """가장 오래된 항목을 count개 제거한다."""
         if not self._ids:
             return
-        oldest_id = self._ids[0]
-        await self._db.execute("DELETE FROM semantic_cache WHERE id = ?", (oldest_id,))
+        evict_count = min(max(1, count), len(self._ids))
+        oldest_ids = self._ids[:evict_count]
+
+        placeholders = ",".join("?" for _ in oldest_ids)
+        await self._db.execute(
+            f"DELETE FROM semantic_cache WHERE id IN ({placeholders})",
+            tuple(oldest_ids),
+        )
+        await self._db.execute(
+            f"DELETE FROM semantic_cache_feedback_links WHERE cache_id IN ({placeholders})",
+            tuple(oldest_ids),
+        )
         await self._db.commit()
 
-        self._ids.pop(0)
-        if self._embeddings is not None and len(self._embeddings) > 0:
-            self._embeddings = self._embeddings[1:]
-        self._meta.pop(0)
-        self._rebuild_context_lookup()
+        self._ids = self._ids[evict_count:]
+        for cache_id in oldest_ids:
+            self._drop_index_entry(cache_id, remove_from_order=False)
 
     async def invalidate(self, chat_id: int | None = None) -> int:
         """캐시를 무효화한다."""
@@ -356,8 +431,22 @@ class SemanticCache:
             cursor = await self._db.execute("DELETE FROM semantic_cache")
             await self._db.execute("DELETE FROM semantic_cache_feedback_links")
         await self._db.commit()
-        deleted = cursor.rowcount
-        await self._rebuild_index()
+        deleted = max(0, int(cursor.rowcount or 0))
+
+        if chat_id is None:
+            self._clear_index()
+            return deleted
+
+        target_ids = [
+            cache_id
+            for cache_id in self._ids
+            if self._meta_by_id.get(cache_id, {}).get("chat_id") == chat_id
+        ]
+        if target_ids:
+            removed_set = set(target_ids)
+            self._ids = [cache_id for cache_id in self._ids if cache_id not in removed_set]
+            for cache_id in target_ids:
+                self._drop_index_entry(cache_id, remove_from_order=False)
         return deleted
 
     async def invalidate_by_id(self, cache_id: int) -> bool:
@@ -376,19 +465,7 @@ class SemanticCache:
 
     def _remove_from_index(self, cache_id: int) -> bool:
         """인메모리 인덱스에서 단일 cache_id를 제거한다."""
-        try:
-            idx = self._ids.index(cache_id)
-        except ValueError:
-            return False
-
-        self._ids.pop(idx)
-        self._meta.pop(idx)
-        if self._embeddings is not None and len(self._embeddings) > idx:
-            self._embeddings = np.delete(self._embeddings, idx, axis=0)
-            if len(self._embeddings) == 0:
-                self._embeddings = None
-        self._rebuild_context_lookup()
-        return True
+        return self._drop_index_entry(cache_id, remove_from_order=True)
 
     async def link_feedback_target(
         self, chat_id: int, bot_message_id: int, cache_id: int
@@ -417,15 +494,31 @@ class SemanticCache:
 
     async def prune_expired(self) -> int:
         """TTL 만료 항목을 삭제한다."""
+        expired_cursor = await self._db.execute(
+            "SELECT id FROM semantic_cache WHERE created_at < datetime('now', ?)",
+            (f"-{self._ttl_hours} hours",),
+        )
+        expired_rows = await expired_cursor.fetchall()
+        expired_ids = [int(row[0]) for row in expired_rows]
+
         cursor = await self._db.execute(
             "DELETE FROM semantic_cache WHERE created_at < datetime('now', ?)",
             (f"-{self._ttl_hours} hours",),
         )
+        if expired_ids:
+            placeholders = ",".join("?" for _ in expired_ids)
+            await self._db.execute(
+                f"DELETE FROM semantic_cache_feedback_links WHERE cache_id IN ({placeholders})",
+                tuple(expired_ids),
+            )
         await self._db.commit()
-        deleted = cursor.rowcount
-        if deleted > 0:
-            await self._rebuild_index()
-        return deleted
+        deleted = max(0, int(cursor.rowcount or 0))
+        if expired_ids:
+            removed_set = set(expired_ids)
+            self._ids = [cache_id for cache_id in self._ids if cache_id not in removed_set]
+            for cache_id in expired_ids:
+                self._drop_index_entry(cache_id, remove_from_order=False)
+        return deleted if deleted > 0 else len(expired_ids)
 
     async def get_stats(self) -> dict:
         """캐시 통계."""
@@ -443,7 +536,4 @@ class SemanticCache:
     async def close(self) -> None:
         """리소스 정리."""
         self._encoder = None
-        self._embeddings = None
-        self._ids.clear()
-        self._meta.clear()
-        self._positions_by_context.clear()
+        self._clear_index()
