@@ -83,7 +83,7 @@ async def stream_and_render(
     first_chunk_timeout_seconds: float | None = None,
     chunk_timeout_seconds: float = 20.0,
     max_stream_seconds: float = 180.0,
-    max_total_chars: int = 12_000,
+    max_total_chars: int = 262_144,
     max_repeated_chunks: int = 200,
 ) -> StreamResult:
     """스트리밍 청크를 텔레그램 메시지 편집/분할 전송으로 렌더링한다."""
