@@ -95,9 +95,11 @@ class FeedbackManager:
         runner = MigrationRunner(self._db, self._logger, db_label="feedback")
         await runner.run(
             [
-                MigrationStep(1, _apply_feedback_v1, "create_message_feedback"),
-                MigrationStep(2, _apply_feedback_v2, "add_feedback_reason_column"),
-                MigrationStep(3, _apply_feedback_v3, "create_auto_evaluation"),
+                # memory/semantic_cache와 같은 DB를 공유할 수 있으므로
+                # 버전 번호는 컴포넌트별로 충돌하지 않게 분리한다.
+                MigrationStep(101, _apply_feedback_v1, "create_message_feedback"),
+                MigrationStep(102, _apply_feedback_v2, "add_feedback_reason_column"),
+                MigrationStep(103, _apply_feedback_v3, "create_auto_evaluation"),
             ],
             backup_tables={"message_feedback", "auto_evaluation"},
         )

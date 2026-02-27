@@ -216,8 +216,8 @@ class TestSchemaMigration:
         fm, db = feedback_db
         async with db.execute("SELECT version FROM schema_migrations ORDER BY version") as cursor:
             versions = [row[0] for row in await cursor.fetchall()]
-        assert 2 in versions
-        assert 3 in versions
+        assert 102 in versions
+        assert 103 in versions
 
     @pytest.mark.asyncio
     async def test_has_column_rejects_non_whitelisted_table(self, feedback_db) -> None:
