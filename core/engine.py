@@ -32,6 +32,7 @@ from core.logging_setup import get_logger
 from core.memory import MemoryManager
 from core.ollama_client import ChatStreamState, OllamaClient
 from core.skill_manager import SkillDefinition, SkillManager
+from core.text_utils import sanitize_model_output
 
 if TYPE_CHECKING:
     from core.context_compressor import ContextCompressor
@@ -177,9 +178,10 @@ class Engine:
                     chat_response = await self._llm_client.chat(
                         messages=messages, model=target_model, timeout=skill.timeout,
                     )
-                    await self._persist_turn(chat_id, text, chat_response.content, skill=skill)
+                    content = sanitize_model_output(chat_response.content)
+                    await self._persist_turn(chat_id, text, content, skill=skill)
                     self._log_request(t0, chat_id, "skill", chat_response.usage, len(messages))
-                    return chat_response.content
+                    return content
 
                 if routing.tier == "instant":
                     instant = routing.instant
@@ -246,7 +248,8 @@ class Engine:
                     timeout=prepared.timeout,
                     max_tokens=prepared.max_tokens,
                 )
-                await self._persist_turn(chat_id, text, chat_response.content)
+                content = sanitize_model_output(chat_response.content)
+                await self._persist_turn(chat_id, text, content)
 
                 # 캐시 저장
                 if (
@@ -256,7 +259,7 @@ class Engine:
                 ):
                     cache_ctx = self._build_cache_context(model_override, routing.intent, chat_id)
                     await self._semantic_cache.put(
-                        text, chat_response.content, context=cache_ctx,
+                        text, content, context=cache_ctx,
                     )
 
                 self._log_request(
@@ -269,7 +272,7 @@ class Engine:
                 # 백그라운드 요약 갱신
                 self._trigger_background_summary(chat_id)
 
-                return chat_response.content
+                return content
             except Exception as exc:
                 self._logger.error("request_failed", error=str(exc))
                 raise
@@ -337,7 +340,7 @@ class Engine:
                                 model=target_model,
                                 timeout=skill.timeout,
                             )
-                            full_response = chat_response.content
+                            full_response = sanitize_model_output(chat_response.content)
                             usage = chat_response.usage
                             if full_response:
                                 yield full_response
@@ -354,7 +357,7 @@ class Engine:
                             model=target_model,
                             timeout=skill.timeout,
                         )
-                        full_response = chat_response.content
+                        full_response = sanitize_model_output(chat_response.content)
                         usage = chat_response.usage or usage
                         if full_response:
                             yield full_response
@@ -362,6 +365,7 @@ class Engine:
                         raise stream_error
                     if not full_response.strip():
                         raise RuntimeError("empty_response_from_llm")
+                    full_response = sanitize_model_output(full_response)
                     await self._persist_turn(chat_id, text, full_response, skill=skill)
                     self._set_stream_meta(chat_id, tier="skill", usage=usage)
                     self._log_request(t0, chat_id, "skill", usage, len(messages))
@@ -464,7 +468,7 @@ class Engine:
                             timeout=prepared.timeout,
                             max_tokens=prepared.max_tokens,
                         )
-                        full_response = chat_response.content
+                        full_response = sanitize_model_output(chat_response.content)
                         usage = chat_response.usage
                         if full_response:
                             yield full_response
@@ -482,7 +486,7 @@ class Engine:
                         timeout=prepared.timeout,
                         max_tokens=prepared.max_tokens,
                     )
-                    full_response = chat_response.content
+                    full_response = sanitize_model_output(chat_response.content)
                     usage = chat_response.usage or usage
                     if full_response:
                         yield full_response
@@ -490,6 +494,7 @@ class Engine:
                     raise stream_error
                 if not full_response.strip():
                     raise RuntimeError("empty_response_from_llm")
+                full_response = sanitize_model_output(full_response)
 
                 await self._persist_turn(chat_id, text, full_response)
 
@@ -625,9 +630,10 @@ class Engine:
             model=target_model,
             timeout=self._config.bot.response_timeout,
         )
+        answer = sanitize_model_output(chat_response.content)
 
         return {
-            "answer": chat_response.content,
+            "answer": answer,
             "routing_decision": routing_decision,
             "rag_trace": rag_trace,
         }
@@ -1213,14 +1219,15 @@ class Engine:
             messages=messages,
             timeout=skill.timeout,
         )
+        content = sanitize_model_output(chat_response.content)
 
         if chat_id:
             await self._memory.add_message(
-                chat_id, "assistant", chat_response.content,
+                chat_id, "assistant", content,
                 metadata={"skill": skill_name, "auto": True},
             )
 
-        return chat_response.content
+        return content
 
     async def process_prompt(
         self,
@@ -1241,7 +1248,7 @@ class Engine:
             max_tokens=max_tokens,
             temperature=temperature,
         )
-        return chat_response.content
+        return sanitize_model_output(chat_response.content)
 
     async def change_model(self, model: str) -> dict:
         """런타임 기본 모델을 변경한다."""

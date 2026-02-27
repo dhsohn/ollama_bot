@@ -78,6 +78,31 @@ class TestProcessMessage:
         mock_ollama.chat.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_process_message_sanitizes_internal_channel_tokens(
+        self,
+        engine: Engine,
+        mock_ollama,
+        memory: MemoryManager,
+    ) -> None:
+        raw = (
+            "Great.. ...\n\n"
+            "<|start|>assistant<|channel|>analysis<|message|>"
+            "Need to respond in Korean."
+            "<|end|>"
+            "<|start|>assistant<|channel|>final<|message|>"
+            "한국어 최종 답변입니다."
+            "<|end|>"
+        )
+        mock_ollama.chat = AsyncMock(return_value=ChatResponse(content=raw))
+
+        result = await engine.process_message(111, "테스트")
+
+        assert result == "한국어 최종 답변입니다."
+        history = await memory.get_conversation(111)
+        assert history[-1]["role"] == "assistant"
+        assert history[-1]["content"] == "한국어 최종 답변입니다."
+
+    @pytest.mark.asyncio
     async def test_conversation_stored_in_memory(self, engine: Engine, memory: MemoryManager) -> None:
         await engine.process_message(111, "테스트 메시지")
         history = await memory.get_conversation(111)
@@ -293,6 +318,37 @@ class TestProcessMessage:
         history = await memory.get_conversation(111)
         assert history[-1]["role"] == "assistant"
         assert history[-1]["content"] == "fallback response"
+
+    @pytest.mark.asyncio
+    async def test_stream_persists_sanitized_response_in_memory(
+        self,
+        engine: Engine,
+        mock_ollama,
+        memory: MemoryManager,
+    ) -> None:
+        raw = (
+            "Great.. ...\n\n"
+            "<|start|>assistant<|channel|>analysis<|message|>"
+            "Need to respond in Korean."
+            "<|end|>"
+            "<|start|>assistant<|channel|>final<|message|>"
+            "한국어 최종 답변입니다."
+            "<|end|>"
+        )
+
+        async def _stream():
+            yield raw
+
+        mock_ollama.chat_stream = MagicMock(return_value=_stream())
+
+        chunks = []
+        async for chunk in engine.process_message_stream(111, "hello"):
+            chunks.append(chunk)
+
+        assert chunks == [raw]
+        history = await memory.get_conversation(111)
+        assert history[-1]["role"] == "assistant"
+        assert history[-1]["content"] == "한국어 최종 답변입니다."
 
     @pytest.mark.asyncio
     async def test_stream_empty_and_chat_empty_raises(

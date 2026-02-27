@@ -76,3 +76,34 @@ class TestStreamAndRender:
         reply_text.assert_not_awaited()
         # 단일 메시지 시 last_message가 sent_message와 동일
         assert result.last_message is sent_message
+
+    @pytest.mark.asyncio
+    async def test_sanitizes_internal_analysis_channel_format(self) -> None:
+        async def _stream():
+            yield (
+                "Great.. ...\n\n"
+                "<|start|>assistant<|channel|>analysis<|message|>"
+                "Need to respond in Korean."
+                "<|end|>"
+                "<|start|>assistant<|channel|>final<|message|>"
+                "한국어 최종 답변입니다."
+                "<|end|>"
+            )
+
+        sent_message = AsyncMock()
+        sent_message.edit_text = AsyncMock()
+        reply_text = AsyncMock()
+
+        result = await stream_and_render(
+            stream=_stream(),
+            sent_message=sent_message,
+            reply_text=reply_text,
+            split_message_fn=lambda text: [text],
+            edit_interval=0.0,
+            edit_char_threshold=10000,  # 중간 편집 비활성화
+            max_edit_length=4096,
+        )
+
+        assert result.full_response == "한국어 최종 답변입니다."
+        sent_message.edit_text.assert_awaited_once_with("한국어 최종 답변입니다.")
+        reply_text.assert_not_awaited()

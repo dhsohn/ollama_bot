@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from html import escape
 from typing import Any
 
+from core.text_utils import sanitize_model_output
+
 
 @dataclass
 class StreamResult:
@@ -97,7 +99,10 @@ async def stream_and_render(
             time_since_edit >= effective_interval
             and chars_since_edit >= edit_char_threshold
         ):
-            display_text = full_response + " ▌"
+            display_source = sanitize_model_output(full_response)
+            if not display_source.strip():
+                continue
+            display_text = display_source + " ▌"
             if len(display_text) > max_edit_length:
                 # 길이 초과 시 중간 편집은 건너뛰고 최종 분할 전송으로 마무리한다.
                 last_edit_time = now
@@ -111,7 +116,8 @@ async def stream_and_render(
                 pass
 
     if full_response:
-        parts = split_message_fn(full_response)
+        rendered_response = sanitize_model_output(full_response)
+        parts = split_message_fn(rendered_response)
         for idx, part in enumerate(parts):
             if idx == 0:
                 try:
@@ -124,4 +130,4 @@ async def stream_and_render(
     else:
         await sent_message.edit_text("응답을 생성하지 못했습니다.")
 
-    return StreamResult(full_response=full_response, last_message=last_msg)
+    return StreamResult(full_response=sanitize_model_output(full_response), last_message=last_msg)
