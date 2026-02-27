@@ -309,7 +309,7 @@ class Engine:
                     full_response = ""
                     stream_state = ChatStreamState()
                     usage = None
-                    stream_error: Exception | None = None
+                    skill_stream_error: Exception | None = None
                     try:
                         async for chunk in self._llm_client.chat_stream(
                             messages=messages,
@@ -320,7 +320,7 @@ class Engine:
                             full_response += chunk
                             yield chunk
                     except Exception as exc:
-                        stream_error = exc
+                        skill_stream_error = exc
                         if full_response.strip():
                             self._logger.warning(
                                 "stream_interrupted_partial_response",
@@ -346,7 +346,7 @@ class Engine:
                                 yield full_response
                     if usage is None:
                         usage = stream_state.usage
-                    if not full_response.strip() and stream_error is None:
+                    if not full_response.strip() and skill_stream_error is None:
                         self._logger.warning(
                             "stream_empty_fallback_to_chat",
                             tier="skill",
@@ -361,8 +361,8 @@ class Engine:
                         usage = chat_response.usage or usage
                         if full_response:
                             yield full_response
-                    if stream_error is not None and not full_response.strip():
-                        raise stream_error
+                    if skill_stream_error is not None and not full_response.strip():
+                        raise skill_stream_error
                     if not full_response.strip():
                         raise RuntimeError("empty_response_from_llm")
                     full_response = sanitize_model_output(full_response)
