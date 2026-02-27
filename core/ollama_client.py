@@ -253,6 +253,10 @@ class OllamaClient:
         }
         state = stream_state or ChatStreamState()
         state.usage = None
+        stream_started = time.monotonic()
+        last_content_chunk: str | None = None
+        repeated_content_count = 0
+        max_repeated_content = 200
 
         try:
             response = await asyncio.wait_for(
@@ -267,12 +271,31 @@ class OllamaClient:
 
             iterator = response.__aiter__()
             while True:
+                elapsed = time.monotonic() - stream_started
+                if elapsed > float(timeout):
+                    raise asyncio.TimeoutError(
+                        f"stream_duration_exceeded({elapsed:.1f}s>{timeout}s)"
+                    )
                 try:
-                    chunk = await asyncio.wait_for(iterator.__anext__(), timeout=timeout)
+                    remaining_timeout = max(0.1, float(timeout) - elapsed)
+                    chunk = await asyncio.wait_for(
+                        iterator.__anext__(),
+                        timeout=remaining_timeout,
+                    )
                 except StopAsyncIteration:
                     break
-                if chunk.message.content:
-                    yield chunk.message.content
+                content = chunk.message.content
+                if content:
+                    if content == last_content_chunk:
+                        repeated_content_count += 1
+                        if repeated_content_count >= max_repeated_content:
+                            raise asyncio.TimeoutError(
+                                "stream_stalled_repeating_content"
+                            )
+                    else:
+                        last_content_chunk = content
+                        repeated_content_count = 0
+                    yield content
                 # 마지막 청크(done=True)에서 usage 메타데이터 추출
                 if getattr(chunk, "done", False):
                     state.usage = ChatUsage(

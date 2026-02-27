@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock
 
 import pytest
@@ -107,3 +108,79 @@ class TestStreamAndRender:
         assert result.full_response == "한국어 최종 답변입니다."
         sent_message.edit_text.assert_awaited_once_with("한국어 최종 답변입니다.")
         reply_text.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_stops_when_chunk_timeout_exceeded(self) -> None:
+        async def _slow_stream():
+            await asyncio.sleep(0.05)
+            yield "late"
+
+        sent_message = AsyncMock()
+        sent_message.edit_text = AsyncMock()
+        reply_text = AsyncMock()
+
+        result = await stream_and_render(
+            stream=_slow_stream(),
+            sent_message=sent_message,
+            reply_text=reply_text,
+            split_message_fn=lambda text: [text],
+            chunk_timeout_seconds=0.01,
+            max_stream_seconds=1.0,
+        )
+
+        assert "중단" in result.full_response
+        sent_message.edit_text.assert_awaited_once()
+        assert "중단" in sent_message.edit_text.await_args.args[0]
+        reply_text.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_uses_longer_timeout_for_first_chunk_only(self) -> None:
+        async def _slow_then_stall_stream():
+            await asyncio.sleep(0.03)
+            yield "first"
+            await asyncio.sleep(0.03)
+            yield "second"
+
+        sent_message = AsyncMock()
+        sent_message.edit_text = AsyncMock()
+        reply_text = AsyncMock()
+
+        result = await stream_and_render(
+            stream=_slow_then_stall_stream(),
+            sent_message=sent_message,
+            reply_text=reply_text,
+            split_message_fn=lambda text: [text],
+            first_chunk_timeout_seconds=0.05,
+            chunk_timeout_seconds=0.01,
+            max_stream_seconds=1.0,
+            edit_char_threshold=10_000,
+        )
+
+        assert "first" in result.full_response
+        assert "중단" in result.full_response
+        sent_message.edit_text.assert_awaited_once()
+        assert "중단" in sent_message.edit_text.await_args.args[0]
+        reply_text.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_stops_when_repeated_chunks_detected(self) -> None:
+        async def _stream():
+            for _ in range(10):
+                yield "가"
+
+        sent_message = AsyncMock()
+        sent_message.edit_text = AsyncMock()
+        reply_text = AsyncMock()
+
+        result = await stream_and_render(
+            stream=_stream(),
+            sent_message=sent_message,
+            reply_text=reply_text,
+            split_message_fn=lambda text: [text],
+            max_repeated_chunks=3,
+            edit_char_threshold=10_000,
+        )
+
+        assert "반복 출력이 감지" in result.full_response
+        sent_message.edit_text.assert_awaited_once()
+        assert "반복 출력이 감지" in sent_message.edit_text.await_args.args[0]

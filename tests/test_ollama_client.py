@@ -294,6 +294,29 @@ class TestChatStream:
         assert state.usage.prompt_eval_count == 12
         assert state.usage.eval_count == 34
 
+    @pytest.mark.asyncio
+    async def test_chat_stream_repeated_content_stalls(self, ollama_client: OllamaClient) -> None:
+        class _RepeatingStream:
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                chunk = MagicMock()
+                chunk.message.content = "가"
+                chunk.done = False
+                return chunk
+
+        mock_async_client = AsyncMock()
+        mock_async_client.chat = AsyncMock(return_value=_RepeatingStream())
+        ollama_client._client = mock_async_client
+
+        with pytest.raises(OllamaClientError, match="streaming request failed"):
+            async for _ in ollama_client.chat_stream(
+                messages=[{"role": "user", "content": "Hi"}],
+                timeout=1,
+            ):
+                pass
+
 
 class TestHealthCheck:
     @pytest.mark.asyncio

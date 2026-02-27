@@ -230,3 +230,78 @@ class TestChat:
                     pass
         finally:
             await client.close()
+
+    @pytest.mark.asyncio
+    async def test_chat_stream_normalizes_cumulative_message_content(
+        self,
+        lemonade_config: LemonadeConfig,
+        ollama_fallback: OllamaConfig,
+    ) -> None:
+        stream_body = "\n\n".join(
+            [
+                'data: {"choices":[{"message":{"content":"가"}}]}',
+                'data: {"choices":[{"message":{"content":"가가"}}]}',
+                'data: {"choices":[{"message":{"content":"가가가"},"finish_reason":"stop"}]}',
+                "",
+            ]
+        )
+
+        def _handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/api/v1/chat/completions":
+                return httpx.Response(
+                    200,
+                    text=stream_body,
+                    headers={"content-type": "text/event-stream"},
+                )
+            return httpx.Response(404, json={"error": "not found"})
+
+        client = LemonadeClient(lemonade_config, fallback_ollama=ollama_fallback)
+        client._client = httpx.AsyncClient(
+            base_url=lemonade_config.host,
+            transport=httpx.MockTransport(_handler),
+        )
+
+        try:
+            chunks: list[str] = []
+            async for chunk in client.chat_stream(
+                messages=[{"role": "user", "content": "hi"}],
+                stream_state=ChatStreamState(),
+            ):
+                chunks.append(chunk)
+            assert chunks == ["가", "가", "가"]
+        finally:
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_chat_stream_raises_when_fallback_content_stalls(
+        self,
+        lemonade_config: LemonadeConfig,
+        ollama_fallback: OllamaConfig,
+    ) -> None:
+        repeating_lines = ['data: {"choices":[{"message":{"content":"가"}}]}'] * 205
+        stream_body = "\n\n".join(repeating_lines + [""])
+
+        def _handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/api/v1/chat/completions":
+                return httpx.Response(
+                    200,
+                    text=stream_body,
+                    headers={"content-type": "text/event-stream"},
+                )
+            return httpx.Response(404, json={"error": "not found"})
+
+        client = LemonadeClient(lemonade_config, fallback_ollama=ollama_fallback)
+        client._client = httpx.AsyncClient(
+            base_url=lemonade_config.host,
+            transport=httpx.MockTransport(_handler),
+        )
+
+        try:
+            with pytest.raises(LemonadeClientError, match="streaming request failed"):
+                async for _ in client.chat_stream(
+                    messages=[{"role": "user", "content": "hi"}],
+                    stream_state=ChatStreamState(),
+                ):
+                    pass
+        finally:
+            await client.close()

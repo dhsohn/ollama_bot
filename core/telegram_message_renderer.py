@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import time
 from collections.abc import AsyncIterable, Awaitable, Callable
 from dataclasses import dataclass
 from html import escape
 from typing import Any
 
+from core.logging_setup import get_logger
 from core.text_utils import sanitize_model_output
+
+_logger = get_logger("telegram_message_renderer")
 
 
 @dataclass
@@ -75,6 +80,11 @@ async def stream_and_render(
     edit_interval: float = 1.0,
     edit_char_threshold: int = 100,
     max_edit_length: int = 4096,
+    first_chunk_timeout_seconds: float | None = None,
+    chunk_timeout_seconds: float = 20.0,
+    max_stream_seconds: float = 180.0,
+    max_total_chars: int = 12_000,
+    max_repeated_chunks: int = 200,
 ) -> StreamResult:
     """스트리밍 청크를 텔레그램 메시지 편집/분할 전송으로 렌더링한다."""
     full_response = ""
@@ -82,9 +92,61 @@ async def stream_and_render(
     last_edit_time = stream_start
     last_edit_len = 0
     last_msg = sent_message
+    last_chunk: str | None = None
+    repeated_chunk_count = 0
+    stop_reason: str | None = None
+    iterator = stream.__aiter__()
+    received_first_chunk = False
 
-    async for chunk in stream:
+    while True:
+        elapsed_before_next = time.monotonic() - stream_start
+        if max_stream_seconds > 0 and elapsed_before_next >= max_stream_seconds:
+            stop_reason = "stream_timeout"
+            break
+
+        timeout_budget = chunk_timeout_seconds
+        if not received_first_chunk and first_chunk_timeout_seconds is not None:
+            timeout_budget = first_chunk_timeout_seconds
+        effective_wait = timeout_budget if timeout_budget > 0 else None
+        if max_stream_seconds > 0:
+            remaining = max_stream_seconds - elapsed_before_next
+            if remaining <= 0:
+                stop_reason = "stream_timeout"
+                break
+            if effective_wait is None:
+                effective_wait = remaining
+            else:
+                effective_wait = min(effective_wait, remaining)
+
+        try:
+            if effective_wait is None:
+                chunk = await iterator.__anext__()
+            else:
+                chunk = await asyncio.wait_for(iterator.__anext__(), timeout=effective_wait)
+        except StopAsyncIteration:
+            break
+        except asyncio.TimeoutError:
+            stop_reason = "chunk_timeout"
+            break
+
+        if not chunk:
+            continue
+        received_first_chunk = True
+
+        if chunk == last_chunk:
+            repeated_chunk_count += 1
+            if max_repeated_chunks > 0 and repeated_chunk_count >= max_repeated_chunks:
+                stop_reason = "repeated_chunks"
+                break
+        else:
+            last_chunk = chunk
+            repeated_chunk_count = 0
+
         full_response += chunk
+        if max_total_chars > 0 and len(full_response) >= max_total_chars:
+            full_response = full_response[:max_total_chars]
+            stop_reason = "max_total_chars"
+            break
 
         now = time.monotonic()
         chars_since_edit = len(full_response) - last_edit_len
@@ -115,8 +177,37 @@ async def stream_and_render(
             except Exception:
                 pass
 
+    close_stream = getattr(iterator, "aclose", None)
+    if callable(close_stream):
+        try:
+            maybe_close = close_stream()
+            if inspect.isawaitable(maybe_close):
+                await maybe_close
+        except Exception:
+            pass
+
+    notice = ""
+    if stop_reason == "chunk_timeout":
+        notice = "⚠️ 응답 스트림 지연으로 중단되었습니다. 다시 시도해주세요."
+    elif stop_reason == "stream_timeout":
+        notice = "⚠️ 응답 생성 시간이 초과되어 중단되었습니다. 질문 범위를 줄여 다시 시도해주세요."
+    elif stop_reason == "max_total_chars":
+        notice = "⚠️ 응답이 너무 길어 중단되었습니다. 더 구체적으로 질문해 주세요."
+    elif stop_reason == "repeated_chunks":
+        notice = "⚠️ 반복 출력이 감지되어 스트리밍을 중단했습니다. 다시 시도해주세요."
+    if stop_reason is not None:
+        _logger.warning(
+            "stream_render_stopped",
+            reason=stop_reason,
+            elapsed=round(time.monotonic() - stream_start, 3),
+            response_chars=len(full_response),
+            repeated_chunk_count=repeated_chunk_count,
+        )
+
     if full_response:
         rendered_response = sanitize_model_output(full_response)
+        if notice:
+            rendered_response = f"{rendered_response}\n\n{notice}".strip()
         parts = split_message_fn(rendered_response)
         for idx, part in enumerate(parts):
             if idx == 0:
@@ -128,6 +219,9 @@ async def stream_and_render(
             else:
                 last_msg = await reply_text(part)
     else:
-        await sent_message.edit_text("응답을 생성하지 못했습니다.")
+        await sent_message.edit_text(notice or "응답을 생성하지 못했습니다.")
 
-    return StreamResult(full_response=sanitize_model_output(full_response), last_message=last_msg)
+    final_response = sanitize_model_output(full_response)
+    if notice:
+        final_response = f"{final_response}\n\n{notice}".strip()
+    return StreamResult(full_response=final_response, last_message=last_msg)

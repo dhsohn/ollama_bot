@@ -514,6 +514,7 @@ class LemonadeClient:
         reasoning_chunks: list[str] = []
         stream_started = time.monotonic()
         last_content_chunk: str | None = None
+        last_fallback_snapshot: str | None = None
         repeated_content_count = 0
         max_repeated_content = 200
 
@@ -574,8 +575,6 @@ class LemonadeClient:
                         if finish_reason:
                             break
                         continue
-                    elif finish_reason:
-                        break
 
                     if isinstance(delta, dict) and not emitted_content:
                         reasoning = delta.get("reasoning_content")
@@ -584,10 +583,43 @@ class LemonadeClient:
                             continue
 
                     # 일부 구현은 delta 대신 message.content를 전달한다.
-                    fallback_content = self._extract_content(first_choice)
-                    if fallback_content:
+                    raw_fallback_content = self._extract_content(first_choice)
+                    if raw_fallback_content:
+                        fallback_content = raw_fallback_content
+                        # message.content가 누적 전체 텍스트인 구현을 델타로 보정한다.
+                        if last_fallback_snapshot is not None:
+                            if fallback_content == last_fallback_snapshot:
+                                repeated_content_count += 1
+                                if repeated_content_count >= max_repeated_content:
+                                    raise asyncio.TimeoutError(
+                                        "stream_stalled_repeating_content"
+                                    )
+                                if finish_reason:
+                                    break
+                                continue
+                            if fallback_content.startswith(last_fallback_snapshot):
+                                fallback_content = fallback_content[len(last_fallback_snapshot):]
+                        last_fallback_snapshot = raw_fallback_content
+                        if not fallback_content:
+                            if finish_reason:
+                                break
+                            continue
+                        if fallback_content == last_content_chunk:
+                            repeated_content_count += 1
+                            if repeated_content_count >= max_repeated_content:
+                                raise asyncio.TimeoutError(
+                                    "stream_stalled_repeating_content"
+                                )
+                        else:
+                            last_content_chunk = fallback_content
+                            repeated_content_count = 0
                         emitted_content = True
                         yield fallback_content
+                        if finish_reason:
+                            break
+                        continue
+                    if finish_reason:
+                        break
                 if not emitted_content and reasoning_chunks:
                     yield "".join(reasoning_chunks)
             self._mark_healthy()

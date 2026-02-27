@@ -48,6 +48,14 @@ _EDIT_CHAR_THRESHOLD = 100
 # 연속 typing 인디케이터 간격 (초)
 _TYPING_INTERVAL = 4.0
 
+# 스트리밍 안전 가드
+_STREAM_FIRST_CHUNK_TIMEOUT_SECONDS = 45.0
+_STREAM_CHUNK_TIMEOUT_SECONDS = 20.0
+_STREAM_MAX_SECONDS_CAP = 180.0
+_STREAM_MAX_TOTAL_CHARS = 4096
+_STREAM_MAX_REPEATED_CHUNKS = 30
+_STREAM_RENDER_WAIT_GRACE_SECONDS = 5.0
+
 # 인텐트별 placeholder 메시지
 _INTENT_PLACEHOLDERS: dict[str | None, str] = {
     "code": "코드를 분석하고 있습니다...",
@@ -626,6 +634,7 @@ class TelegramHandler:
             self._keep_typing(chat, typing_stop),
             name=f"typing_{chat_id}",
         )
+        render_timeout: float | None = None
 
         try:
             # 인텐트 기반 placeholder
@@ -637,14 +646,27 @@ class TelegramHandler:
             placeholder = _INTENT_PLACEHOLDERS.get(intent, _INTENT_PLACEHOLDERS[None])
             sent_message = await message.reply_text(placeholder)
 
-            result = await stream_and_render(
-                stream=self._engine.process_message_stream(chat_id, text, images=images),
-                sent_message=sent_message,
-                reply_text=message.reply_text,
-                split_message_fn=self._split_message,
-                edit_interval=_EDIT_INTERVAL,
-                edit_char_threshold=_EDIT_CHAR_THRESHOLD,
-                max_edit_length=self._max_message_length,
+            effective_stream_seconds = min(
+                float(self._config.bot.response_timeout),
+                _STREAM_MAX_SECONDS_CAP,
+            )
+            render_timeout = effective_stream_seconds + _STREAM_RENDER_WAIT_GRACE_SECONDS
+            result = await asyncio.wait_for(
+                stream_and_render(
+                    stream=self._engine.process_message_stream(chat_id, text, images=images),
+                    sent_message=sent_message,
+                    reply_text=message.reply_text,
+                    split_message_fn=self._split_message,
+                    edit_interval=_EDIT_INTERVAL,
+                    edit_char_threshold=_EDIT_CHAR_THRESHOLD,
+                    max_edit_length=self._max_message_length,
+                    first_chunk_timeout_seconds=_STREAM_FIRST_CHUNK_TIMEOUT_SECONDS,
+                    chunk_timeout_seconds=_STREAM_CHUNK_TIMEOUT_SECONDS,
+                    max_stream_seconds=effective_stream_seconds,
+                    max_total_chars=_STREAM_MAX_TOTAL_CHARS,
+                    max_repeated_chunks=_STREAM_MAX_REPEATED_CHUNKS,
+                ),
+                timeout=render_timeout,
             )
             consume_meta = getattr(self._engine, "consume_last_stream_meta", None)
             if callable(consume_meta):
@@ -735,6 +757,15 @@ class TelegramHandler:
                     result.full_response,
                 )
 
+        except asyncio.TimeoutError:
+            self._logger.error(
+                "stream_render_timeout",
+                chat_id=chat_id,
+                timeout_seconds=render_timeout,
+            )
+            await message.reply_text(
+                "⚠️ 응답 시간이 길어져 중단했습니다. 질문을 더 짧게 나눠 다시 시도해주세요."
+            )
         except Exception as exc:
             self._logger.error(
                 "message_processing_error",

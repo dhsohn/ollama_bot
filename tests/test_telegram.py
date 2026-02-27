@@ -390,16 +390,19 @@ class TestHandleMessage:
         update.effective_chat = chat
         update.effective_message = message
 
-        captured: dict[str, int] = {}
+        captured: dict[str, float] = {}
 
         async def fake_stream_and_render(**kwargs):
             captured["max_edit_length"] = kwargs["max_edit_length"]
+            captured["first_chunk_timeout_seconds"] = kwargs["first_chunk_timeout_seconds"]
+            captured["chunk_timeout_seconds"] = kwargs["chunk_timeout_seconds"]
             return SimpleNamespace(full_response="", last_message=None)
 
         with patch("core.telegram_handler.stream_and_render", new=fake_stream_and_render):
             await handler._handle_message(update, MagicMock())
 
         assert captured["max_edit_length"] == 123
+        assert captured["first_chunk_timeout_seconds"] > captured["chunk_timeout_seconds"]
 
     @pytest.mark.asyncio
     async def test_handle_message_shows_runtime_warning_from_stream_meta(
