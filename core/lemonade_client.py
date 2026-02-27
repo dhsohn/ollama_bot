@@ -512,6 +512,10 @@ class LemonadeClient:
         state.usage = None
         emitted_content = False
         reasoning_chunks: list[str] = []
+        stream_started = time.monotonic()
+        last_content_chunk: str | None = None
+        repeated_content_count = 0
+        max_repeated_content = 200
 
         try:
             async with client.stream(
@@ -522,6 +526,11 @@ class LemonadeClient:
             ) as response:
                 response.raise_for_status()
                 async for line in response.aiter_lines():
+                    elapsed = time.monotonic() - stream_started
+                    if elapsed > float(timeout):
+                        raise asyncio.TimeoutError(
+                            f"stream_duration_exceeded({elapsed:.1f}s>{timeout}s)"
+                        )
                     data_line = line.strip()
                     if not data_line or not data_line.startswith("data:"):
                         continue
@@ -547,12 +556,26 @@ class LemonadeClient:
                     if not choices:
                         continue
                     first_choice = choices[0]
+                    finish_reason = first_choice.get("finish_reason")
                     delta = first_choice.get("delta", {})
                     content = delta.get("content") if isinstance(delta, dict) else None
                     if isinstance(content, str) and content:
+                        if content == last_content_chunk:
+                            repeated_content_count += 1
+                            if repeated_content_count >= max_repeated_content:
+                                raise asyncio.TimeoutError(
+                                    "stream_stalled_repeating_content"
+                                )
+                        else:
+                            last_content_chunk = content
+                            repeated_content_count = 0
                         emitted_content = True
                         yield content
+                        if finish_reason:
+                            break
                         continue
+                    elif finish_reason:
+                        break
 
                     if isinstance(delta, dict) and not emitted_content:
                         reasoning = delta.get("reasoning_content")
