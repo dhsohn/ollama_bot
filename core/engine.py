@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import re as _re
 import time
 import uuid
@@ -168,8 +169,13 @@ class Engine:
                         raise RuntimeError("routing_decision_invalid: missing skill")
                     self._logger.info("skill_triggered", chat_id=chat_id, skill=skill.name)
                     messages = await self._build_context(chat_id, text, skill=skill)
+                    target_model, _ = await self._prepare_target_model(
+                        model=model_override,
+                        role="skill",
+                        timeout=skill.timeout,
+                    )
                     chat_response = await self._llm_client.chat(
-                        messages=messages, model=model_override, timeout=skill.timeout,
+                        messages=messages, model=target_model, timeout=skill.timeout,
                     )
                     await self._persist_turn(chat_id, text, chat_response.content, skill=skill)
                     self._log_request(t0, chat_id, "skill", chat_response.usage, len(messages))
@@ -213,6 +219,21 @@ class Engine:
                 prepared = await self._prepare_request(
                     chat_id, text, stream=False, strategy=routing.strategy,
                 )
+                target_model, prepared_role = await self._prepare_target_model(
+                    model=target_model,
+                    role=model_decision.selected_role if model_decision else None,
+                    timeout=prepared.timeout,
+                )
+                if (
+                    model_decision is not None
+                    and prepared_role is not None
+                    and prepared_role != model_decision.selected_role
+                ):
+                    original_role = model_decision.selected_role
+                    model_decision.selected_role = prepared_role
+                    model_decision.selected_model = target_model or model_decision.selected_model
+                    model_decision.fallback_used = True
+                    model_decision.original_role = original_role
 
                 # RAG 컨텍스트 주입
                 messages = prepared.messages
@@ -277,17 +298,70 @@ class Engine:
                         raise RuntimeError("routing_decision_invalid: missing skill")
                     self._logger.info("skill_triggered_stream", chat_id=chat_id, skill=skill.name)
                     messages = await self._build_context(chat_id, text, skill=skill)
+                    target_model, _ = await self._prepare_target_model(
+                        model=model_override,
+                        role="skill",
+                        timeout=skill.timeout,
+                    )
                     full_response = ""
                     stream_state = ChatStreamState()
-                    async for chunk in self._llm_client.chat_stream(
-                        messages=messages,
-                        model=model_override,
-                        timeout=skill.timeout,
-                        stream_state=stream_state,
-                    ):
-                        full_response += chunk
-                        yield chunk
-                    usage = stream_state.usage
+                    usage = None
+                    stream_error: Exception | None = None
+                    try:
+                        async for chunk in self._llm_client.chat_stream(
+                            messages=messages,
+                            model=target_model,
+                            timeout=skill.timeout,
+                            stream_state=stream_state,
+                        ):
+                            full_response += chunk
+                            yield chunk
+                    except Exception as exc:
+                        stream_error = exc
+                        if full_response.strip():
+                            self._logger.warning(
+                                "stream_interrupted_partial_response",
+                                tier="skill",
+                                chat_id=chat_id,
+                                error=str(exc),
+                            )
+                        else:
+                            self._logger.warning(
+                                "stream_failed_fallback_to_chat",
+                                tier="skill",
+                                chat_id=chat_id,
+                                error=str(exc),
+                            )
+                            chat_response = await self._llm_client.chat(
+                                messages=messages,
+                                model=target_model,
+                                timeout=skill.timeout,
+                            )
+                            full_response = chat_response.content
+                            usage = chat_response.usage
+                            if full_response:
+                                yield full_response
+                    if usage is None:
+                        usage = stream_state.usage
+                    if not full_response.strip() and stream_error is None:
+                        self._logger.warning(
+                            "stream_empty_fallback_to_chat",
+                            tier="skill",
+                            chat_id=chat_id,
+                        )
+                        chat_response = await self._llm_client.chat(
+                            messages=messages,
+                            model=target_model,
+                            timeout=skill.timeout,
+                        )
+                        full_response = chat_response.content
+                        usage = chat_response.usage or usage
+                        if full_response:
+                            yield full_response
+                    if stream_error is not None and not full_response.strip():
+                        raise stream_error
+                    if not full_response.strip():
+                        raise RuntimeError("empty_response_from_llm")
                     await self._persist_turn(chat_id, text, full_response, skill=skill)
                     self._set_stream_meta(chat_id, tier="skill", usage=usage)
                     self._log_request(t0, chat_id, "skill", usage, len(messages))
@@ -334,6 +408,21 @@ class Engine:
                 prepared = await self._prepare_request(
                     chat_id, text, stream=True, strategy=routing.strategy,
                 )
+                target_model, prepared_role = await self._prepare_target_model(
+                    model=target_model,
+                    role=model_decision.selected_role if model_decision else None,
+                    timeout=prepared.timeout,
+                )
+                if (
+                    model_decision is not None
+                    and prepared_role is not None
+                    and prepared_role != model_decision.selected_role
+                ):
+                    original_role = model_decision.selected_role
+                    model_decision.selected_role = prepared_role
+                    model_decision.selected_model = target_model or model_decision.selected_model
+                    model_decision.fallback_used = True
+                    model_decision.original_role = original_role
 
                 messages = prepared.messages
                 if rag_result and rag_result.contexts:
@@ -341,14 +430,64 @@ class Engine:
 
                 full_response = ""
                 stream_state = ChatStreamState()
-                async for chunk in self._llm_client.chat_stream(
-                    messages=messages,
-                    model=target_model,
-                    timeout=prepared.timeout,
-                    stream_state=stream_state,
-                ):
-                    full_response += chunk
-                    yield chunk
+                usage = None
+                stream_error: Exception | None = None
+                try:
+                    async for chunk in self._llm_client.chat_stream(
+                        messages=messages,
+                        model=target_model,
+                        timeout=prepared.timeout,
+                        stream_state=stream_state,
+                    ):
+                        full_response += chunk
+                        yield chunk
+                except Exception as exc:
+                    stream_error = exc
+                    if full_response.strip():
+                        self._logger.warning(
+                            "stream_interrupted_partial_response",
+                            tier="full",
+                            chat_id=chat_id,
+                            error=str(exc),
+                        )
+                    else:
+                        self._logger.warning(
+                            "stream_failed_fallback_to_chat",
+                            tier="full",
+                            chat_id=chat_id,
+                            error=str(exc),
+                        )
+                        chat_response = await self._llm_client.chat(
+                            messages=messages,
+                            model=target_model,
+                            timeout=prepared.timeout,
+                        )
+                        full_response = chat_response.content
+                        usage = chat_response.usage
+                        if full_response:
+                            yield full_response
+                if usage is None:
+                    usage = stream_state.usage
+                if not full_response.strip() and stream_error is None:
+                    self._logger.warning(
+                        "stream_empty_fallback_to_chat",
+                        tier="full",
+                        chat_id=chat_id,
+                    )
+                    chat_response = await self._llm_client.chat(
+                        messages=messages,
+                        model=target_model,
+                        timeout=prepared.timeout,
+                        max_tokens=prepared.max_tokens,
+                    )
+                    full_response = chat_response.content
+                    usage = chat_response.usage or usage
+                    if full_response:
+                        yield full_response
+                if stream_error is not None and not full_response.strip():
+                    raise stream_error
+                if not full_response.strip():
+                    raise RuntimeError("empty_response_from_llm")
 
                 await self._persist_turn(chat_id, text, full_response)
 
@@ -362,7 +501,6 @@ class Engine:
                     cache_ctx = self._build_cache_context(model_override, routing.intent, chat_id)
                     cache_id = await self._semantic_cache.put(text, full_response, context=cache_ctx)
 
-                usage = stream_state.usage
                 warnings = self._collect_runtime_warnings(
                     model_decision=model_decision,
                     rag_result=rag_result,
@@ -767,6 +905,99 @@ class Engine:
         return _PreparedRequest(
             skill=None, messages=messages, timeout=timeout, max_tokens=max_tokens,
         )
+
+    async def _prepare_target_model(
+        self,
+        *,
+        model: str | None,
+        role: str | None,
+        timeout: int,
+    ) -> tuple[str | None, str | None]:
+        """LLM 요청 전에 모델 로드를 준비한다.
+
+        prepare_model을 구현한 클라이언트에서만 동작한다.
+        """
+        target_model = model
+        target_role = role
+        llm_type = type(self._llm_client)
+        has_prepare = any("prepare_model" in cls.__dict__ for cls in llm_type.__mro__)
+        if not has_prepare:
+            return target_model, target_role
+        prepare_model = getattr(self._llm_client, "prepare_model", None)
+        if not callable(prepare_model):
+            return target_model, target_role
+        try:
+            maybe_result = prepare_model(
+                model=target_model,
+                role=target_role,
+                timeout_seconds=timeout,
+            )
+            if inspect.isawaitable(maybe_result):
+                await maybe_result
+            return target_model, target_role
+        except Exception as exc:
+            self._logger.warning(
+                "model_prepare_failed",
+                model=target_model,
+                role=target_role,
+                error=str(exc),
+            )
+        if target_role is None:
+            return target_model, target_role
+
+        fallback_model, fallback_role = self._resolve_prepare_fallback(target_role)
+        if fallback_model is None or fallback_role is None:
+            return target_model, target_role
+        if fallback_model == target_model:
+            return target_model, target_role
+
+        try:
+            maybe_result = prepare_model(
+                model=fallback_model,
+                role=fallback_role,
+                timeout_seconds=timeout,
+            )
+            if inspect.isawaitable(maybe_result):
+                await maybe_result
+            self._logger.warning(
+                "model_prepare_fallback_applied",
+                failed_model=target_model,
+                failed_role=target_role,
+                fallback_model=fallback_model,
+                fallback_role=fallback_role,
+            )
+            return fallback_model, fallback_role
+        except Exception as fallback_exc:
+            self._logger.warning(
+                "model_prepare_fallback_failed",
+                failed_model=target_model,
+                failed_role=target_role,
+                fallback_model=fallback_model,
+                fallback_role=fallback_role,
+                error=str(fallback_exc),
+            )
+            return target_model, target_role
+
+    def _resolve_prepare_fallback(self, role: str) -> tuple[str | None, str | None]:
+        """모델 사전 로드 실패 시 fallback_chain을 조회한다."""
+        if self._model_router is None:
+            return None, None
+        router_type = type(self._model_router)
+        has_method = any(
+            "resolve_fallback_model" in cls.__dict__ for cls in router_type.__mro__
+        )
+        if not has_method:
+            return None, None
+        resolver = getattr(self._model_router, "resolve_fallback_model", None)
+        if not callable(resolver):
+            return None, None
+        try:
+            fallback = resolver(role)
+        except Exception:
+            return None, None
+        if fallback is None:
+            return None, None
+        return fallback
 
     async def _persist_turn(
         self,

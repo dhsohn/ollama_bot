@@ -26,6 +26,54 @@ if [[ -f "${CONFIG_FILE}" ]] && grep -Eq '^llm_provider:[[:space:]]*"lemonade"' 
   else
     echo "[up.sh] WARN: Windows host IP를 찾지 못했습니다. windows-host 매핑이 실패할 수 있습니다."
   fi
+
+  # lemonade 포트 연결 프리체크
+  if [[ -n "${WINDOWS_HOST_IP:-}" ]]; then
+    LEMONADE_PORT=$(grep -A5 '^lemonade:' "${CONFIG_FILE}" | grep 'host:' | grep -oP ':\K[0-9]+' || echo "11434")
+    echo "[up.sh] lemonade 연결 확인 중: ${WINDOWS_HOST_IP}:${LEMONADE_PORT} ..."
+    if timeout 5 bash -c "echo >/dev/tcp/${WINDOWS_HOST_IP}/${LEMONADE_PORT}" 2>/dev/null; then
+      echo "[up.sh] OK: lemonade-server 응답 확인"
+    else
+      LEMONADE_APP_PARAMS=""
+      if command -v powershell.exe >/dev/null 2>&1; then
+        LEMONADE_APP_PARAMS="$(
+          powershell.exe -NoProfile -Command '(Get-ItemProperty -Path "HKLM:\\SYSTEM\\CurrentControlSet\\Services\\LemonadeServer\\Parameters" -Name AppParameters -ErrorAction SilentlyContinue).AppParameters' 2>/dev/null \
+            | tr -d '\r' \
+            | sed -n '1p'
+        )"
+      fi
+
+      echo "[up.sh] WARN: ${WINDOWS_HOST_IP}:${LEMONADE_PORT} 연결 실패."
+      if [[ -n "${LEMONADE_APP_PARAMS}" ]]; then
+        echo "[up.sh] 감지된 LemonadeServer AppParameters: ${LEMONADE_APP_PARAMS}"
+      fi
+      echo "  가능한 원인:"
+      LOCALHOST_BINDING_DETECTED=0
+      if [[ "${LEMONADE_APP_PARAMS}" == *"--host localhost"* ]] \
+        || [[ "${LEMONADE_APP_PARAMS}" == *"--host 127.0.0.1"* ]] \
+        || [[ "${LEMONADE_APP_PARAMS}" == *"--host ::1"* ]]; then
+        LOCALHOST_BINDING_DETECTED=1
+        echo "    1) LemonadeServer 서비스가 localhost에만 바인딩됨"
+        echo "       → PowerShell(관리자):"
+        echo "         Stop-Service LemonadeServer"
+        echo "         Set-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\LemonadeServer\\Parameters' -Name AppParameters -Value 'serve --port ${LEMONADE_PORT} --host 0.0.0.0 --no-tray'"
+        echo "         Start-Service LemonadeServer"
+      else
+        echo "    1) lemonade-server가 0.0.0.0 대신 127.0.0.1에만 바인딩됨"
+        echo "       → --host 0.0.0.0 옵션으로 서버를 재시작하세요"
+      fi
+      echo "    2) Windows 방화벽이 WSL 서브넷(172.x.x.x)을 차단 중"
+      echo "       → PowerShell(관리자):"
+      if [[ "${LOCALHOST_BINDING_DETECTED}" == "1" ]]; then
+        echo "         New-NetFirewallRule -DisplayName 'Lemonade WSL' -Direction Inbound -LocalPort ${LEMONADE_PORT} -Protocol TCP -Action Allow -Profile Any"
+      else
+        echo "         netsh interface portproxy add v4tov4 listenaddress=0.0.0.0 listenport=${LEMONADE_PORT} connectaddress=127.0.0.1 connectport=${LEMONADE_PORT}"
+        echo "         New-NetFirewallRule -DisplayName 'Lemonade WSL' -Direction Inbound -LocalPort ${LEMONADE_PORT} -Protocol TCP -Action Allow -Profile Any"
+      fi
+      echo "         Get-NetTCPConnection -State Listen -LocalPort ${LEMONADE_PORT}"
+      echo "  컨테이너는 시작하지만 lemonade 연결이 실패할 수 있습니다."
+    fi
+  fi
 fi
 
 mkdir -p \

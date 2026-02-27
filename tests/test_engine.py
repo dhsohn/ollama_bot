@@ -206,6 +206,49 @@ class TestProcessMessage:
         assert call_args.kwargs.get("timeout") == 12
 
     @pytest.mark.asyncio
+    async def test_stream_empty_without_error_falls_back_to_chat(
+        self,
+        engine: Engine,
+        mock_ollama,
+        memory: MemoryManager,
+    ) -> None:
+        async def _empty_stream():
+            if False:
+                yield ""
+
+        mock_ollama.chat_stream = MagicMock(return_value=_empty_stream())
+        mock_ollama.chat = AsyncMock(
+            return_value=ChatResponse(content="fallback response")
+        )
+
+        chunks = []
+        async for chunk in engine.process_message_stream(111, "hello"):
+            chunks.append(chunk)
+
+        assert chunks == ["fallback response"]
+        mock_ollama.chat.assert_awaited_once()
+        history = await memory.get_conversation(111)
+        assert history[-1]["role"] == "assistant"
+        assert history[-1]["content"] == "fallback response"
+
+    @pytest.mark.asyncio
+    async def test_stream_empty_and_chat_empty_raises(
+        self,
+        engine: Engine,
+        mock_ollama,
+    ) -> None:
+        async def _empty_stream():
+            if False:
+                yield ""
+
+        mock_ollama.chat_stream = MagicMock(return_value=_empty_stream())
+        mock_ollama.chat = AsyncMock(return_value=ChatResponse(content=""))
+
+        with pytest.raises(RuntimeError, match="empty_response_from_llm"):
+            async for _ in engine.process_message_stream(111, "hello"):
+                pass
+
+    @pytest.mark.asyncio
     async def test_stream_cache_hit_sets_stream_meta(
         self,
         app_settings: AppSettings,

@@ -352,6 +352,17 @@ class OllamaClient:
                 "recovered": recovered,
             }
 
+    async def prepare_model(
+        self,
+        *,
+        model: str | None = None,
+        role: str | None = None,
+        timeout_seconds: int | None = None,
+    ) -> None:
+        """Ollama는 별도 사전 로드 단계가 없어 no-op 처리한다."""
+        _ = (model, role, timeout_seconds)
+        return None
+
     async def _retry_with_backoff(
         self,
         coro_factory,

@@ -39,6 +39,30 @@
 
 ## 빠른 시작
 
+### 원클릭 설치 (추천)
+
+처음 설치까지 한 줄로 실행:
+
+```bash
+git clone <repo-url> && cd ollama_bot && bash scripts/bootstrap.sh
+```
+
+이미 리포지토리를 받은 상태라면:
+
+```bash
+bash scripts/bootstrap.sh
+```
+
+- `llm_provider: "lemonade"` 인 경우:
+  - Windows 방화벽/portproxy를 자동 설정합니다.
+  - 관리자 권한이 필요하면 UAC 팝업이 1회 표시됩니다.
+  - WSL 재부팅 없이 바로 적용됩니다.
+- 이미지까지 강제 빌드하려면:
+
+```bash
+bash scripts/bootstrap.sh --build
+```
+
 ### 1) 설치
 
 ```bash
@@ -85,6 +109,9 @@ ollama serve
 
 - 기본 모델 우선순위: `lemonade.model` -> 비어있으면 `ollama.model`
 - 선택된 기본 모델이 Lemonade `/models` 목록에 없으면 시작되지 않습니다.
+- 안정 운영 권장: `lemonade.model`은 NPU 상주 1개로 고정, `model_routing.enabled`는 기본 `false`
+- 멀티 인스턴스 라우팅: `lemonade.instances`에 추가 endpoint를 등록하면 모델명/역할 기준으로 endpoint를 분기할 수 있습니다.
+  - 예: `low_cost(GLM)`는 `glm` 인스턴스, `coding(Qwen3-Coder)`는 `coder` 인스턴스로 분리
 
 ### 4) 실행
 
@@ -231,6 +258,26 @@ timeout: 120
 - `bot`, `ollama`, `lemonade`, `telegram`, `security`, `memory`, `scheduler`
 - `feedback`, `auto_evaluation`
 - `instant_responder`, `semantic_cache`, `intent_router`, `context_compressor`
+- `model_registry`, `model_routing`, `rag`
+
+`lemonade.instances` 예시:
+
+```yaml
+lemonade:
+  host: "http://windows-host:11434"   # primary (NPU reasoning)
+  model: "DeepSeek-R1-Distill-Qwen-7B-NPU"
+  instances:
+    - name: "glm"
+      host: "http://windows-host:21434"
+      model: "GLM-4.7-Flash-GGUF"
+      route_roles: ["low_cost"]
+      route_models: ["GLM-4.7-Flash-GGUF"]
+    - name: "coder"
+      host: "http://windows-host:31434"
+      model: "Qwen3-Coder-Next-GGUF"
+      route_roles: ["coding"]
+      route_models: ["Qwen3-Coder-Next-GGUF"]
+```
 
 `.env` 우선순위 관련:
 - `APP_ENV_FILE` 또는 `APP_ENV_FILES`(CSV)로 로드 파일 지정 가능
@@ -240,13 +287,29 @@ timeout: 120
 
 | 스크립트 | 용도 |
 |---|---|
+| `scripts/bootstrap.sh` | 원클릭 설치/실행 (setup + Windows 네트워크 설정 + up) |
+| `scripts/configure_windows_lemonade.sh` | Lemonade용 Windows 방화벽/portproxy 자동 설정 |
 | `scripts/setup.sh` | 초기 설정(.env 생성, 디렉토리 준비) |
 | `scripts/up.sh` | 컨테이너 실행 |
 | `scripts/install_boot_service.sh` | systemd 부팅 서비스 설치 |
 | `scripts/healthcheck.sh` | 컨테이너 헬스체크 |
 | `scripts/soak_monitor.sh` | 장시간 안정성 모니터링 |
+| `scripts/unload_non_primary_embeddings.py` | 비-primary Lemonade 인스턴스의 임베딩 모델 자동 언로드 |
 | `scripts/finetune_unsloth.py` | KTO 파인튜닝(선택) |
 | `scripts/deploy_finetuned.sh` | 파인튜닝 모델 Ollama 배포(선택) |
+
+비-primary 임베딩 자동 정리 예시:
+
+```bash
+# 1회 실행
+./.venv/bin/python scripts/unload_non_primary_embeddings.py
+
+# 60초마다 반복 실행
+./.venv/bin/python scripts/unload_non_primary_embeddings.py --interval 60
+
+# 실제 언로드 없이 점검
+./.venv/bin/python scripts/unload_non_primary_embeddings.py --dry-run
+```
 
 ## 품질 검증
 

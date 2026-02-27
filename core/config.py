@@ -35,19 +35,78 @@ class OllamaConfig(BaseModel):
     )
 
 
+class LemonadeInstanceConfig(BaseModel):
+    """추가 Lemonade 인스턴스 설정(엔드포인트 라우팅용)."""
+
+    name: str
+    host: str
+    api_key: str = ""
+    model: str = ""
+    base_path: str = "/api/v1"
+    timeout_seconds: int = 60
+    model_load_timeout_seconds: int = 120
+    heavy_model_load_timeout_seconds: int = 420
+    route_roles: list[str] = Field(default_factory=list)
+    route_models: list[str] = Field(default_factory=list)
+
+    @field_validator(
+        "timeout_seconds",
+        "model_load_timeout_seconds",
+        "heavy_model_load_timeout_seconds",
+    )
+    @classmethod
+    def validate_timeout_positive(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("lemonade instance timeout settings must be >= 1")
+        return value
+
+    @field_validator("name")
+    @classmethod
+    def validate_name_not_empty(cls, value: str) -> str:
+        name = value.strip()
+        if not name:
+            raise ValueError("lemonade instance name must not be empty")
+        return name
+
+
 class LemonadeConfig(BaseModel):
     host: str = "http://host.docker.internal:8000"
     api_key: str = ""
     model: str = ""
     base_path: str = "/api/v1"
     timeout_seconds: int = 60
+    model_load_timeout_seconds: int = 120
+    heavy_model_load_timeout_seconds: int = 420
+    instances: list[LemonadeInstanceConfig] = Field(default_factory=list)
 
-    @field_validator("timeout_seconds")
+    @field_validator(
+        "timeout_seconds",
+        "model_load_timeout_seconds",
+        "heavy_model_load_timeout_seconds",
+    )
     @classmethod
     def validate_timeout_positive(cls, value: int) -> int:
         if value < 1:
-            raise ValueError("lemonade timeout_seconds must be >= 1")
+            raise ValueError("lemonade timeout settings must be >= 1")
         return value
+
+    @field_validator("instances")
+    @classmethod
+    def validate_instance_names_unique(
+        cls,
+        instances: list[LemonadeInstanceConfig],
+    ) -> list[LemonadeInstanceConfig]:
+        seen: set[str] = set()
+        duplicates: set[str] = set()
+        for item in instances:
+            key = item.name.strip().lower()
+            if key in seen:
+                duplicates.add(item.name)
+            seen.add(key)
+        if duplicates:
+            joined = ", ".join(sorted(duplicates))
+            raise ValueError(f"lemonade instance names must be unique: {joined}")
+        return instances
 
 
 class TelegramConfig(BaseModel):
@@ -217,6 +276,7 @@ class ModelRoutingConfig(BaseModel):
     threshold: float = 0.45
     margin: float = 0.05
     embedding_cache_size: int = 5000
+    classifier_timeout_seconds: int = 60
     code_keywords: list[str] = Field(default_factory=lambda: [
         "코드", "함수", "클래스", "디버그", "디버깅", "에러", "버그",
         "리팩토링", "테스트", "빌드", "배포", "컴파일", "런타임",
@@ -230,6 +290,13 @@ class ModelRoutingConfig(BaseModel):
     def validate_score_range(cls, value: float) -> float:
         if not 0.0 <= value <= 1.0:
             raise ValueError("threshold/margin must be between 0.0 and 1.0")
+        return value
+
+    @field_validator("classifier_timeout_seconds")
+    @classmethod
+    def validate_classifier_timeout_positive(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("classifier_timeout_seconds must be >= 1")
         return value
 
 

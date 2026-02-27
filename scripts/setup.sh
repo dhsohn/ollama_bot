@@ -32,6 +32,7 @@ fi
 
 echo ""
 echo "=== 설정 완료 ==="
+echo "빠른 실행(추천): bash scripts/bootstrap.sh"
 echo "1. .env 파일을 환경에 맞게 편집하세요."
 echo "2. Ollama를 실행하세요: ollama serve"
 echo "3. 봇 실행: docker compose -f docker-compose.yml up -d"

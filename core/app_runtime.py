@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
+import inspect
 import os
 import random
 import signal
@@ -27,7 +28,7 @@ from core.context_compressor import ContextCompressor
 from core.engine import Engine
 from core.feedback_manager import FeedbackManager
 from core.instant_responder import InstantResponder
-from core.lemonade_client import LemonadeClient
+from core.lemonade_multi_client import build_lemonade_client
 from core.logging_setup import get_logger, setup_logging
 from core.memory import MemoryManager
 from core.ollama_client import OllamaClient
@@ -155,7 +156,10 @@ def _create_llm_client(config: AppSettings, provider: str) -> Any:
     if provider == "ollama":
         return OllamaClient(config.ollama)
     if provider == "lemonade":
-        return LemonadeClient(config.lemonade, fallback_ollama=config.ollama)
+        return build_lemonade_client(
+            config.lemonade,
+            fallback_ollama=config.ollama,
+        )
     raise StartupError(
         f"오류: 지원하지 않는 provider='{provider}' "
         f"(지원: {', '.join(sorted(_SUPPORTED_PROVIDERS))})"
@@ -304,14 +308,24 @@ async def _build_runtime(
                 logger.error("feedback_prune_failed", error=str(exc))
 
         llm = _create_llm_client(config, llm_provider)
-        llm_host = config.ollama.host if llm_provider == "ollama" else config.lemonade.host
+        llm_host = config.ollama.host if llm_provider == "ollama" else getattr(
+            llm,
+            "host",
+            config.lemonade.host,
+        )
         try:
             await llm.initialize()
         except Exception as exc:
             logger.error("llm_init_failed", provider=llm_provider, error=str(exc))
+            hint = ""
+            if llm_provider == "lemonade":
+                hint = (
+                    "\n힌트: WSL 환경에서는 lemonade-server가 0.0.0.0에 바인딩되어야 합니다."
+                    "\n      Windows 방화벽에서 해당 포트의 인바운드를 허용했는지 확인하세요."
+                )
             raise StartupError(
                 f"오류: {llm_provider} 초기화 실패 ({llm_host})\n"
-                f"{exc}\n"
+                f"{exc}{hint}\n"
                 "백엔드 실행 상태와 기본 모델 준비 상태를 확인하세요. 봇 시작을 중단합니다."
             ) from exc
         cleanup_stack.push_async_callback(llm.close)
@@ -418,6 +432,25 @@ async def _build_runtime(
 
                 model_registry = ModelRegistry(config.model_registry, llm)
                 await model_registry.initialize()
+                # low_cost 모델은 시작 시 선로드해 첫 요청 지연을 줄인다.
+                low_cost_model = model_registry.get_model("low_cost")
+                if low_cost_model:
+                    prepare_model = getattr(llm, "prepare_model", None)
+                    if callable(prepare_model):
+                        try:
+                            maybe_result = prepare_model(
+                                model=low_cost_model,
+                                role="low_cost",
+                            )
+                            if inspect.isawaitable(maybe_result):
+                                await maybe_result
+                            logger.info("low_cost_model_preloaded", model=low_cost_model)
+                        except Exception as exc:
+                            logger.warning(
+                                "low_cost_model_preload_failed",
+                                model=low_cost_model,
+                                error=str(exc),
+                            )
 
                 model_router = ModelRouter(
                     config=config.model_routing,

@@ -31,7 +31,7 @@ async def _init_components():
     os.environ.setdefault("ALLOWED_TELEGRAM_USERS", "0")
 
     from core.config import load_config
-    from core.lemonade_client import LemonadeClient
+    from core.lemonade_multi_client import build_lemonade_client
     from core.ollama_client import OllamaClient
 
     config = load_config()
@@ -39,7 +39,10 @@ async def _init_components():
     llm: Any
 
     if provider == "lemonade":
-        llm = LemonadeClient(config.lemonade, fallback_ollama=config.ollama)
+        llm = build_lemonade_client(
+            config.lemonade,
+            fallback_ollama=config.ollama,
+        )
     elif provider == "ollama":
         llm = OllamaClient(config.ollama)
     else:

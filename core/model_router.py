@@ -126,6 +126,16 @@ class ModelRouter:
             "semantic_available": semantic_available,
         }
 
+    def resolve_fallback_model(self, role: str) -> tuple[str, str] | None:
+        """주어진 역할의 폴백 모델(있으면)을 반환한다."""
+        fallback_role = self._registry.get_fallback_role(role)
+        if fallback_role is None:
+            return None
+        fallback_model = self._registry.get_model(fallback_role)
+        if fallback_model is None:
+            return None
+        return fallback_model, fallback_role
+
     @staticmethod
     def _build_code_pattern(keywords: list[str]) -> re.Pattern:
         escaped = [re.escape(kw) for kw in keywords]
@@ -298,7 +308,7 @@ class ModelRouter:
             model=model_name,
             max_tokens=10,
             temperature=0.0,
-            timeout=15,
+            timeout=self._config.classifier_timeout_seconds,
         )
         answer = chat_resp.content.strip().upper()
         if "REASONING" in answer:

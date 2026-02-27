@@ -43,9 +43,8 @@ class LemonadeClient:
         else:
             self._base_path = ""
         self._api_key = config.api_key
-        self._default_model = config.model or (
-            fallback_ollama.model if fallback_ollama is not None else ""
-        )
+        # 기본 모델 고정 설정을 제거한다. (비어 있으면 요청 단위 모델/서버 기본 모델 사용)
+        self._default_model = (config.model or "").strip()
         self._temperature = (
             fallback_ollama.temperature if fallback_ollama is not None else 0.7
         )
@@ -58,6 +57,14 @@ class LemonadeClient:
             else "You are a helpful assistant."
         )
         self._timeout_default = config.timeout_seconds
+        self._model_load_timeout_default = max(
+            config.model_load_timeout_seconds,
+            config.timeout_seconds,
+        )
+        self._heavy_model_load_timeout_default = max(
+            config.heavy_model_load_timeout_seconds,
+            self._model_load_timeout_default,
+        )
         self._client: httpx.AsyncClient | None = None
         self._auto_reconnect_enabled = False
         self._is_healthy = True
@@ -65,7 +72,20 @@ class LemonadeClient:
         self._next_reconnect_at = 0.0
         self._reconnect_cooldown_seconds = 15.0
         self._reconnect_lock = asyncio.Lock()
+        self._prepare_model_lock = asyncio.Lock()
+        self._loaded_models: set[str] = set()
+        self._loaded_models_checked_at = 0.0
+        self._loaded_models_ttl_seconds = 10.0
+        self._heavy_roles = {"reasoning", "coding", "vision"}
         self._logger = get_logger("lemonade_client")
+
+    @staticmethod
+    def _format_exception(exc: Exception) -> str:
+        """로그/에러 메시지에 사용할 예외 문자열을 정규화한다."""
+        message = str(exc).strip()
+        if message:
+            return f"{exc.__class__.__name__}: {message}"
+        return exc.__class__.__name__
 
     @property
     def default_model(self) -> str:
@@ -73,7 +93,7 @@ class LemonadeClient:
 
     @default_model.setter
     def default_model(self, model: str) -> None:
-        self._default_model = model
+        self._default_model = model.strip()
 
     @property
     def system_prompt(self) -> str:
@@ -104,7 +124,10 @@ class LemonadeClient:
 
     def _mark_unhealthy(self, error: Exception | str) -> None:
         self._is_healthy = False
-        self._last_connection_error = str(error)
+        if isinstance(error, Exception):
+            self._last_connection_error = self._format_exception(error)
+        else:
+            self._last_connection_error = str(error)
         self._next_reconnect_at = time.monotonic() + self._reconnect_cooldown_seconds
 
     async def initialize(self) -> None:
@@ -123,9 +146,10 @@ class LemonadeClient:
                 models_count=len(models),
             )
             if self._default_model and self._default_model not in models:
-                raise LemonadeModelNotFoundError(
-                    f"Default model '{self._default_model}' not found on {self._host}. "
-                    f"Available models: {', '.join(models) if models else '(none)'}"
+                self._logger.warning(
+                    "lemonade_default_model_not_listed_on_init",
+                    model=self._default_model,
+                    available=models,
                 )
             self._mark_healthy()
         except Exception as exc:
@@ -134,8 +158,9 @@ class LemonadeClient:
             self._client = None
             if isinstance(exc, LemonadeClientError):
                 raise
+            error_text = self._format_exception(exc)
             raise LemonadeClientError(
-                f"Failed to connect to Lemonade at {self._host}: {exc}"
+                f"Failed to connect to Lemonade at {self._host}: {error_text}"
             ) from exc
 
     async def close(self) -> None:
@@ -145,6 +170,8 @@ class LemonadeClient:
         self._client = None
         self._auto_reconnect_enabled = False
         self._is_healthy = False
+        self._loaded_models.clear()
+        self._loaded_models_checked_at = 0.0
 
     async def recover_connection(self, *, force: bool = False) -> bool:
         """연결 장애 시 재연결을 시도한다."""
@@ -168,22 +195,19 @@ class LemonadeClient:
                 models = await self._list_model_names(candidate)
             except Exception as exc:
                 self._mark_unhealthy(exc)
-                self._logger.warning("lemonade_reconnect_failed", error=str(exc))
+                self._logger.warning(
+                    "lemonade_reconnect_failed",
+                    error=self._format_exception(exc),
+                )
                 await candidate.aclose()
                 return False
 
             if self._default_model and self._default_model not in models:
-                error = LemonadeModelNotFoundError(
-                    f"Default model '{self._default_model}' not found on {self._host}"
-                )
-                self._mark_unhealthy(error)
                 self._logger.warning(
-                    "lemonade_reconnect_default_model_missing",
+                    "lemonade_default_model_not_listed_on_reconnect",
                     model=self._default_model,
                     available=models,
                 )
-                await candidate.aclose()
-                return False
 
             previous = self._client
             self._client = candidate
@@ -223,7 +247,128 @@ class LemonadeClient:
         return names
 
     @staticmethod
-    def _extract_content(choice: dict[str, Any]) -> str:
+    def _compact_text(value: str, *, max_chars: int = 280) -> str:
+        compact = " ".join(value.split())
+        if len(compact) <= max_chars:
+            return compact
+        return compact[:max_chars] + "..."
+
+    @staticmethod
+    def _parse_loaded_models(payload: Any) -> set[str]:
+        if not isinstance(payload, dict):
+            return set()
+        entries = payload.get("all_models_loaded", [])
+        names: set[str] = set()
+        if not isinstance(entries, list):
+            return names
+        for item in entries:
+            if isinstance(item, dict):
+                name = (
+                    item.get("model_name")
+                    or item.get("id")
+                    or item.get("model")
+                    or item.get("name")
+                )
+                if isinstance(name, str) and name:
+                    names.add(name)
+            elif isinstance(item, str) and item:
+                names.add(item)
+        return names
+
+    async def _refresh_loaded_models(self, *, force: bool = False) -> set[str]:
+        now = time.monotonic()
+        if (
+            not force
+            and self._loaded_models
+            and now - self._loaded_models_checked_at < self._loaded_models_ttl_seconds
+        ):
+            return set(self._loaded_models)
+
+        client = self._require_client()
+        try:
+            response = await client.get(
+                self._endpoint("/health"),
+                timeout=self._timeout_default,
+            )
+            response.raise_for_status()
+            loaded = self._parse_loaded_models(response.json())
+            self._loaded_models = loaded
+            self._loaded_models_checked_at = now
+            return set(loaded)
+        except Exception as exc:
+            self._logger.debug(
+                "lemonade_loaded_models_refresh_failed",
+                error=self._format_exception(exc),
+            )
+            return set(self._loaded_models)
+
+    async def prepare_model(
+        self,
+        *,
+        model: str | None = None,
+        role: str | None = None,
+        timeout_seconds: int | None = None,
+    ) -> None:
+        """요청 전 모델 로드를 보장한다.
+
+        - low_cost는 기본 로드 타임아웃을 사용한다.
+        - reasoning/coding/vision은 heavy 로드 타임아웃을 사용한다.
+        """
+        target_model = (model or self._default_model or "").strip()
+        if not target_model:
+            return
+
+        loaded = await self._refresh_loaded_models()
+        if target_model in loaded:
+            return
+
+        role_key = (role or "").strip().lower()
+        role_timeout = (
+            self._heavy_model_load_timeout_default
+            if role_key in self._heavy_roles
+            else self._model_load_timeout_default
+        )
+        effective_timeout = max(role_timeout, int(timeout_seconds or 0))
+
+        async with self._prepare_model_lock:
+            loaded = await self._refresh_loaded_models(force=True)
+            if target_model in loaded:
+                return
+
+            client = self._require_client()
+            started = time.monotonic()
+            response = await client.post(
+                self._endpoint("/load"),
+                json={"model_name": target_model},
+                timeout=effective_timeout,
+            )
+            if response.status_code in (404, 405):
+                # 일부 서버 구현은 /load endpoint가 없을 수 있다.
+                self._logger.debug(
+                    "lemonade_model_preload_skipped",
+                    model=target_model,
+                    role=role_key or None,
+                    status_code=response.status_code,
+                )
+                return
+            if response.is_error:
+                message = self._compact_text(response.text)
+                raise LemonadeClientError(
+                    f"Failed to load model '{target_model}' before generation "
+                    f"(role={role_key or 'unknown'}, status={response.status_code}): {message}"
+                )
+
+            self._loaded_models.add(target_model)
+            self._loaded_models_checked_at = time.monotonic()
+            self._logger.info(
+                "lemonade_model_preloaded",
+                model=target_model,
+                role=role_key or None,
+                elapsed_seconds=round(time.monotonic() - started, 2),
+            )
+
+    @staticmethod
+    def _extract_content(choice: dict[str, Any], *, allow_reasoning_fallback: bool = True) -> str:
         message = choice.get("message") if isinstance(choice, dict) else None
         if isinstance(message, dict):
             content = message.get("content")
@@ -235,7 +380,30 @@ class LemonadeClient:
                     if isinstance(part, dict) and isinstance(part.get("text"), str):
                         chunks.append(part["text"])
                 return "".join(chunks)
+            if allow_reasoning_fallback:
+                reasoning = message.get("reasoning_content")
+                if isinstance(reasoning, str) and reasoning:
+                    return reasoning
         return ""
+
+    def _extract_api_error(self, payload: Any) -> str | None:
+        if not isinstance(payload, dict):
+            return None
+        error = payload.get("error")
+        if isinstance(error, str) and error.strip():
+            return self._compact_text(error)
+        if not isinstance(error, dict):
+            return None
+        message = error.get("message") or error.get("detail") or error.get("error")
+        code = error.get("code") or error.get("type")
+        parts: list[str] = []
+        if isinstance(code, str) and code.strip():
+            parts.append(code.strip())
+        if isinstance(message, str) and message.strip():
+            parts.append(message.strip())
+        if not parts:
+            return self._compact_text(str(error))
+        return self._compact_text(": ".join(parts))
 
     @staticmethod
     def _usage_from_payload(payload: dict[str, Any]) -> ChatUsage | None:
@@ -252,7 +420,7 @@ class LemonadeClient:
     def _build_chat_payload(
         self,
         *,
-        model: str,
+        model: str | None,
         messages: list[dict[str, str]],
         temperature: float | None,
         max_tokens: int | None,
@@ -260,12 +428,13 @@ class LemonadeClient:
         stream: bool,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
-            "model": model,
             "messages": messages,
             "temperature": self._temperature if temperature is None else temperature,
             "max_tokens": self._max_tokens if max_tokens is None else max_tokens,
             "stream": stream,
         }
+        if model:
+            payload["model"] = model
         if response_format is not None:
             if response_format == "json":
                 payload["response_format"] = {"type": "json_object"}
@@ -283,7 +452,8 @@ class LemonadeClient:
         response_format: str | dict | None = None,
     ) -> ChatResponse:
         """비스트리밍 채팅 요청."""
-        target_model = model or self._default_model
+        requested_model = (model or "").strip()
+        target_model = requested_model or self._default_model or None
         payload = self._build_chat_payload(
             model=target_model,
             messages=messages,
@@ -302,6 +472,11 @@ class LemonadeClient:
             )
             response.raise_for_status()
             body = response.json()
+            error_text = self._extract_api_error(body)
+            if error_text:
+                raise LemonadeClientError(
+                    f"Lemonade chat request returned API error for model '{target_model}': {error_text}"
+                )
             choices = body.get("choices", [])
             if not choices:
                 raise LemonadeClientError("lemonade_chat_failed: missing choices")
@@ -322,7 +497,8 @@ class LemonadeClient:
     ) -> AsyncGenerator[str, None]:
         """스트리밍 채팅 요청."""
         client = self._require_client()
-        target_model = model or self._default_model
+        requested_model = (model or "").strip()
+        target_model = requested_model or self._default_model or None
         payload = self._build_chat_payload(
             model=target_model,
             messages=messages,
@@ -333,6 +509,8 @@ class LemonadeClient:
         )
         state = stream_state or ChatStreamState()
         state.usage = None
+        emitted_content = False
+        reasoning_chunks: list[str] = []
 
         try:
             async with client.stream(
@@ -354,6 +532,12 @@ class LemonadeClient:
                     except json.JSONDecodeError:
                         continue
 
+                    error_text = self._extract_api_error(chunk)
+                    if error_text:
+                        raise LemonadeClientError(
+                            f"Lemonade streaming API error for model '{target_model}': {error_text}"
+                        )
+
                     usage = self._usage_from_payload(chunk)
                     if usage is not None:
                         state.usage = usage
@@ -365,19 +549,30 @@ class LemonadeClient:
                     delta = first_choice.get("delta", {})
                     content = delta.get("content") if isinstance(delta, dict) else None
                     if isinstance(content, str) and content:
+                        emitted_content = True
                         yield content
                         continue
+
+                    if isinstance(delta, dict) and not emitted_content:
+                        reasoning = delta.get("reasoning_content")
+                        if isinstance(reasoning, str) and reasoning:
+                            reasoning_chunks.append(reasoning)
+                            continue
 
                     # 일부 구현은 delta 대신 message.content를 전달한다.
                     fallback_content = self._extract_content(first_choice)
                     if fallback_content:
+                        emitted_content = True
                         yield fallback_content
+                if not emitted_content and reasoning_chunks:
+                    yield "".join(reasoning_chunks)
             self._mark_healthy()
         except (httpx.HTTPError, asyncio.TimeoutError, OSError) as exc:
             self._mark_unhealthy(exc)
             await self.recover_connection()
+            error_text = self._format_exception(exc)
             raise LemonadeClientError(
-                f"Lemonade streaming request failed for model '{target_model}': {exc}"
+                f"Lemonade streaming request failed for model '{target_model}': {error_text}"
             ) from exc
 
     async def list_models(self) -> list[dict]:
@@ -439,8 +634,11 @@ class LemonadeClient:
     ) -> list[list[float]]:
         """임베딩 벡터를 반환한다. POST /embeddings"""
         client = self._require_client()
-        target_model = model or self._default_model
-        payload: dict[str, Any] = {"model": target_model, "input": texts}
+        requested_model = (model or "").strip()
+        target_model = requested_model or self._default_model or None
+        payload: dict[str, Any] = {"input": texts}
+        if target_model:
+            payload["model"] = target_model
         try:
             response = await client.post(
                 self._endpoint("/embeddings"),
@@ -450,8 +648,9 @@ class LemonadeClient:
             response.raise_for_status()
         except (httpx.HTTPError, asyncio.TimeoutError, OSError) as exc:
             self._mark_unhealthy(exc)
+            error_text = self._format_exception(exc)
             raise LemonadeClientError(
-                f"Embedding request failed for model '{target_model}': {exc}"
+                f"Embedding request failed for model '{target_model}': {error_text}"
             ) from exc
         self._mark_healthy()
         body = response.json()
@@ -477,16 +676,18 @@ class LemonadeClient:
         반환: [{"index": int, "score": float}, ...]  점수 내림차순 정렬.
         """
         client = self._require_client()
-        target_model = model or self._default_model
+        requested_model = (model or "").strip()
+        target_model = requested_model or self._default_model or None
         effective_timeout = timeout or self._timeout_default
 
         # 1) 전용 /rerank endpoint 시도
         try:
             payload: dict[str, Any] = {
-                "model": target_model,
                 "query": query,
                 "documents": documents,
             }
+            if target_model:
+                payload["model"] = target_model
             if top_n is not None:
                 payload["top_n"] = top_n
             response = await client.post(
@@ -510,12 +711,14 @@ class LemonadeClient:
             if exc.response.status_code in (404, 405):
                 self._logger.debug("rerank_endpoint_not_available", status=exc.response.status_code)
             else:
+                error_text = self._format_exception(exc)
                 raise LemonadeClientError(
-                    f"Rerank request failed: {exc}"
+                    f"Rerank request failed: {error_text}"
                 ) from exc
         except (httpx.HTTPError, asyncio.TimeoutError, OSError) as exc:
             self._mark_unhealthy(exc)
-            raise LemonadeClientError(f"Rerank request failed: {exc}") from exc
+            error_text = self._format_exception(exc)
+            raise LemonadeClientError(f"Rerank request failed: {error_text}") from exc
 
         # 2) chat 기반 폴백 (마지막 수단)
         return await self._rerank_via_chat(
@@ -526,7 +729,7 @@ class LemonadeClient:
         self,
         query: str,
         documents: list[str],
-        model: str,
+        model: str | None,
         top_n: int | None,
         timeout: int,
     ) -> list[dict[str, Any]]:
@@ -607,11 +810,13 @@ class LemonadeClient:
                         "lemonade_retry",
                         attempt=attempt + 1,
                         delay=delay,
-                        error=str(exc),
+                        error=self._format_exception(exc),
                     )
                     await asyncio.sleep(delay)
 
-        raise LemonadeClientError(
-            f"Lemonade request failed after {max_retries + 1} attempts: {last_error}"
+        last_error_text = (
+            self._format_exception(last_error) if last_error is not None else "unknown"
         )
-
+        raise LemonadeClientError(
+            f"Lemonade request failed after {max_retries + 1} attempts: {last_error_text}"
+        )
