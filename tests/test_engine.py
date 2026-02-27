@@ -206,6 +206,69 @@ class TestProcessMessage:
         assert call_args.kwargs.get("timeout") == 12
 
     @pytest.mark.asyncio
+    async def test_stream_passes_prepared_max_tokens_to_chat_stream(
+        self,
+        engine: Engine,
+        mock_ollama,
+    ) -> None:
+        async def _stream():
+            yield "chunk"
+
+        mock_ollama.chat_stream = MagicMock(return_value=_stream())
+        engine._decide_routing = AsyncMock(return_value=SimpleNamespace(
+            tier="full",
+            strategy=None,
+            intent=None,
+        ))
+        engine._prepare_request = AsyncMock(return_value=SimpleNamespace(
+            messages=[{"role": "system", "content": "sys"}, {"role": "user", "content": "hello"}],
+            timeout=17,
+            max_tokens=1234,
+        ))
+        engine._prepare_target_model = AsyncMock(return_value=("test-model", None))
+
+        chunks = []
+        async for chunk in engine.process_message_stream(111, "hello"):
+            chunks.append(chunk)
+
+        assert chunks == ["chunk"]
+        call_args = mock_ollama.chat_stream.call_args
+        assert call_args.kwargs.get("max_tokens") == 1234
+
+    @pytest.mark.asyncio
+    async def test_stream_error_fallback_chat_uses_prepared_max_tokens(
+        self,
+        engine: Engine,
+        mock_ollama,
+    ) -> None:
+        async def _broken_stream():
+            if False:
+                yield ""
+            raise RuntimeError("stream broken")
+
+        mock_ollama.chat_stream = MagicMock(return_value=_broken_stream())
+        mock_ollama.chat = AsyncMock(return_value=ChatResponse(content="fallback response"))
+        engine._decide_routing = AsyncMock(return_value=SimpleNamespace(
+            tier="full",
+            strategy=None,
+            intent=None,
+        ))
+        engine._prepare_request = AsyncMock(return_value=SimpleNamespace(
+            messages=[{"role": "system", "content": "sys"}, {"role": "user", "content": "hello"}],
+            timeout=23,
+            max_tokens=777,
+        ))
+        engine._prepare_target_model = AsyncMock(return_value=("test-model", None))
+
+        chunks = []
+        async for chunk in engine.process_message_stream(111, "hello"):
+            chunks.append(chunk)
+
+        assert chunks == ["fallback response"]
+        call_args = mock_ollama.chat.await_args
+        assert call_args.kwargs.get("max_tokens") == 777
+
+    @pytest.mark.asyncio
     async def test_stream_empty_without_error_falls_back_to_chat(
         self,
         engine: Engine,

@@ -437,6 +437,7 @@ class Engine:
                         messages=messages,
                         model=target_model,
                         timeout=prepared.timeout,
+                        max_tokens=prepared.max_tokens,
                         stream_state=stream_state,
                     ):
                         full_response += chunk
@@ -461,6 +462,7 @@ class Engine:
                             messages=messages,
                             model=target_model,
                             timeout=prepared.timeout,
+                            max_tokens=prepared.max_tokens,
                         )
                         full_response = chat_response.content
                         usage = chat_response.usage
