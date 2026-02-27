@@ -7,7 +7,7 @@ bot:
   name: "ollama_bot"
   language: "ko"
   max_conversation_length: 30
-  response_timeout: 180
+  response_timeout: 300
 
 ollama:
   host: "http://host.docker.internal:11434"
