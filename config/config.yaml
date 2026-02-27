@@ -7,7 +7,7 @@ bot:
   name: "ollama_bot"
   language: "ko"
   max_conversation_length: 30
-  response_timeout: 60
+  response_timeout: 180
 
 ollama:
   host: "http://host.docker.internal:11434"
@@ -23,9 +23,25 @@ ollama:
 lemonade:
   host: "http://windows-host:11434"
   api_key: ""
+  # 기본 응답 모델은 low_cost 인스턴스로 라우팅한다.
   model: "GLM-4.7-Flash-GGUF"
   base_path: "/api/v1"
-  timeout_seconds: 60
+  timeout_seconds: 120
+  model_load_timeout_seconds: 120
+  heavy_model_load_timeout_seconds: 420
+  # primary(11434): 임베딩/리랭커 전용
+  # 21434: low_cost + vision, 31434: reasoning/coding
+  instances:
+    - name: "edge"
+      host: "http://windows-host:21434"
+      model: "GLM-4.7-Flash-GGUF"
+      route_roles: ["low_cost", "vision"]
+      route_models: ["GLM-4.7-Flash-GGUF", "Qwen3-VL-8B-Instruct-GGUF"]
+    - name: "reasoner"
+      host: "http://windows-host:31434"
+      model: "gpt-oss-20b-NPU"
+      route_roles: ["reasoning", "coding"]
+      route_models: ["gpt-oss-20b-NPU"]
 
 telegram:
   polling_interval: 1
@@ -113,12 +129,12 @@ model_registry:
   reranker_model: "bge-reranker-v2-m3-GGUF"
   vision_model: "Qwen3-VL-8B-Instruct-GGUF"
   low_cost_model: "GLM-4.7-Flash-GGUF"
-  reasoning_model: "Qwen3-14B-Hybrid"
-  coding_model: "Qwen3-Coder-Next-GGUF"
+  reasoning_model: "gpt-oss-20b-NPU"
+  coding_model: "gpt-oss-20b-NPU"
   fallback_chain:
     low_cost: ["reasoning"]
     reasoning: ["low_cost"]
-    coding: ["reasoning", "low_cost"]
+    coding: ["low_cost"]
     vision: []
 
 model_routing:
@@ -126,10 +142,11 @@ model_routing:
   anchors_path: "config/routing_anchors.yaml"
   threshold: 0.45
   margin: 0.05
+  classifier_timeout_seconds: 90
   embedding_cache_size: 5000
 
 rag:
-  enabled: true
+  enabled: false
   kb_dir: "./kb"
   chunk_min_tokens: 500
   chunk_max_tokens: 1200
