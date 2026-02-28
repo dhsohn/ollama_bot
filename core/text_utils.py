@@ -29,11 +29,17 @@ _ENGLISH_STOPWORDS = frozenset({
 _TOKEN_RE = re.compile(r"[가-힣]{2,}|[a-zA-Z]{2,}")
 _THINK_BLOCK_RE = re.compile(r"<think>.*?(?:</think>|$)", re.IGNORECASE | re.DOTALL)
 _ASSISTANT_CHANNEL_BLOCK_RE = re.compile(
-    r"<\|start\|>assistant<\|channel\|>(?P<channel>[a-zA-Z0-9_]+)"
-    r"<\|message\|>(?P<message>.*?)(?:<\|end\|>|$)",
+    r"(?:<\|start\|>)?(?:assistant)?\s*"
+    r"<\|channel\|>(?P<channel>[a-zA-Z0-9_]+)\s*"
+    r"<\|message\|>(?P<message>.*?)(?=(?:<\|end\|>"
+    r"|(?:<\|start\|>)?(?:assistant)?\s*<\|channel\|>|$))",
     re.DOTALL,
 )
 _SPECIAL_TOKEN_RE = re.compile(r"<\|[^|>]+?\|>")
+_ASSISTANT_MARKER_RE = re.compile(
+    r"assistant\s*(?:_|-)?\s*(?P<channel>analysis|commentary|final)\s*[:}\]\)]*",
+    re.IGNORECASE,
+)
 
 
 def extract_keywords(text: str, max_keywords: int = 5) -> list[str]:
@@ -57,30 +63,33 @@ def sanitize_model_output(text: str) -> str:
         return ""
 
     cleaned = _THINK_BLOCK_RE.sub("", raw)
-
-    if (
-        "<|start|>" in cleaned
-        and "<|channel|>" in cleaned
-        and "<|message|>" in cleaned
-    ):
-        blocks = list(_ASSISTANT_CHANNEL_BLOCK_RE.finditer(cleaned))
-        if blocks:
-            final_blocks = [
-                m.group("message").strip()
-                for m in blocks
-                if m.group("channel").lower() == "final"
-            ]
-            non_analysis_blocks = [
-                m.group("message").strip()
-                for m in blocks
-                if m.group("channel").lower() not in {"analysis", "commentary"}
-            ]
-            if final_blocks:
-                cleaned = final_blocks[-1]
-            elif non_analysis_blocks:
-                cleaned = non_analysis_blocks[-1]
+    blocks = list(_ASSISTANT_CHANNEL_BLOCK_RE.finditer(cleaned))
+    if blocks:
+        final_blocks = [
+            m.group("message").strip()
+            for m in blocks
+            if m.group("channel").lower() == "final"
+        ]
+        non_analysis_blocks = [
+            m.group("message").strip()
+            for m in blocks
+            if m.group("channel").lower() not in {"analysis", "commentary"}
+        ]
+        if final_blocks:
+            cleaned = final_blocks[-1]
+        elif non_analysis_blocks:
+            cleaned = non_analysis_blocks[-1]
+        else:
+            # analysis/commentary-only 출력은 내부 사고 가능성이 높아 노출하지 않는다.
+            cleaned = ""
+    else:
+        markers = list(_ASSISTANT_MARKER_RE.finditer(cleaned))
+        if markers:
+            final_markers = [m for m in markers if m.group("channel").lower() == "final"]
+            if final_markers:
+                cleaned = cleaned[final_markers[-1].end():]
             else:
-                cleaned = blocks[-1].group("message").strip()
+                cleaned = ""
 
     cleaned = _SPECIAL_TOKEN_RE.sub("", cleaned).strip()
-    return cleaned or raw
+    return cleaned

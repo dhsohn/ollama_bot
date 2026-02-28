@@ -93,6 +93,8 @@ async def _init_components():
 async def cmd_chat(args: argparse.Namespace) -> None:
     """대화형 채팅."""
     llm, model_router, rag_pipeline, config, provider = await _init_components()
+    from core.text_utils import sanitize_model_output
+
     print("=== ollama_bot CLI Chat ===")
     print(f"provider: {provider}")
     if provider != "lemonade" and (config.model_routing.enabled or config.rag.enabled):
@@ -132,7 +134,7 @@ async def cmd_chat(args: argparse.Namespace) -> None:
             messages.append({"role": "user", "content": query})
 
             response = await llm.chat(messages=messages, model=model_name)
-            print(f"\nBot> {response.content}\n")
+            print(f"\nBot> {sanitize_model_output(response.content)}\n")
     except KeyboardInterrupt:
         print("\n종료.")
     finally:

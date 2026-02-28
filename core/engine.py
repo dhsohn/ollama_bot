@@ -289,7 +289,9 @@ class Engine:
                     timeout=prepared_full.timeout,
                     max_tokens=prepared_full.max_tokens,
                 )
-                content = sanitize_model_output(chat_response.content)
+                content = sanitize_model_output(chat_response.content).strip()
+                if not content:
+                    raise RuntimeError("empty_response_from_llm")
                 await self._persist_turn(chat_id, text, content)
 
                 await self._maybe_store_semantic_cache(
@@ -453,7 +455,9 @@ class Engine:
                             raise skill_stream_error
                     if not full_response.strip():
                         raise RuntimeError("empty_response_from_llm")
-                    full_response = sanitize_model_output(full_response)
+                    full_response = sanitize_model_output(full_response).strip()
+                    if not full_response:
+                        raise RuntimeError("empty_response_from_llm")
                     await self._persist_turn(chat_id, text, full_response, skill=skill)
                     turn_persisted = True
                     self._set_stream_meta(
@@ -585,7 +589,9 @@ class Engine:
                     raise stream_error
                 if not full_response.strip():
                     raise RuntimeError("empty_response_from_llm")
-                full_response = sanitize_model_output(full_response)
+                full_response = sanitize_model_output(full_response).strip()
+                if not full_response:
+                    raise RuntimeError("empty_response_from_llm")
 
                 await self._persist_turn(chat_id, text, full_response)
                 turn_persisted = True

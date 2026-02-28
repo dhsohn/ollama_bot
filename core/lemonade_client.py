@@ -368,7 +368,7 @@ class LemonadeClient:
             )
 
     @staticmethod
-    def _extract_content(choice: dict[str, Any], *, allow_reasoning_fallback: bool = True) -> str:
+    def _extract_content(choice: dict[str, Any]) -> str:
         message = choice.get("message") if isinstance(choice, dict) else None
         if isinstance(message, dict):
             content = message.get("content")
@@ -380,10 +380,6 @@ class LemonadeClient:
                     if isinstance(part, dict) and isinstance(part.get("text"), str):
                         chunks.append(part["text"])
                 return "".join(chunks)
-            if allow_reasoning_fallback:
-                reasoning = message.get("reasoning_content")
-                if isinstance(reasoning, str) and reasoning:
-                    return reasoning
         return ""
 
     def _extract_api_error(self, payload: Any) -> str | None:
@@ -523,7 +519,6 @@ class LemonadeClient:
         state = stream_state or ChatStreamState()
         state.usage = None
         emitted_content = False
-        reasoning_chunks: list[str] = []
         stream_started = time.monotonic()
         last_content_chunk: str | None = None
         last_fallback_snapshot: str | None = None
@@ -590,12 +585,6 @@ class LemonadeClient:
                             break
                         continue
 
-                    if isinstance(delta, dict) and not emitted_content:
-                        reasoning = delta.get("reasoning_content")
-                        if isinstance(reasoning, str) and reasoning:
-                            reasoning_chunks.append(reasoning)
-                            continue
-
                     # 일부 구현은 delta 대신 message.content를 전달한다.
                     raw_fallback_content = self._extract_content(first_choice)
                     if raw_fallback_content:
@@ -634,8 +623,6 @@ class LemonadeClient:
                         continue
                     if finish_reason:
                         break
-                if not emitted_content and reasoning_chunks:
-                    yield "".join(reasoning_chunks)
             self._mark_healthy()
         except (httpx.HTTPError, asyncio.TimeoutError, OSError) as exc:
             self._mark_unhealthy(exc)
