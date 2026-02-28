@@ -16,7 +16,7 @@ import httpx
 
 from core.config import LemonadeConfig, OllamaConfig
 from core.logging_setup import get_logger
-from core.ollama_client import ChatResponse, ChatStreamState, ChatUsage
+from core.llm_types import ChatResponse, ChatStreamState, ChatUsage
 
 
 class LemonadeClientError(Exception):
@@ -70,7 +70,7 @@ class LemonadeClient:
         self._is_healthy = True
         self._last_connection_error: str | None = None
         self._next_reconnect_at = 0.0
-        self._reconnect_cooldown_seconds = 15.0
+        self._reconnect_cooldown_seconds = config.reconnect_cooldown_seconds
         self._reconnect_lock = asyncio.Lock()
         self._prepare_model_lock = asyncio.Lock()
         self._loaded_models: set[str] = set()
@@ -539,6 +539,8 @@ class LemonadeClient:
             ) as response:
                 response.raise_for_status()
                 async for line in response.aiter_lines():
+                    # httpx timeout= 은 개별 청크 읽기 지연을 감시하고,
+                    # 이 수동 체크는 전체 스트림 지속 시간을 제한한다.
                     elapsed = time.monotonic() - stream_started
                     if elapsed > float(timeout):
                         raise asyncio.TimeoutError(
@@ -723,10 +725,20 @@ class LemonadeClient:
         self._mark_healthy()
         body = response.json()
         data = body.get("data", [])
-        return [
-            item["embedding"]
-            for item in sorted(data, key=lambda x: x.get("index", 0))
-        ]
+        if not isinstance(data, list):
+            raise LemonadeClientError(
+                f"Embedding response missing 'data' array for model '{target_model}'"
+            )
+        results: list[list[float]] = []
+        for item in sorted(data, key=lambda x: x.get("index", 0)):
+            embedding = item.get("embedding")
+            if not isinstance(embedding, list):
+                raise LemonadeClientError(
+                    f"Embedding response item missing 'embedding' field "
+                    f"for model '{target_model}'"
+                )
+            results.append(embedding)
+        return results
 
     # ── Rerank ──
 

@@ -894,38 +894,6 @@ class TelegramHandler:
                     result.intent = stream_meta.get("intent")
                     result.cache_id = stream_meta.get("cache_id")
                     result.usage = stream_meta.get("usage")
-                    repaired_response = stream_meta.get("repaired_response")
-                    if isinstance(repaired_response, str) and repaired_response.strip():
-                        repaired_parts = self._split_message(repaired_response)
-                        if repaired_parts:
-                            last_repaired = None
-                            try:
-                                await sent_message.edit_text(repaired_parts[0])
-                                last_repaired = sent_message
-                            except Exception:
-                                last_repaired = await message.reply_text(repaired_parts[0])
-
-                            for part in repaired_parts[1:]:
-                                last_repaired = await message.reply_text(part)
-
-                            if last_repaired is not None:
-                                result.last_message = last_repaired
-                                result.full_response = repaired_response
-                    runtime_warnings = stream_meta.get("warnings")
-                    if (
-                        isinstance(runtime_warnings, list)
-                        and runtime_warnings
-                    ):
-                        warning_lines = [
-                            f"- {self._escape_html(str(item))}"
-                            for item in runtime_warnings
-                            if str(item).strip()
-                        ]
-                        if warning_lines:
-                            await message.reply_text(
-                                "⚠️ <b>실행 모드 알림</b>\n" + "\n".join(warning_lines),
-                                parse_mode=ParseMode.HTML,
-                            )
             stop_reason = getattr(result, "stop_reason", None)
             if stop_reason in {"chunk_timeout", "repeated_chunks"} and not stream_meta_found:
                 self._logger.warning(

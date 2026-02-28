@@ -20,7 +20,7 @@ import json
 import re as _re
 import time
 import uuid
-from collections import Counter
+
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -33,7 +33,7 @@ from core.config import AppSettings
 from core.llm_protocol import LLMClientProtocol
 from core.logging_setup import get_logger
 from core.memory import MemoryManager
-from core.ollama_client import ChatStreamState
+from core.llm_types import ChatStreamState
 from core.skill_manager import SkillDefinition, SkillManager
 from core.text_utils import sanitize_model_output
 
@@ -66,7 +66,6 @@ class _PreparedFullRequest:
     timeout: int
     max_tokens: int | None
     target_model: str | None
-    review_required: bool = False
     model_decision: ModelRoutingDecision | None = None
     rag_result: Any = None  # RAGResult | None
 
@@ -81,8 +80,6 @@ class _StreamMeta:
     usage: Any = None  # ChatUsage | None
     model_role: str | None = None
     rag_trace: dict | None = None
-    warnings: list[str] | None = None
-    repaired_response: str | None = None
     created_at: float = 0.0
 
 
@@ -124,15 +121,12 @@ _INJECTION_RE = _re.compile(
     _re.IGNORECASE,
 )
 _CODE_BLOCK_RE = _re.compile(r"```.*?```", _re.DOTALL)
-_HAN_CHAR_RE = _re.compile(r"[\u4E00-\u9FFF]")
 _STREAM_META_TTL_SECONDS = 600.0
 _STREAM_META_MAX_ENTRIES = 2048
 _REASONING_TIMEOUT_SECONDS = 3600
 _REASONING_INTENTS = {"complex", "code"}
 _REASONING_MODEL_ROLES = {"reasoning", "coding", "vision"}
 _STREAM_REPEATED_CHUNK_ABORT_THRESHOLD = 30
-_RESPONSE_REVIEW_TIMEOUT_SECONDS = 300
-_RESPONSE_REVIEW_MAX_TOKENS = 1200
 _CONTEXT_HISTORY_MESSAGE_MAX_CHARS = 4000
 _SUMMARY_CHUNK_TRIGGER_CHARS = 6000
 _SUMMARY_CHUNK_MAX_CHARS = 3200
@@ -253,16 +247,6 @@ class Engine:
                         chat_id=chat_id,
                     )
                     content = sanitize_model_output(content).strip()
-                    if not self._is_cache_response_acceptable(text, content):
-                        repaired = await self._retry_low_quality_response(
-                            messages=messages,
-                            query=text,
-                            model=target_model,
-                            timeout=skill.timeout,
-                            max_tokens=skill.max_tokens,
-                        )
-                        replacement = repaired or self._build_guardrail_fallback(text)
-                        content = sanitize_model_output(replacement).strip()
                     if not content:
                         raise RuntimeError("empty_response_from_llm")
                     await self._persist_turn(chat_id, text, content, skill=skill)
@@ -305,16 +289,7 @@ class Engine:
                     timeout=prepared_full.timeout,
                     max_tokens=prepared_full.max_tokens,
                 )
-                content, _ = await self._finalize_response_content(
-                    query=text,
-                    raw_response=chat_response.content,
-                    messages=prepared_full.messages,
-                    target_model=prepared_full.target_model,
-                    timeout=prepared_full.timeout,
-                    max_tokens=prepared_full.max_tokens,
-                    review_required=prepared_full.review_required,
-                    has_images=bool(images),
-                )
+                content = sanitize_model_output(chat_response.content)
                 await self._persist_turn(chat_id, text, content)
 
                 await self._maybe_store_semantic_cache(
@@ -372,7 +347,6 @@ class Engine:
                     self._logger.info("skill_triggered_stream", chat_id=chat_id, skill=skill.name)
                     messages = await self._build_context(chat_id, text, skill=skill)
                     full_response = ""
-                    repaired_response = None
                     target_model: str | None = None
                     usage = None
                     if (
@@ -479,29 +453,13 @@ class Engine:
                             raise skill_stream_error
                     if not full_response.strip():
                         raise RuntimeError("empty_response_from_llm")
-                    full_response = sanitize_model_output(full_response).strip()
-                    if not self._is_cache_response_acceptable(text, full_response):
-                        repaired = await self._retry_low_quality_response(
-                            messages=messages,
-                            query=text,
-                            model=target_model,
-                            timeout=skill.timeout,
-                            max_tokens=skill.max_tokens,
-                        )
-                        replacement = repaired or self._build_guardrail_fallback(text)
-                        replacement = sanitize_model_output(replacement).strip()
-                        if replacement and replacement != full_response:
-                            repaired_response = replacement
-                        full_response = replacement
-                    if not full_response.strip():
-                        raise RuntimeError("empty_response_from_llm")
+                    full_response = sanitize_model_output(full_response)
                     await self._persist_turn(chat_id, text, full_response, skill=skill)
                     turn_persisted = True
                     self._set_stream_meta(
                         chat_id,
                         tier="skill",
                         usage=usage,
-                        repaired_response=repaired_response,
                     )
                     self._log_request(t0, chat_id, "skill", usage, len(messages))
                     return
@@ -544,11 +502,10 @@ class Engine:
                 )
 
                 full_response = ""
-                repaired_response = None
                 stream_state = ChatStreamState()
                 usage = None
                 stream_error: Exception | None = None
-                should_stream_chunks = not prepared_full.review_required
+                should_stream_chunks = True
                 full_last_stream_chunk: str | None = None
                 full_repeated_stream_chunk_count = 0
                 try:
@@ -628,18 +585,7 @@ class Engine:
                     raise stream_error
                 if not full_response.strip():
                     raise RuntimeError("empty_response_from_llm")
-                full_response, repaired_response = await self._finalize_response_content(
-                    query=text,
-                    raw_response=full_response,
-                    messages=prepared_full.messages,
-                    target_model=prepared_full.target_model,
-                    timeout=prepared_full.timeout,
-                    max_tokens=prepared_full.max_tokens,
-                    review_required=prepared_full.review_required,
-                    has_images=bool(images),
-                )
-                if prepared_full.review_required and full_response:
-                    yield full_response
+                full_response = sanitize_model_output(full_response)
 
                 await self._persist_turn(chat_id, text, full_response)
                 turn_persisted = True
@@ -653,10 +599,6 @@ class Engine:
                     intent=routing.intent,
                 )
 
-                warnings = self._collect_runtime_warnings(
-                    model_decision=prepared_full.model_decision,
-                    rag_result=prepared_full.rag_result,
-                )
                 self._set_stream_meta(
                     chat_id, tier="full", intent=routing.intent, cache_id=cache_id, usage=usage,
                     model_role=(
@@ -666,10 +608,6 @@ class Engine:
                     rag_trace=(
                         prepared_full.rag_result.trace.to_dict()
                         if prepared_full.rag_result else None
-                    ),
-                    warnings=warnings or None,
-                    repaired_response=(
-                        None if prepared_full.review_required else repaired_response
                     ),
                 )
                 self._log_request(
@@ -1121,10 +1059,6 @@ class Engine:
             result["model_role"] = meta.model_role
         if meta.rag_trace is not None:
             result["rag_trace"] = meta.rag_trace
-        if meta.warnings:
-            result["warnings"] = meta.warnings
-        if meta.repaired_response:
-            result["repaired_response"] = meta.repaired_response
         return result
 
     # ── 내부 메서드 ──
@@ -1218,14 +1152,11 @@ class Engine:
         usage: Any = None,
         model_role: str | None = None,
         rag_trace: dict | None = None,
-        warnings: list[str] | None = None,
-        repaired_response: str | None = None,
     ) -> None:
         now = time.monotonic()
         self._last_stream_meta[chat_id] = _StreamMeta(
             tier=tier, intent=intent, cache_id=cache_id, usage=usage,
-            model_role=model_role, rag_trace=rag_trace, warnings=warnings,
-            repaired_response=repaired_response, created_at=now,
+            model_role=model_role, rag_trace=rag_trace, created_at=now,
         )
         self._cleanup_stream_meta(now)
 
@@ -1267,133 +1198,10 @@ class Engine:
             chat_id=chat_id if scope == "user" else None,
         )
 
-    def _contains_disallowed_chinese(self, text: str) -> bool:
-        if self._normalize_language(self._config.bot.language) != "ko":
-            return False
-        probe = _CODE_BLOCK_RE.sub("", text)
-        return bool(_HAN_CHAR_RE.search(probe))
-
-    def _is_language_consistent_for_cache(self, query: str, response: str) -> bool:
-        _ = query
-        return not self._contains_disallowed_chinese(response)
-
     @staticmethod
-    def _has_excessive_token_repetition(response: str) -> bool:
-        probe = _CODE_BLOCK_RE.sub("", response).lower()
-        compact = _re.sub(r"\s+", "", probe)
-        if compact:
-            # 동일 문자 런(예: 页页页... 또는 ㅋㅋㅋㅋ...)을 탐지한다.
-            run_len = 1
-            for idx in range(1, len(compact)):
-                if compact[idx] == compact[idx - 1]:
-                    run_len += 1
-                    if (
-                        run_len >= 12
-                        and _re.match(r"[a-z0-9가-힣\u4e00-\u9fff]", compact[idx])
-                    ):
-                        return True
-                else:
-                    run_len = 1
-
-            # 붙여쓰기 반복 루프(예: summarysummary..., 뭐해뭐해...)를 탐지한다.
-            if _re.search(r"([a-z]{2,12})\1{4,}", compact):
-                return True
-            if _re.search(r"([가-힣]{1,6})\1{4,}", compact):
-                return True
-            if _re.search(r"([\u4e00-\u9fff]{1,3})\1{6,}", compact):
-                return True
-
-        tokens = _re.findall(r"[a-z]{2,}|[가-힣]{2,}|[\u4e00-\u9fff]{1,}", probe)
-        if len(tokens) < 4:
-            return False
-        _token, count = Counter(tokens).most_common(1)[0]
-        ratio = count / len(tokens)
-
-        # 짧은 반복 루프(예: 동일 단어/구절 반복)도 조기에 감지한다.
-        if count >= 4 and ratio >= 0.5:
-            return True
-        if len(tokens) >= 12 and count >= 8 and ratio >= 0.35:
-            return True
-
-        if len(tokens) >= 6:
-            for n in (2, 3):
-                if len(tokens) < n * 3:
-                    continue
-                ngrams = [
-                    " ".join(tokens[i:i + n])
-                    for i in range(len(tokens) - n + 1)
-                ]
-                _ngram, ng_count = Counter(ngrams).most_common(1)[0]
-                if ng_count >= 3 and (ng_count * n) / len(tokens) >= 0.6:
-                    return True
-
-        return False
-
-    def _is_response_suspicious(self, response: str) -> bool:
-        stripped = sanitize_model_output(response).strip()
-        if not stripped:
-            return True
-        if self._has_excessive_token_repetition(stripped):
-            return True
-        return False
-
-    def _build_guardrail_fallback(self, query: str) -> str:
-        if self._normalize_language(self._config.bot.language) == "ko":
-            return (
-                "죄송합니다. 답변 생성에 문제가 있었습니다. "
-                "다시 한번 질문해 주시면 더 나은 답변을 드리겠습니다."
-            )
-        return (
-            "Sorry, there was a problem generating the answer. "
-            "Please ask again and I will provide a better response."
-        )
-
-    async def _retry_low_quality_response(
-        self,
-        *,
-        messages: list[dict[str, str]],
-        query: str,
-        model: str | None,
-        timeout: int,
-        max_tokens: int | None,
-    ) -> str | None:
-        retry_messages = list(messages)
-        retry_messages.append({
-            "role": "user",
-            "content": (
-                "직전 답변이 반복 출력 또는 중국어 포함으로 품질 기준을 통과하지 못했습니다. "
-                "동일 단어/구절 반복을 제거하고 중국어(한자)를 사용하지 말고 "
-                "사용자 질문에 맞춰 자연스럽게 다시 답하세요."
-            ),
-        })
-        try:
-            repaired = await self._llm_client.chat(
-                messages=retry_messages,
-                model=model,
-                timeout=timeout,
-                max_tokens=max_tokens,
-            )
-        except Exception as exc:
-            self._logger.warning("low_quality_retry_failed", error=str(exc))
-            return None
-        content = sanitize_model_output(repaired.content).strip()
-        if not content:
-            return None
-        if self._is_response_suspicious(content):
-            return None
-        if not self._is_language_consistent_for_cache(query, content):
-            return None
-        return content
-
-    def _is_cache_response_acceptable(self, query: str, response: str) -> bool:
-        sanitized = sanitize_model_output(response).strip()
-        if not sanitized:
-            return False
-        if self._is_response_suspicious(sanitized):
-            return False
-        if not self._is_language_consistent_for_cache(query, sanitized):
-            return False
-        return True
+    def _is_cache_response_acceptable(query: str, response: str) -> bool:
+        _ = query
+        return bool(sanitize_model_output(response).strip())
 
     def _log_request(
         self,
@@ -1442,43 +1250,6 @@ class Engine:
             tokens_output=usage.eval_count if usage else None,
             **extra,
         )
-
-    def _collect_runtime_warnings(
-        self,
-        *,
-        model_decision: ModelRoutingDecision | None,
-        rag_result: Any,
-    ) -> list[str]:
-        """사용자에게 노출할 런타임 저하 경고를 수집한다."""
-        warnings: list[str] = []
-        if model_decision is not None:
-            for reason in model_decision.degradation_reasons:
-                msg = self._map_degradation_reason(reason)
-                if msg and msg not in warnings:
-                    warnings.append(msg)
-        if rag_result is not None and getattr(rag_result, "trace", None) is not None:
-            trace = rag_result.trace
-            if getattr(trace, "error", None):
-                msg = "RAG 처리 중 일부 단계가 실패해 축소 모드로 응답했습니다."
-                if msg not in warnings:
-                    warnings.append(msg)
-        return warnings
-
-    @staticmethod
-    def _map_degradation_reason(reason: str) -> str | None:
-        """내부 저하 코드를 사용자 메시지로 변환한다."""
-        mapping = {
-            "embedding_unavailable_classifier_only": (
-                "임베딩 모델이 없어 semantic routing 없이 분류기 기반으로 동작 중입니다."
-            ),
-            "semantic_router_not_initialized": "semantic routing 초기화 실패로 분류기 기반으로 동작 중입니다.",
-            "semantic_routing_failed": "semantic routing 실행 오류로 분류기 기반으로 동작했습니다.",
-            "low_cost_classifier_unavailable": "low_cost 분류 모델이 없어 라우팅 분류기를 사용할 수 없습니다.",
-            "forced_reasoning_without_classifier": "분류기 없이 reasoning 모델로 고정 라우팅되었습니다.",
-            "classifier_failed_fallback": "라우팅 분류 실패로 폴백 모델을 사용했습니다.",
-            "model_fallback_used": "요청 역할 모델이 없어 폴백 모델로 응답했습니다.",
-        }
-        return mapping.get(reason)
 
     @staticmethod
     def _inject_rag_context(
@@ -1724,21 +1495,6 @@ class Engine:
             return max(timeout, _REASONING_TIMEOUT_SECONDS)
         return timeout
 
-    @staticmethod
-    def _should_review_response(
-        *,
-        intent: str | None,
-        model_role: str | None,
-        has_images: bool,
-    ) -> bool:
-        if has_images:
-            return True
-        role = (model_role or "").strip().lower()
-        if role in _REASONING_MODEL_ROLES:
-            return True
-        intent_name = (intent or "").strip().lower()
-        return intent_name in _REASONING_INTENTS
-
     async def _prepare_full_request(
         self,
         *,
@@ -1819,12 +1575,6 @@ class Engine:
             model_role=prepared_role,
             has_images=bool(images),
         )
-        review_required = self._should_review_response(
-            intent=intent,
-            model_role=prepared_role,
-            has_images=bool(images),
-        )
-
         messages = prepared.messages
         if rag_result and rag_result.contexts:
             messages = self._inject_rag_context(messages, rag_result)
@@ -1834,55 +1584,9 @@ class Engine:
             timeout=effective_timeout,
             max_tokens=prepared.max_tokens,
             target_model=target_model,
-            review_required=review_required,
             model_decision=model_decision,
             rag_result=rag_result,
         )
-
-    async def _finalize_response_content(
-        self,
-        *,
-        query: str,
-        raw_response: str,
-        messages: list[dict[str, str]],
-        target_model: str | None,
-        timeout: int,
-        max_tokens: int | None,
-        review_required: bool,
-        has_images: bool,
-    ) -> tuple[str, str | None]:
-        """응답 정제 + 저품질 재시도/가드레일 폴백을 적용한다."""
-        content = sanitize_model_output(raw_response)
-        repaired_response: str | None = None
-        if review_required and content.strip():
-            reviewed = await self._review_response_draft(
-                query=query,
-                draft_response=content,
-                target_model=target_model,
-                timeout=timeout,
-                max_tokens=max_tokens,
-                has_images=has_images,
-            )
-            if reviewed:
-                reviewed_clean = sanitize_model_output(reviewed).strip()
-                if reviewed_clean:
-                    if reviewed_clean != content:
-                        repaired_response = reviewed_clean
-                    content = reviewed_clean
-        if not self._is_cache_response_acceptable(query, content):
-            repaired = await self._retry_low_quality_response(
-                messages=messages,
-                query=query,
-                model=target_model,
-                timeout=timeout,
-                max_tokens=max_tokens,
-            )
-            replacement = repaired or self._build_guardrail_fallback(query)
-            replacement = sanitize_model_output(replacement).strip()
-            if replacement and replacement != content:
-                repaired_response = replacement
-            content = replacement
-        return content, repaired_response
 
     @staticmethod
     def _extract_json_payload(text: str) -> dict[str, Any] | None:
@@ -1905,90 +1609,6 @@ class Engine:
         except json.JSONDecodeError:
             return None
         return payload if isinstance(payload, dict) else None
-
-    async def _review_response_draft(
-        self,
-        *,
-        query: str,
-        draft_response: str,
-        target_model: str | None,
-        timeout: int,
-        max_tokens: int | None,
-        has_images: bool,
-    ) -> str | None:
-        review_timeout = max(20, min(int(timeout), _RESPONSE_REVIEW_TIMEOUT_SECONDS))
-        review_max_tokens = _RESPONSE_REVIEW_MAX_TOKENS
-        if max_tokens is not None and max_tokens > 0:
-            review_max_tokens = min(review_max_tokens, int(max_tokens))
-        vision_note = (
-            "\n- 이 요청은 이미지 기반일 수 있으므로 보이지 않는 정보는 단정하지 말고 "
-            "불확실성을 명시하세요."
-            if has_images
-            else ""
-        )
-        review_system = (
-            "당신은 답변 품질 검수기입니다. 사용자에게 직접 말하지 말고 JSON만 반환하세요."
-        )
-        review_prompt = (
-            "아래 [초안 답변]을 검수하세요.\n"
-            "검수 기준:\n"
-            "- 사용자 질문에 직접 답했는가\n"
-            "- 논리/정합성 오류가 없는가\n"
-            "- 근거 없는 단정/과장 표현이 없는가"
-            f"{vision_note}\n\n"
-            "출력 형식(JSON만):\n"
-            "{\"pass\": true|false, \"issues\": [\"...\"], \"revised_answer\": \"수정 답변 또는 빈 문자열\"}\n\n"
-            "[사용자 질문]\n"
-            f"{query}\n\n"
-            "[초안 답변]\n"
-            f"{draft_response}\n"
-        )
-        try:
-            review_resp = await self._llm_client.chat(
-                messages=[
-                    {"role": "system", "content": review_system},
-                    {"role": "user", "content": review_prompt},
-                ],
-                model=target_model,
-                timeout=review_timeout,
-                max_tokens=review_max_tokens,
-                temperature=0.0,
-                response_format="json",
-            )
-        except Exception as exc:
-            self._logger.warning(
-                "response_review_failed",
-                error=str(exc),
-                model=target_model,
-            )
-            return None
-
-        payload = self._extract_json_payload(review_resp.content)
-        if payload is None:
-            self._logger.warning("response_review_invalid_payload", model=target_model)
-            return None
-
-        passed = bool(payload.get("pass", True))
-        revised_answer = payload.get("revised_answer", "")
-        revised_text = (
-            sanitize_model_output(str(revised_answer)).strip()
-            if revised_answer is not None
-            else ""
-        )
-        if revised_text:
-            self._logger.info(
-                "response_review_revised",
-                model=target_model,
-                passed=passed,
-            )
-            return revised_text
-
-        if not passed:
-            self._logger.warning(
-                "response_review_reject_without_revision",
-                model=target_model,
-            )
-        return None
 
     async def _maybe_store_semantic_cache(
         self,
@@ -2495,7 +2115,6 @@ class Engine:
             return []
 
         sanitized_history: list[dict[str, str]] = []
-        dropped_assistant_messages = 0
         truncated_messages = 0
 
         for turn in history:
@@ -2507,14 +2126,6 @@ class Engine:
             if not content:
                 continue
 
-            if role == "assistant":
-                if self._has_excessive_token_repetition(content):
-                    dropped_assistant_messages += 1
-                    continue
-                if self._contains_disallowed_chinese(content):
-                    dropped_assistant_messages += 1
-                    continue
-
             if len(content) > _CONTEXT_HISTORY_MESSAGE_MAX_CHARS:
                 content = (
                     content[:_CONTEXT_HISTORY_MESSAGE_MAX_CHARS].rstrip()
@@ -2524,11 +2135,6 @@ class Engine:
 
             sanitized_history.append({"role": role, "content": content})
 
-        if dropped_assistant_messages:
-            self._logger.info(
-                "history_suspicious_assistant_messages_dropped",
-                dropped=dropped_assistant_messages,
-            )
         if truncated_messages:
             self._logger.debug(
                 "history_messages_truncated_for_prompt",

@@ -155,8 +155,11 @@ class MemoryManager:
             except Exception:
                 try:
                     await db.rollback()
-                except Exception:
-                    pass
+                except Exception as rollback_exc:
+                    self._logger.error(
+                        "write_transaction_rollback_failed",
+                        error=str(rollback_exc),
+                    )
                 raise
 
     async def close(self) -> None:

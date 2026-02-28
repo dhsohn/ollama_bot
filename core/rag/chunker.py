@@ -14,6 +14,7 @@ import zipfile
 from xml.etree import ElementTree as ET
 
 from core.config import RAGConfig
+from core.logging_setup import get_logger
 from core.rag.types import Chunk, ChunkMetadata
 
 # 대략적 토큰 추정: 한국어 1글자 ≈ 1~2 tokens, 영어 1단어 ≈ 1.3 tokens
@@ -55,6 +56,7 @@ class DocumentChunker:
         self._min_chars = config.chunk_min_tokens * _CHARS_PER_TOKEN
         self._max_chars = config.chunk_max_tokens * _CHARS_PER_TOKEN
         self._overlap_ratio = config.chunk_overlap_ratio
+        self._logger = get_logger("rag_chunker")
 
     def chunk_file(self, file_path: str) -> list[Chunk]:
         """파일을 읽어 청크 목록을 반환한다."""
@@ -62,7 +64,12 @@ class DocumentChunker:
         ext = path.suffix.lower()
         try:
             text = self._load_file(path, ext)
-        except Exception:
+        except Exception as exc:
+            self._logger.warning(
+                "chunk_file_read_failed",
+                path=file_path,
+                error=str(exc),
+            )
             return []
         if not text.strip():
             return []
@@ -158,6 +165,8 @@ class DocumentChunker:
     def _chunk_text(self, text: str) -> list[tuple[str, str | None]]:
         """토큰 수 기반 슬라이딩 윈도우 청킹."""
         overlap_chars = int(self._max_chars * self._overlap_ratio)
+        # overlap이 max_chars 이상이면 전진 불가 → 상한 보정
+        overlap_chars = min(overlap_chars, self._max_chars - 1)
         chunks: list[tuple[str, str | None]] = []
         start = 0
         while start < len(text):
@@ -172,9 +181,10 @@ class DocumentChunker:
             chunk = text[start:end].strip()
             if chunk:
                 chunks.append((chunk, None))
-            start = end - overlap_chars
-            if start >= len(text):
-                break
+            next_start = end - overlap_chars
+            if next_start <= start:
+                next_start = start + 1  # 전진 보장
+            start = next_start
         return chunks
 
     def _chunk_markdown(self, text: str) -> list[tuple[str, str | None]]:

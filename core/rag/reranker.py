@@ -52,14 +52,18 @@ class RAGReranker:
         # 결과를 원래 candidates에 매핑
         reranked: list[RetrievedItem] = []
         for item in scored:
-            idx = item["index"]
+            idx = item.get("index")
+            score = item.get("score")
+            if idx is None or score is None:
+                self._logger.warning("reranker_malformed_result", item=item)
+                continue
             if 0 <= idx < len(candidates):
                 candidate = candidates[idx]
                 reranked.append(
                     RetrievedItem(
                         chunk=candidate.chunk,
                         retrieval_score=candidate.retrieval_score,
-                        rerank_score=item["score"],
+                        rerank_score=score,
                     )
                 )
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from typing import Any, Protocol
 
-from core.ollama_client import ChatResponse, ChatStreamState
+from core.llm_types import ChatResponse, ChatStreamState
 
 
 class LLMClientProtocol(Protocol):

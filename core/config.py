@@ -77,6 +77,7 @@ class LemonadeConfig(BaseModel):
     timeout_seconds: int = 60
     model_load_timeout_seconds: int = 120
     heavy_model_load_timeout_seconds: int = 420
+    reconnect_cooldown_seconds: float = 15.0
     instances: list[LemonadeInstanceConfig] = Field(default_factory=list)
 
     @field_validator(
@@ -291,6 +292,18 @@ class ModelRegistryConfig(BaseModel):
         "coding": ["reasoning", "low_cost"],
         "vision": [],
     })
+
+    @field_validator("fallback_chain")
+    @classmethod
+    def validate_no_self_reference(
+        cls, chain: dict[str, list[str]],
+    ) -> dict[str, list[str]]:
+        for role, fallbacks in chain.items():
+            if role in fallbacks:
+                raise ValueError(
+                    f"fallback_chain: role '{role}' cannot fall back to itself"
+                )
+        return chain
 
 
 class ModelRoutingConfig(BaseModel):

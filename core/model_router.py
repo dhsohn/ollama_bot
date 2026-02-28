@@ -386,6 +386,15 @@ class ModelRouter:
         except ValueError:
             # 모든 모델 불가 시 default model 사용
             model_name = self._client.default_model
+            if not model_name:
+                self._logger.error(
+                    "routing_no_fallback_model",
+                    role=role,
+                    trigger=trigger,
+                )
+                raise ValueError(
+                    f"No model available for role '{role}' and default_model is empty"
+                )
             actual_role = role
             fallback_used = True
 

@@ -11,6 +11,8 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from core.async_utils import run_in_thread
+
 import aiosqlite
 import numpy as np
 
@@ -180,7 +182,7 @@ class RAGIndexer:
 
         for fpath in files:
             to_remove.discard(fpath)
-            current_hash = DocumentChunker.content_hash(fpath)
+            current_hash = await run_in_thread(DocumentChunker.content_hash, fpath)
             if existing_hash_by_norm.get(fpath) == current_hash:
                 continue
             to_index.append(fpath)
@@ -332,31 +334,37 @@ class RAGIndexer:
         return chunks
 
     async def _load_index_to_memory(self) -> None:
-        """DB에서 인메모리 벡터 인덱스를 로드한다."""
+        """DB에서 인메모리 벡터 인덱스를 로드한다.
+
+        로컬 변수에 먼저 빌드한 뒤 atomic swap하여,
+        리로드 중 search()가 불완전 인덱스를 참조하는 것을 방지한다.
+        """
         assert self._db is not None
-        self._row_ids = []
+        new_row_ids: list[int] = []
         embeddings_list: list[np.ndarray] = []
-        self._chunk_meta = []
+        new_chunk_meta: list[dict[str, Any]] = []
 
         async with self._db.execute(
             "SELECT id, doc_id, source_path, chunk_id, section_title, "
             "tokens_estimate, file_type, embedding FROM rag_chunks ORDER BY id"
         ) as cursor:
             async for row in cursor:
-                self._row_ids.append(row["id"])
+                new_row_ids.append(row["id"])
                 emb = np.frombuffer(row["embedding"], dtype=np.float32)
                 embeddings_list.append(emb)
-                self._chunk_meta.append({
+                new_chunk_meta.append({
                     "doc_id": row["doc_id"],
                     "source_path": row["source_path"],
                     "chunk_id": row["chunk_id"],
                     "section_title": row["section_title"],
                 })
 
-        if embeddings_list:
-            self._embeddings = np.stack(embeddings_list)
-        else:
-            self._embeddings = None
+        new_embeddings = np.stack(embeddings_list) if embeddings_list else None
+
+        # Atomic swap — 기존 search()가 일관된 스냅샷을 참조하도록 보장
+        self._row_ids = new_row_ids
+        self._chunk_meta = new_chunk_meta
+        self._embeddings = new_embeddings
 
         self._logger.debug(
             "index_loaded_to_memory", chunks=len(self._row_ids),
@@ -367,9 +375,15 @@ class RAGIndexer:
         all_embeddings: list[list[float]] = []
         for i in range(0, len(texts), _EMBED_BATCH_SIZE):
             batch = texts[i : i + _EMBED_BATCH_SIZE]
-            embeddings = await self._client.embed(
-                batch, model=self._embedding_model,
-            )
+            try:
+                embeddings = await self._client.embed(
+                    batch, model=self._embedding_model,
+                )
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Embedding batch {i // _EMBED_BATCH_SIZE} failed "
+                    f"({len(batch)} texts): {exc}"
+                ) from exc
             all_embeddings.extend(embeddings)
         return all_embeddings
 

@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from core.context_compressor import ContextCompressor
-from core.ollama_client import ChatResponse
+from core.llm_types import ChatResponse
 
 
 @pytest.mark.asyncio

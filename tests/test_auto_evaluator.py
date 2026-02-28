@@ -9,7 +9,7 @@ import pytest
 
 from core.auto_evaluator import AutoEvaluator
 from core.config import AutoEvaluationConfig
-from core.ollama_client import ChatResponse
+from core.llm_types import ChatResponse
 
 
 @pytest.fixture

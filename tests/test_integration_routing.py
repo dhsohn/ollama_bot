@@ -18,7 +18,7 @@ from core.engine import Engine
 from core.instant_responder import InstantResponder
 from core.intent_router import ContextStrategy, RouteResult
 from core.memory import MemoryManager
-from core.ollama_client import ChatResponse
+from core.llm_types import ChatResponse
 from core.semantic_cache import SemanticCache
 
 

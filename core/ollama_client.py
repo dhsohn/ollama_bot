@@ -9,43 +9,16 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import AsyncGenerator
-from dataclasses import dataclass
 
 from ollama import AsyncClient, ResponseError
 
 from core.config import OllamaConfig
+from core.llm_types import ChatResponse, ChatStreamState, ChatUsage
 from core.logging_setup import get_logger
 
-
-# ── 응답 메타데이터 ──
-
-
-@dataclass
-class ChatUsage:
-    """LLM 호출 사용량 메타데이터."""
-
-    prompt_eval_count: int = 0
-    eval_count: int = 0
-    eval_duration: int = 0  # nanoseconds
-    total_duration: int = 0  # nanoseconds
-
-
-@dataclass
-class ChatResponse:
-    """LLM 응답 + 메타데이터."""
-
-    content: str
-    usage: ChatUsage | None = None
-
-    def __str__(self) -> str:
-        return self.content
-
-
-@dataclass
-class ChatStreamState:
-    """요청 단위 스트리밍 메타데이터."""
-
-    usage: ChatUsage | None = None
+# 하위 호환: 기존 `from core.ollama_client import ChatResponse` 유지
+__all__ = ["ChatResponse", "ChatStreamState", "ChatUsage", "OllamaClient",
+           "OllamaClientError", "ModelNotFoundError"]
 
 
 class OllamaClientError(Exception):

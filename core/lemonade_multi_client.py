@@ -8,7 +8,7 @@ from typing import Any
 from core.config import LemonadeConfig, LemonadeInstanceConfig, OllamaConfig
 from core.lemonade_client import LemonadeClient, LemonadeClientError
 from core.logging_setup import get_logger
-from core.ollama_client import ChatResponse, ChatStreamState
+from core.llm_types import ChatResponse, ChatStreamState
 
 _PRIMARY_INSTANCE = "primary"
 
@@ -248,7 +248,12 @@ class LemonadeMultiClient:
         client = self._clients[instance_key]
         try:
             models = await client.list_models()
-        except Exception:
+        except Exception as exc:
+            self._logger.debug(
+                "dynamic_route_update_failed",
+                instance=self._instance_labels.get(instance_key, instance_key),
+                error=str(exc),
+            )
             return
         for model in models:
             name = model.get("name")
@@ -358,15 +363,18 @@ class LemonadeMultiClient:
                 fallback_model=fallback_model,
                 error=str(exc),
             )
+            fallback_state = ChatStreamState()
             async for chunk in fallback_client.chat_stream(
                 messages=messages,
                 model=fallback_model,
                 temperature=temperature,
                 max_tokens=max_tokens,
                 timeout=timeout,
-                stream_state=stream_state,
+                stream_state=fallback_state,
             ):
                 yield chunk
+            if stream_state is not None:
+                stream_state.usage = fallback_state.usage
 
     async def list_models(self) -> list[dict]:
         merged: dict[str, dict] = {}
@@ -497,7 +505,20 @@ class LemonadeMultiClient:
                     continue
                 result = await client.check_model_availability([target_model])
                 availability[model_name] = bool(result.get(target_model, False))
-            except Exception:
+            except LemonadeClientError as exc:
+                self._logger.debug(
+                    "model_availability_check_client_error",
+                    model=model_name,
+                    error=str(exc),
+                )
+                availability[model_name] = False
+            except Exception as exc:
+                self._logger.warning(
+                    "model_availability_check_unexpected_error",
+                    model=model_name,
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                )
                 availability[model_name] = False
         return availability
 

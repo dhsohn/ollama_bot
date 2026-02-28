@@ -10,7 +10,7 @@ import pytest
 
 from core.config import LemonadeConfig, OllamaConfig
 from core.lemonade_client import LemonadeClient, LemonadeClientError
-from core.ollama_client import ChatStreamState
+from core.llm_types import ChatStreamState
 
 
 @pytest.fixture

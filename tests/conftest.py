@@ -17,7 +17,7 @@ from core.config import (
     TelegramConfig,
 )
 from core.memory import MemoryManager
-from core.ollama_client import ChatResponse
+from core.llm_types import ChatResponse
 from core.security import SecurityManager
 
 

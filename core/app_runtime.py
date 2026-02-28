@@ -505,15 +505,25 @@ async def _build_runtime(
                         continue
                     kb_dirs_to_index.append(root_dir)
                 if kb_dirs_to_index and config.rag.startup_index_enabled:
+                    _RAG_STARTUP_INDEX_TIMEOUT = 600.0  # 10분
+
                     async def _run_rag_startup_index() -> None:
                         try:
-                            result = await indexer.index_corpus(kb_dirs_to_index)
+                            result = await asyncio.wait_for(
+                                indexer.index_corpus(kb_dirs_to_index),
+                                timeout=_RAG_STARTUP_INDEX_TIMEOUT,
+                            )
                             logger.info(
                                 "rag_startup_index_completed",
                                 indexed=result.get("indexed", 0),
                                 skipped=result.get("skipped", 0),
                                 removed=result.get("removed", 0),
                                 total_chunks=result.get("total_chunks", 0),
+                            )
+                        except asyncio.TimeoutError:
+                            logger.error(
+                                "rag_startup_index_timeout",
+                                timeout_seconds=_RAG_STARTUP_INDEX_TIMEOUT,
                             )
                         except Exception as exc:
                             logger.error("rag_startup_index_failed", error=str(exc))
