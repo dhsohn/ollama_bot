@@ -35,7 +35,7 @@ from core.logging_setup import get_logger
 from core.memory import MemoryManager
 from core.llm_types import ChatStreamState
 from core.skill_manager import SkillDefinition, SkillManager
-from core.text_utils import sanitize_model_output
+from core.text_utils import detect_output_anomalies, sanitize_model_output
 
 if TYPE_CHECKING:
     from core.context_compressor import ContextCompressor
@@ -290,6 +290,50 @@ class Engine:
                     max_tokens=prepared_full.max_tokens,
                 )
                 content = sanitize_model_output(chat_response.content).strip()
+                usage = chat_response.usage
+                response_role = (
+                    prepared_full.model_decision.selected_role
+                    if prepared_full.model_decision is not None
+                    else None
+                )
+                anomaly_reasons = detect_output_anomalies(chat_response.content, content)
+                if anomaly_reasons:
+                    self._logger.warning(
+                        "response_anomaly_detected",
+                        chat_id=chat_id,
+                        model=prepared_full.target_model,
+                        role=response_role,
+                        reasons=anomaly_reasons,
+                    )
+                    (
+                        recovered_content,
+                        recovered_usage,
+                        recovered_model,
+                        recovered_role,
+                    ) = await self._recover_anomalous_response(
+                        chat_id=chat_id,
+                        messages=prepared_full.messages,
+                        timeout=prepared_full.timeout,
+                        max_tokens=prepared_full.max_tokens,
+                        current_model=prepared_full.target_model,
+                        current_role=response_role,
+                        current_reasons=anomaly_reasons,
+                    )
+                    if recovered_content is not None:
+                        content = recovered_content
+                        usage = recovered_usage or usage
+                        if (
+                            prepared_full.model_decision is not None
+                            and recovered_model is not None
+                            and recovered_role is not None
+                        ):
+                            if prepared_full.model_decision.selected_role != recovered_role:
+                                prepared_full.model_decision.original_role = (
+                                    prepared_full.model_decision.selected_role
+                                )
+                                prepared_full.model_decision.fallback_used = True
+                            prepared_full.model_decision.selected_role = recovered_role
+                            prepared_full.model_decision.selected_model = recovered_model
                 if not content:
                     raise RuntimeError("empty_response_from_llm")
                 await self._persist_turn(chat_id, text, content)
@@ -304,7 +348,7 @@ class Engine:
                 )
 
                 self._log_request(
-                    t0, chat_id, "full", chat_response.usage, len(prepared_full.messages),
+                    t0, chat_id, "full", usage, len(prepared_full.messages),
                     intent=routing.intent,
                     model_routing=prepared_full.model_decision,
                     rag_trace=prepared_full.rag_result.trace if prepared_full.rag_result else None,
@@ -1207,7 +1251,83 @@ class Engine:
     @staticmethod
     def _is_cache_response_acceptable(query: str, response: str) -> bool:
         _ = query
-        return bool(sanitize_model_output(response).strip())
+        cleaned = sanitize_model_output(response).strip()
+        if not cleaned:
+            return False
+        return not detect_output_anomalies(response, cleaned)
+
+    async def _recover_anomalous_response(
+        self,
+        *,
+        chat_id: int,
+        messages: list[dict[str, str]],
+        timeout: int,
+        max_tokens: int | None,
+        current_model: str | None,
+        current_role: str | None,
+        current_reasons: list[str],
+    ) -> tuple[str | None, Any, str | None, str | None]:
+        """비정상 출력 감지 시 fallback 모델로 1회 재시도한다."""
+        if not current_role:
+            return None, None, None, None
+
+        fallback_model, fallback_role = self._resolve_prepare_fallback(current_role)
+        if fallback_model is None or fallback_role is None:
+            return None, None, None, None
+        if fallback_model == current_model:
+            return None, None, None, None
+
+        try:
+            chat_response = await self._llm_client.chat(
+                messages=messages,
+                model=fallback_model,
+                timeout=timeout,
+                max_tokens=max_tokens,
+            )
+        except Exception as exc:
+            self._logger.warning(
+                "response_anomaly_recovery_failed",
+                chat_id=chat_id,
+                current_model=current_model,
+                fallback_model=fallback_model,
+                error=str(exc),
+            )
+            return None, None, None, None
+
+        recovered = sanitize_model_output(chat_response.content).strip()
+        recovered_reasons = detect_output_anomalies(chat_response.content, recovered)
+        # 개선되었거나 최소한 내부 마커가 제거된 경우 fallback 결과를 사용한다.
+        is_improved = (
+            bool(recovered)
+            and (
+                not recovered_reasons
+                or len(recovered_reasons) < len(current_reasons)
+                or (
+                    "internal_channel_marker" in current_reasons
+                    and "internal_channel_marker" not in recovered_reasons
+                )
+            )
+        )
+        if not is_improved:
+            self._logger.warning(
+                "response_anomaly_recovery_rejected",
+                chat_id=chat_id,
+                current_model=current_model,
+                fallback_model=fallback_model,
+                current_reasons=current_reasons,
+                recovered_reasons=recovered_reasons,
+            )
+            return None, None, None, None
+
+        self._logger.warning(
+            "response_anomaly_recovery_applied",
+            chat_id=chat_id,
+            current_model=current_model,
+            fallback_model=fallback_model,
+            current_reasons=current_reasons,
+            recovered_reasons=recovered_reasons,
+        )
+        return recovered, chat_response.usage, fallback_model, fallback_role
 
     def _log_request(
         self,

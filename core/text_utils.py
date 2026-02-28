@@ -40,6 +40,19 @@ _ASSISTANT_MARKER_RE = re.compile(
     r"assistant\s*(?:_|-)?\s*(?P<channel>analysis|commentary|final)\s*[:}\]\)]*",
     re.IGNORECASE,
 )
+_REPEATED_WORD_RUN_RE = re.compile(
+    r"\b(?P<word>[a-zA-Z가-힣_]{2,})\b(?:[\s,.:;!?]+\b(?P=word)\b){6,}",
+    re.IGNORECASE,
+)
+_REPEATED_ASSIGNMENT_RE = re.compile(
+    r"\b(?P<word>[a-zA-Z_]{2,})(?:=(?P=word)){6,}=?",
+    re.IGNORECASE,
+)
+_INTERNAL_REASONING_PHRASE_RE = re.compile(
+    r"(?:\bwe need to respond\b|\bthe user says\b|\blet me think\b|\banalysis:\b)",
+    re.IGNORECASE,
+)
+_QUALITY_TOKEN_RE = re.compile(r"[a-zA-Z가-힣_]{2,}")
 
 
 def extract_keywords(text: str, max_keywords: int = 5) -> list[str]:
@@ -93,3 +106,47 @@ def sanitize_model_output(text: str) -> str:
 
     cleaned = _SPECIAL_TOKEN_RE.sub("", cleaned).strip()
     return cleaned
+
+
+def detect_output_anomalies(text: str, cleaned: str | None = None) -> list[str]:
+    """사용자 노출 관점에서 비정상 출력 패턴을 감지한다."""
+    raw = text or ""
+    visible = sanitize_model_output(raw) if cleaned is None else (cleaned or "")
+    reasons: list[str] = []
+    seen: set[str] = set()
+
+    def _add(reason: str) -> None:
+        if reason not in seen:
+            seen.add(reason)
+            reasons.append(reason)
+
+    if not visible.strip():
+        _add("empty_after_sanitize")
+
+    if (
+        _THINK_BLOCK_RE.search(raw)
+        or "<|channel|>" in raw
+        or _ASSISTANT_MARKER_RE.search(raw) is not None
+    ):
+        _add("internal_channel_marker")
+
+    if _INTERNAL_REASONING_PHRASE_RE.search(raw):
+        _add("internal_reasoning_phrase")
+
+    if _REPEATED_ASSIGNMENT_RE.search(visible):
+        _add("repeated_assignment_pattern")
+    if _REPEATED_WORD_RUN_RE.search(visible):
+        _add("repeated_word_run")
+
+    tokens = [token.lower() for token in _QUALITY_TOKEN_RE.findall(visible)]
+    if len(tokens) >= 18:
+        token_counts = Counter(tokens)
+        top_count = token_counts.most_common(1)[0][1]
+        unique_count = len(token_counts)
+        dominance = top_count / len(tokens)
+        if dominance >= 0.5:
+            _add("dominant_repeated_token")
+        if unique_count <= 3 and top_count >= 8:
+            _add("low_token_diversity")
+
+    return reasons

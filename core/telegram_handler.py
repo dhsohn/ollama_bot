@@ -38,6 +38,7 @@ from core.security import (
     SecurityManager,
 )
 from core.telegram_message_renderer import escape_html, split_message, stream_and_render
+from core.text_utils import detect_output_anomalies
 
 if TYPE_CHECKING:
     from core.semantic_cache import SemanticCache
@@ -895,11 +896,28 @@ class TelegramHandler:
                     result.cache_id = stream_meta.get("cache_id")
                     result.usage = stream_meta.get("usage")
             stop_reason = getattr(result, "stop_reason", None)
+            recovery_reason: str | None = None
+            anomaly_reasons: list[str] = []
             if stop_reason in {"chunk_timeout", "repeated_chunks"} and not stream_meta_found:
+                recovery_reason = stop_reason
+            elif stop_reason is None:
+                anomaly_reasons = detect_output_anomalies(
+                    result.full_response,
+                    result.full_response,
+                )
+                actionable_reasons = [
+                    reason for reason in anomaly_reasons if reason != "empty_after_sanitize"
+                ]
+                if actionable_reasons:
+                    anomaly_reasons = actionable_reasons
+                    recovery_reason = "response_anomaly"
+
+            if recovery_reason is not None:
                 self._logger.warning(
                     "stream_recovery_triggered",
                     chat_id=chat_id,
-                    reason=stop_reason,
+                    reason=recovery_reason,
+                    anomaly_reasons=anomaly_reasons or None,
                 )
                 try:
                     recovered_response = await self._engine.process_message(
@@ -911,7 +929,7 @@ class TelegramHandler:
                     self._logger.warning(
                         "stream_recovery_failed",
                         chat_id=chat_id,
-                        reason=stop_reason,
+                        reason=recovery_reason,
                         error=str(exc),
                     )
                 else:
