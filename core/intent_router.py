@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,19 @@ import yaml
 
 from core.embedding_utils import embed_texts
 from core.logging_setup import get_logger
+
+_CODE_FENCE_RE = re.compile(r"```[\s\S]*?```")
+_CODE_FILE_RE = re.compile(
+    r"\.(?:py|js|ts|java|cpp|c|h|go|rs|rb|php|swift|kt|sql|sh|yml|yaml|json)\b",
+    re.IGNORECASE,
+)
+_CODE_HINT_RE = re.compile(
+    r"(?:\b(?:traceback|stack\s*trace|exception|error|bug|api|sdk|regex)\b"
+    r"|코드|코딩|프로그래밍|디버깅|함수|클래스|변수|컴파일|빌드"
+    r"|에러|오류|알고리즘|파이썬|자바|자바스크립트|타입스크립트"
+    r"|도커|깃|sql|정규식)",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -153,26 +167,45 @@ class IntentRouter:
         try:
             query_vec = embed_texts(self._encoder, [text], normalize=True)[0]
 
-            best_route: _RouteDefinition | None = None
-            best_score = -1.0
-
+            scored_routes: list[tuple[_RouteDefinition, float]] = []
             for route in self._routes:
                 # 각 라우트의 모든 예시와 유사도 계산, 최대값 사용
                 similarities = route.embeddings @ query_vec
                 max_sim = float(np.max(similarities))
-                if max_sim > best_score:
-                    best_score = max_sim
-                    best_route = route
+                scored_routes.append((route, max_sim))
 
-            if best_route is None or best_score < self._min_confidence:
-                return None
+            scored_routes.sort(key=lambda item: item[1], reverse=True)
+            for route, score in scored_routes:
+                if score < self._min_confidence:
+                    break
+                if route.name == "code" and not self._looks_like_code_query(text):
+                    # 코드 신호 없는 질의를 code intent로 보내는 오탐을 방지한다.
+                    self._logger.info(
+                        "intent_code_guard_rejected",
+                        score=round(score, 4),
+                    )
+                    continue
 
-            return RouteResult(
-                intent=best_route.name,
-                confidence=best_score,
-                context_strategy=best_route.strategy,
-            )
+                return RouteResult(
+                    intent=route.name,
+                    confidence=score,
+                    context_strategy=route.strategy,
+                )
+            return None
 
         except Exception as exc:
             self._logger.warning("intent_classify_failed", error=str(exc))
             return None
+
+    @staticmethod
+    def _looks_like_code_query(text: str) -> bool:
+        normalized = text.strip()
+        if not normalized:
+            return False
+        if _CODE_FENCE_RE.search(normalized):
+            return True
+        if _CODE_FILE_RE.search(normalized):
+            return True
+        if _CODE_HINT_RE.search(normalized):
+            return True
+        return False

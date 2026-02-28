@@ -25,6 +25,9 @@ routes:
       - "HTTP 상태 코드 설명해줘"
       - "리스트와 튜플의 차이"
       - "도커가 뭐야?"
+      - "수학과 커리큘럼 알려줘"
+      - "대학 전공 커리큘럼 알려줘"
+      - "공부 계획 알려줘"
     strategy:
       max_history: 5
       include_dicl: false
