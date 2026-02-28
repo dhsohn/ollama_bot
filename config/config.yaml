@@ -152,7 +152,6 @@ model_routing:
 
 rag:
   enabled: true
-  kb_dir: "/app/orca_runs"
   kb_dirs:
     - "/app/orca_runs"
     - "/app/orca_outputs"

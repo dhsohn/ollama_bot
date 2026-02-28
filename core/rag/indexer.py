@@ -99,18 +99,18 @@ class RAGIndexer:
                 return True
         return False
 
-    async def index_corpus(self, kb_dir: str | list[str]) -> dict[str, Any]:
+    async def index_corpus(self, kb_dirs: str | list[str]) -> dict[str, Any]:
         """코퍼스를 인덱싱한다. 증분 지원.
 
         Args:
-            kb_dir:
+            kb_dirs:
                 단일 경로(str) 또는 다중 경로(list[str]).
                 다중 경로일 경우 합집합 기준으로 인덱싱/정리를 수행한다.
         """
         assert self._db is not None
         t0 = time.monotonic()
 
-        requested_dirs = [kb_dir] if isinstance(kb_dir, str) else list(kb_dir)
+        requested_dirs = [kb_dirs] if isinstance(kb_dirs, str) else list(kb_dirs)
         seen_dirs: set[str] = set()
         kb_dirs: list[str] = []
         for item in requested_dirs:
@@ -124,7 +124,7 @@ class RAGIndexer:
             kb_dirs.append(path_text)
 
         if not kb_dirs:
-            self._logger.warning("kb_dir_not_found", path=kb_dir)
+            self._logger.warning("kb_path_not_found", path=kb_dirs)
             return {"indexed": 0, "skipped": 0, "removed": 0, "total_chunks": self.chunk_count}
 
         # 1) 지원 확장자 파일 목록
@@ -133,7 +133,7 @@ class RAGIndexer:
         for root in kb_dirs:
             kb_path = Path(root)
             if not kb_path.exists():
-                self._logger.warning("kb_dir_not_found", path=root)
+                self._logger.warning("kb_path_not_found", path=root)
                 continue
             root_text = self._normalize_path(str(kb_path))
             active_roots.append(root_text)

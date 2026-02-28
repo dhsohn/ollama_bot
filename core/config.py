@@ -329,8 +329,7 @@ class RAGConfig(BaseModel):
     """RAG 파이프라인 설정."""
 
     enabled: bool = True
-    kb_dir: str = "./kb"
-    kb_dirs: list[str] = Field(default_factory=list)
+    kb_dirs: list[str] = Field(default_factory=lambda: ["./kb"])
     index_dir: str = ""
     chunk_min_tokens: int = 500
     chunk_max_tokens: int = 1200

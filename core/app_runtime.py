@@ -485,27 +485,27 @@ async def _build_runtime(
 
                 # 시작 시 인덱싱
                 configured_kb_dirs = list(config.rag.kb_dirs)
-                if not configured_kb_dirs:
-                    configured_kb_dirs = [config.rag.kb_dir]
                 # 중복/빈 경로 제거 (순서 유지)
                 seen_dirs: set[str] = set()
-                kb_dirs: list[str] = []
-                for kb_dir in configured_kb_dirs:
-                    path_text = str(kb_dir).strip()
+                corpus_roots: list[str] = []
+                for root_dir in configured_kb_dirs:
+                    path_text = str(root_dir).strip()
                     if not path_text or path_text in seen_dirs:
                         continue
                     seen_dirs.add(path_text)
-                    kb_dirs.append(path_text)
+                    corpus_roots.append(path_text)
 
                 kb_dirs_to_index: list[str] = []
-                for kb_dir in kb_dirs:
-                    kb_path = Path(kb_dir)
+                for root_dir in corpus_roots:
+                    kb_path = Path(root_dir)
                     if not kb_path.exists():
-                        logger.warning("rag_kb_dir_not_found", path=kb_dir)
+                        logger.warning("rag_kb_path_not_found", path=root_dir)
                         continue
-                    kb_dirs_to_index.append(kb_dir)
+                    kb_dirs_to_index.append(root_dir)
                 if kb_dirs_to_index:
                     await indexer.index_corpus(kb_dirs_to_index)
+                else:
+                    logger.warning("rag_kb_dirs_empty_or_missing")
 
                 retriever = RAGRetriever(
                     indexer, retrieval_llm, config.model_registry.embedding_model,

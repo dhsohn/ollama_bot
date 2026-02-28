@@ -25,7 +25,7 @@ from core.rag.types import ChunkMetadata, RAGResult, RAGTrace, RetrievedItem, Ch
 def rag_config():
     return RAGConfig(
         enabled=True,
-        kb_dir="./test_kb",
+        kb_dirs=["./test_kb"],
         chunk_min_tokens=10,
         chunk_max_tokens=100,
         chunk_overlap_ratio=0.1,
@@ -150,12 +150,12 @@ class TestRAGIndexer:
             await indexer.initialize(db_path)
 
             # 테스트 kb 디렉토리 생성
-            kb_dir = Path(tmpdir) / "kb"
-            kb_dir.mkdir()
-            (kb_dir / "test.txt").write_text("Hello world test content " * 20, encoding="utf-8")
-            (kb_dir / "test.md").write_text("# Title\n\nSome markdown content\n", encoding="utf-8")
+            corpus_dir = Path(tmpdir) / "kb"
+            corpus_dir.mkdir()
+            (corpus_dir / "test.txt").write_text("Hello world test content " * 20, encoding="utf-8")
+            (corpus_dir / "test.md").write_text("# Title\n\nSome markdown content\n", encoding="utf-8")
 
-            result = await indexer.index_corpus(str(kb_dir))
+            result = await indexer.index_corpus(str(corpus_dir))
             assert result["indexed"] >= 1
             assert indexer.chunk_count > 0
 
@@ -168,11 +168,11 @@ class TestRAGIndexer:
             db_path = str(Path(tmpdir) / "test.db")
             await indexer.initialize(db_path)
 
-            kb_dir = Path(tmpdir) / "kb"
-            kb_dir.mkdir()
-            (kb_dir / "test.txt").write_text("Hello world " * 50, encoding="utf-8")
+            corpus_dir = Path(tmpdir) / "kb"
+            corpus_dir.mkdir()
+            (corpus_dir / "test.txt").write_text("Hello world " * 50, encoding="utf-8")
 
-            await indexer.index_corpus(str(kb_dir))
+            await indexer.index_corpus(str(corpus_dir))
 
             query_emb = np.random.randn(10).astype(np.float32)
             results = await indexer.search(query_emb, k=3)
@@ -188,15 +188,15 @@ class TestRAGIndexer:
             db_path = str(Path(tmpdir) / "test.db")
             await indexer.initialize(db_path)
 
-            kb_dir = Path(tmpdir) / "kb"
-            kb_dir.mkdir()
-            (kb_dir / "test.txt").write_text("Initial content " * 20, encoding="utf-8")
+            corpus_dir = Path(tmpdir) / "kb"
+            corpus_dir.mkdir()
+            (corpus_dir / "test.txt").write_text("Initial content " * 20, encoding="utf-8")
 
-            r1 = await indexer.index_corpus(str(kb_dir))
+            r1 = await indexer.index_corpus(str(corpus_dir))
             assert r1["indexed"] >= 1
 
             # 변경 없이 재인덱싱
-            r2 = await indexer.index_corpus(str(kb_dir))
+            r2 = await indexer.index_corpus(str(corpus_dir))
             assert r2["indexed"] == 0
             assert r2["skipped"] >= 1
 
