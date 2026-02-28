@@ -448,6 +448,7 @@ class TestHandleMessage:
 
         message = MagicMock()
         message.text = "심층 분석해줘"
+        message.photo = []
         message.reply_text = AsyncMock(return_value=sent_message)
 
         update = MagicMock()
@@ -465,7 +466,7 @@ class TestHandleMessage:
         with patch("core.telegram_handler.stream_and_render", new=fake_stream_and_render):
             await handler._handle_message(update, MagicMock())
 
-        assert captured["first_chunk_timeout_seconds"] == 3600.0
+        assert captured["first_chunk_timeout_seconds"] == 600.0
         assert captured["chunk_timeout_seconds"] == 60.0
         assert captured["max_stream_seconds"] == 3600.0
 
@@ -522,7 +523,7 @@ class TestHandleMessage:
         with patch("core.telegram_handler.stream_and_render", new=fake_stream_and_render):
             await handler._handle_message(update, MagicMock())
 
-        assert captured["first_chunk_timeout_seconds"] == 3600.0
+        assert captured["first_chunk_timeout_seconds"] == 600.0
         assert captured["chunk_timeout_seconds"] == 60.0
         assert captured["max_stream_seconds"] == 3600.0
 
