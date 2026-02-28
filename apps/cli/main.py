@@ -79,8 +79,9 @@ async def _init_components():
         indexer = RAGIndexer(config.rag, llm, config.model_registry.embedding_model)
         await indexer.initialize(str(Path(index_dir) / "rag.db"))
 
-        if Path(config.rag.kb_dir).exists():
-            await indexer.index_corpus(config.rag.kb_dir)
+        kb_dirs = [path for path in config.rag.kb_dirs if Path(path).exists()]
+        if kb_dirs:
+            await indexer.index_corpus(kb_dirs)
 
         retriever = RAGRetriever(indexer, llm, config.model_registry.embedding_model)
         reranker = RAGReranker(llm, config.model_registry.reranker_model, config.rag)

@@ -27,6 +27,47 @@
   - 경로 검증, 입력 정제
 - Docker 하드닝(읽기 전용 루트, no-new-privileges, cap_drop)
 
+## 동작 플로우차트
+
+### 대화 플로우
+
+```mermaid
+flowchart TD
+    U[Telegram 사용자 입력] --> H[Telegram Handler]
+    H --> S[Security 검사/Rate Limit]
+    S --> T0{Tier 0 스킬 트리거?}
+    T0 -->|Yes| SK[Skill 실행]
+    T0 -->|No| T1{Tier 1 Instant Rule?}
+    T1 -->|Yes| IR[즉시 응답 반환]
+    T1 -->|No| T2{Tier 2 Intent Router}
+    T2 --> T3{Tier 3 Semantic Cache Hit?}
+    T3 -->|Yes| CACHED[캐시 응답 반환]
+    T3 -->|No| T4[Tier 4 Full LLM]
+    T4 --> MR[Model Routing/RAG/Context Build]
+    MR --> LLM[LLM 추론]
+    SK --> OUT[응답 전송 + 메모리 저장]
+    IR --> OUT
+    CACHED --> OUT
+    LLM --> OUT
+```
+
+### 자동화 플로우
+
+```mermaid
+flowchart TD
+    A[APScheduler 자동화 트리거] --> AR[auto/*.yaml 로드]
+    AR --> ACT{Action Type}
+    ACT -->|prompt| P[Engine.process_prompt]
+    ACT -->|skill| K[Engine.execute_skill]
+    ACT -->|callable| C[등록 callable 실행]
+    P --> AM[action.model / action.model_role]
+    K --> AM
+    C --> CK[선택 kwargs 주입(model/model_role 등)]
+    AM --> LLM[LLM 호출]
+    CK --> LLM
+    LLM --> AO[텔레그램 전송/파일 저장]
+```
+
 ## 사전 요구사항
 
 - Python 3.11+
