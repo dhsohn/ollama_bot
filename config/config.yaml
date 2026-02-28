@@ -24,7 +24,7 @@ lemonade:
   host: "http://windows-host:11434"
   api_key: ""
   # 기본 응답 모델은 low_cost 인스턴스로 라우팅한다.
-  model: "Qwen3-VL-8B-Instruct-GGUF"
+  model: "GLM-4.7-Flash-GGUF"
   base_path: "/api/v1"
   timeout_seconds: 120
   model_load_timeout_seconds: 120
@@ -34,7 +34,7 @@ lemonade:
   instances:
     - name: "edge"
       host: "http://windows-host:21434"
-      model: "Qwen3-VL-8B-Instruct-GGUF"
+      model: "GLM-4.7-Flash-GGUF"
       route_roles: ["low_cost", "vision"]
       route_models: ["GLM-4.7-Flash-GGUF", "Qwen3-VL-8B-Instruct-GGUF"]
     - name: "reasoner"
