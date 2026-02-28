@@ -423,6 +423,51 @@ class TestReloadCommands:
 
 class TestHandleMessage:
     @pytest.mark.asyncio
+    async def test_handle_message_auto_routes_to_analyze_all_for_full_scan_phrase(
+        self,
+        app_config: AppSettings,
+        mock_engine: AsyncMock,
+        security: SecurityManager,
+    ) -> None:
+        handler = TelegramHandler(config=app_config, engine=mock_engine, security=security)
+        handler._engine.analyze_all_corpus = AsyncMock(return_value={
+            "answer": "자동 전환 결과",
+            "stats": {
+                "total_chunks": 10,
+                "total_segments": 3,
+                "mapped_segments": 2,
+                "evidence_lines": 4,
+                "duration_ms": 100.0,
+            },
+        })
+        handler._engine.process_message_stream = MagicMock()
+
+        chat = MagicMock()
+        chat.id = 111
+        chat.type = "private"
+        chat.send_action = AsyncMock()
+
+        sent_message = MagicMock()
+        sent_message.edit_text = AsyncMock()
+        sent_message.message_id = 42
+        sent_message.edit_reply_markup = AsyncMock()
+
+        message = MagicMock()
+        message.text = "전체문서 읽고 분석해줘"
+        message.reply_text = AsyncMock(return_value=sent_message)
+
+        update = MagicMock()
+        update.effective_chat = chat
+        update.effective_message = message
+
+        await handler._handle_message(update, MagicMock())
+
+        handler._engine.analyze_all_corpus.assert_awaited_once()
+        handler._engine.process_message_stream.assert_not_called()
+        edited_texts = [call.args[0] for call in sent_message.edit_text.await_args_list]
+        assert any("자동 전환" in text for text in edited_texts)
+
+    @pytest.mark.asyncio
     async def test_handle_message_uses_index_for_split_parts(self, telegram_handler: TelegramHandler) -> None:
         async def _stream():
             yield "result"

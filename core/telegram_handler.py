@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import inspect
+import re
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -61,6 +62,12 @@ _STREAM_LONG_TIMEOUT_INTENTS = {"complex", "code"}
 _STREAM_MAX_TOTAL_CHARS = 262_144
 _STREAM_MAX_REPEATED_CHUNKS = 30
 _STREAM_RENDER_WAIT_GRACE_SECONDS = 5.0
+
+# 전체 문서 분석 자동 우회 트리거(일반 채팅용)
+_FULL_SCAN_AUTO_TRIGGER_RE = re.compile(
+    r"(전체\s*문서|전수\s*분석|전체\s*읽고|모든\s*문서)",
+    re.IGNORECASE,
+)
 
 # 사용자 체감용 즉시 안내 메시지
 _THINKING_PLACEHOLDER_TEMPLATE = "{bot_name}이 답변을 위해 생각 중입니다..."
@@ -602,6 +609,37 @@ class TelegramHandler:
             await message.reply_text("사용법: /analyze_all [질문]")
             return
 
+        await self._run_analyze_all_flow(
+            chat=chat,
+            message=message,
+            query=query,
+            auto_triggered=False,
+        )
+
+    @staticmethod
+    def _should_auto_trigger_analyze_all(text: str) -> bool:
+        """일반 채팅에서 full-scan 분석으로 우회할 문구인지 검사한다."""
+        text_norm = text.strip()
+        if not text_norm:
+            return False
+        if text_norm.startswith("/"):
+            return False
+        return bool(_FULL_SCAN_AUTO_TRIGGER_RE.search(text_norm))
+
+    async def _run_analyze_all_flow(
+        self,
+        *,
+        chat: Any,
+        message: Any,
+        query: str,
+        auto_triggered: bool,
+    ) -> None:
+        """전체 문서 분석 실행 + 진행률 렌더링 공통 처리."""
+        query_text = query.strip()
+        if not query_text:
+            await message.reply_text("사용법: /analyze_all [질문]")
+            return
+
         await chat.send_action(ChatAction.TYPING)
         progress_message = await message.reply_text(
             "전체 문서 분석을 시작합니다.\n"
@@ -670,7 +708,7 @@ class TelegramHandler:
 
         try:
             result = await self._engine.analyze_all_corpus(
-                query,
+                query_text,
                 progress_callback=_on_progress,
             )
             answer = str(result.get("answer", "")).strip()
@@ -696,7 +734,10 @@ class TelegramHandler:
                 if duration_ms is not None:
                     stats_lines.append(f"- 소요 시간: {duration_ms}ms")
 
-            final_text = "📚 전체 문서 분석 결과\n\n" + answer
+            header = "📚 전체 문서 분석 결과"
+            if auto_triggered:
+                header += " (자동 전환)"
+            final_text = f"{header}\n\n{answer}"
             if stats_lines:
                 final_text += "\n\n[분석 통계]\n" + "\n".join(stats_lines)
 
@@ -769,6 +810,17 @@ class TelegramHandler:
         # 입력 정제
         text = self._security.sanitize_input(raw_text) if raw_text else ""
         if not text.strip() and not images:
+            return
+
+        # 전체 문서 분석 의도가 명확하면 일반 RAG(top-k) 대신 full-scan 경로로 우회한다.
+        if not images and self._should_auto_trigger_analyze_all(text):
+            self._logger.info("analyze_all_auto_triggered", chat_id=chat_id)
+            await self._run_analyze_all_flow(
+                chat=chat,
+                message=message,
+                query=text,
+                auto_triggered=True,
+            )
             return
 
         # 타이핑 표시
