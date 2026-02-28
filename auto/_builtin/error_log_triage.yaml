@@ -6,6 +6,7 @@ schedule: "0 */6 * * *"
 action:
   type: "callable"
   target: "error_log_triage"
+  model_role: "low_cost"
   parameters:
     hours_back: 6
     max_errors: 50

@@ -20,6 +20,7 @@ import json
 import re as _re
 import time
 import uuid
+from collections import Counter
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from pathlib import Path
@@ -128,6 +129,13 @@ _REASONING_INTENTS = {"complex", "code"}
 _REASONING_MODEL_ROLES = {"reasoning", "coding", "vision"}
 _RESPONSE_REVIEW_TIMEOUT_SECONDS = 300
 _RESPONSE_REVIEW_MAX_TOKENS = 1200
+_SUMMARY_CHUNK_TRIGGER_CHARS = 6000
+_SUMMARY_CHUNK_MAX_CHARS = 3200
+_SUMMARY_CHUNK_OVERLAP_CHARS = 320
+_SUMMARY_MAP_TIMEOUT_SECONDS = 180
+_SUMMARY_REDUCE_TIMEOUT_SECONDS = 600
+_SUMMARY_MAP_MAX_TOKENS = 384
+_SUMMARY_REDUCE_MAX_TOKENS = 1024
 
 
 def _strip_prompt_injection(text: str) -> str:
@@ -225,17 +233,14 @@ class Engine:
                         raise RuntimeError("routing_decision_invalid: missing skill")
                     self._logger.info("skill_triggered", chat_id=chat_id, skill=skill.name)
                     messages = await self._build_context(chat_id, text, skill=skill)
-                    target_model, _ = await self._prepare_target_model(
-                        model=model_override,
-                        role="skill",
-                        timeout=skill.timeout,
+                    content, usage = await self._run_skill_chat(
+                        skill=skill,
+                        messages=messages,
+                        model_override=model_override,
+                        chat_id=chat_id,
                     )
-                    chat_response = await self._llm_client.chat(
-                        messages=messages, model=target_model, timeout=skill.timeout,
-                    )
-                    content = sanitize_model_output(chat_response.content)
                     await self._persist_turn(chat_id, text, content, skill=skill)
-                    self._log_request(t0, chat_id, "skill", chat_response.usage, len(messages))
+                    self._log_request(t0, chat_id, "skill", usage, len(messages))
                     return content
 
                 if routing.tier == "instant":
@@ -340,68 +345,90 @@ class Engine:
                         raise RuntimeError("routing_decision_invalid: missing skill")
                     self._logger.info("skill_triggered_stream", chat_id=chat_id, skill=skill.name)
                     messages = await self._build_context(chat_id, text, skill=skill)
-                    target_model, _ = await self._prepare_target_model(
-                        model=model_override,
-                        role="skill",
-                        timeout=skill.timeout,
-                    )
                     full_response = ""
-                    stream_state = ChatStreamState()
                     usage = None
-                    skill_stream_error: Exception | None = None
-                    try:
-                        async for chunk in self._llm_client.chat_stream(
+                    if (
+                        not skill.streaming
+                        or self._should_use_chunked_summary(
+                            skill=skill,
+                            input_text=self._extract_skill_user_input(messages),
+                        )
+                    ):
+                        full_response, usage = await self._run_skill_chat(
+                            skill=skill,
                             messages=messages,
-                            model=target_model,
+                            model_override=model_override,
+                            chat_id=chat_id,
+                        )
+                        if full_response:
+                            yield full_response
+                    else:
+                        target_model, _ = await self._prepare_target_model(
+                            model=model_override,
+                            role=skill.model_role,
                             timeout=skill.timeout,
-                            stream_state=stream_state,
-                        ):
-                            full_response += chunk
-                            yield chunk
-                    except Exception as exc:
-                        skill_stream_error = exc
-                        if full_response.strip():
+                        )
+                        stream_state = ChatStreamState()
+                        skill_stream_error: Exception | None = None
+                        try:
+                            async for chunk in self._llm_client.chat_stream(
+                                messages=messages,
+                                model=target_model,
+                                temperature=skill.temperature,
+                                max_tokens=skill.max_tokens,
+                                timeout=skill.timeout,
+                                stream_state=stream_state,
+                            ):
+                                full_response += chunk
+                                yield chunk
+                        except Exception as exc:
+                            skill_stream_error = exc
+                            if full_response.strip():
+                                self._logger.warning(
+                                    "stream_interrupted_partial_response",
+                                    tier="skill",
+                                    chat_id=chat_id,
+                                    error=str(exc),
+                                )
+                            else:
+                                self._logger.warning(
+                                    "stream_failed_fallback_to_chat",
+                                    tier="skill",
+                                    chat_id=chat_id,
+                                    error=str(exc),
+                                )
+                                chat_response = await self._llm_client.chat(
+                                    messages=messages,
+                                    model=target_model,
+                                    temperature=skill.temperature,
+                                    max_tokens=skill.max_tokens,
+                                    timeout=skill.timeout,
+                                )
+                                full_response = sanitize_model_output(chat_response.content)
+                                usage = chat_response.usage
+                                if full_response:
+                                    yield full_response
+                        if usage is None:
+                            usage = stream_state.usage
+                        if not full_response.strip() and skill_stream_error is None:
                             self._logger.warning(
-                                "stream_interrupted_partial_response",
+                                "stream_empty_fallback_to_chat",
                                 tier="skill",
                                 chat_id=chat_id,
-                                error=str(exc),
-                            )
-                        else:
-                            self._logger.warning(
-                                "stream_failed_fallback_to_chat",
-                                tier="skill",
-                                chat_id=chat_id,
-                                error=str(exc),
                             )
                             chat_response = await self._llm_client.chat(
                                 messages=messages,
                                 model=target_model,
+                                temperature=skill.temperature,
+                                max_tokens=skill.max_tokens,
                                 timeout=skill.timeout,
                             )
                             full_response = sanitize_model_output(chat_response.content)
-                            usage = chat_response.usage
+                            usage = chat_response.usage or usage
                             if full_response:
                                 yield full_response
-                    if usage is None:
-                        usage = stream_state.usage
-                    if not full_response.strip() and skill_stream_error is None:
-                        self._logger.warning(
-                            "stream_empty_fallback_to_chat",
-                            tier="skill",
-                            chat_id=chat_id,
-                        )
-                        chat_response = await self._llm_client.chat(
-                            messages=messages,
-                            model=target_model,
-                            timeout=skill.timeout,
-                        )
-                        full_response = sanitize_model_output(chat_response.content)
-                        usage = chat_response.usage or usage
-                        if full_response:
-                            yield full_response
-                    if skill_stream_error is not None and not full_response.strip():
-                        raise skill_stream_error
+                        if skill_stream_error is not None and not full_response.strip():
+                            raise skill_stream_error
                     if not full_response.strip():
                         raise RuntimeError("empty_response_from_llm")
                     full_response = sanitize_model_output(full_response)
@@ -872,9 +899,18 @@ class Engine:
 
         hangul_count = len(_re.findall(r"[가-힣]", probe))
         latin_count = len(_re.findall(r"[A-Za-z]", probe))
+        han_count = len(_re.findall(r"[\u4E00-\u9FFF]", probe))
         query_hangul_count = len(_re.findall(r"[가-힣]", query))
 
         if hangul_count >= 8 and latin_count > hangul_count * 2:
+            return False
+        if query_hangul_count >= 4 and han_count >= 6 and hangul_count < max(12, han_count // 2):
+            return False
+        if (
+            query_hangul_count >= 4
+            and hangul_count < 20
+            and (latin_count + han_count) > hangul_count * 2
+        ):
             return False
         if query_hangul_count >= 4 and hangul_count < 8 and latin_count >= 60:
             return False
@@ -884,11 +920,23 @@ class Engine:
             return False
         return True
 
+    @staticmethod
+    def _has_excessive_token_repetition(response: str) -> bool:
+        probe = _CODE_BLOCK_RE.sub("", response).lower()
+        tokens = _re.findall(r"[a-z]{2,}|[가-힣]{2,}|[\u4e00-\u9fff]{1,}", probe)
+        if len(tokens) < 12:
+            return False
+        token, count = Counter(tokens).most_common(1)[0]
+        _ = token
+        return count >= 8 and (count / len(tokens)) >= 0.35
+
     def _is_response_suspicious(self, response: str) -> bool:
         stripped = sanitize_model_output(response).strip()
         if not stripped:
             return True
         if _LOW_QUALITY_HINT_RE.search(stripped):
+            return True
+        if self._has_excessive_token_repetition(stripped):
             return True
         if self._is_response_incomplete_for_cache(stripped):
             return True
@@ -920,6 +968,7 @@ class Engine:
             "role": "user",
             "content": (
                 "직전 답변이 품질이 낮았습니다. 내부 주석/번역 문구/영어 혼용을 제거하고, "
+                "중국어/영어 문장을 섞지 말고, "
                 "사용자 질문에 대해 한국어로 완결된 3~6문장 답변을 다시 작성하세요."
             ),
         })
@@ -1409,6 +1458,256 @@ class Engine:
         cache_ctx = self._build_cache_context(model_override, intent, chat_id)
         return await self._semantic_cache.put(text, response, context=cache_ctx)
 
+    @staticmethod
+    def _is_summarize_skill(skill: SkillDefinition) -> bool:
+        return skill.name.strip().lower() == "summarize"
+
+    @staticmethod
+    def _extract_skill_user_input(messages: list[dict[str, str]]) -> str:
+        for message in reversed(messages):
+            if message.get("role") == "user":
+                content = message.get("content", "")
+                return str(content).strip()
+        return ""
+
+    def _should_use_chunked_summary(
+        self,
+        *,
+        skill: SkillDefinition,
+        input_text: str,
+    ) -> bool:
+        if not self._is_summarize_skill(skill):
+            return False
+        return len(input_text.strip()) >= _SUMMARY_CHUNK_TRIGGER_CHARS
+
+    @staticmethod
+    def _split_text_for_summary(text: str) -> list[str]:
+        source = text.strip()
+        if not source:
+            return []
+        if len(source) <= _SUMMARY_CHUNK_MAX_CHARS:
+            return [source]
+
+        chunks: list[str] = []
+        cursor = 0
+        total_len = len(source)
+        min_split_offset = int(_SUMMARY_CHUNK_MAX_CHARS * 0.55)
+
+        while cursor < total_len:
+            max_end = min(total_len, cursor + _SUMMARY_CHUNK_MAX_CHARS)
+            end = max_end
+
+            if max_end < total_len:
+                window = source[cursor:max_end]
+                split_offset = max(
+                    window.rfind("\n\n", min_split_offset),
+                    window.rfind("\n", min_split_offset),
+                    window.rfind(". ", min_split_offset),
+                    window.rfind("! ", min_split_offset),
+                    window.rfind("? ", min_split_offset),
+                    window.rfind("。", min_split_offset),
+                    window.rfind("!", min_split_offset),
+                    window.rfind("?", min_split_offset),
+                )
+                if split_offset >= 0:
+                    end = cursor + split_offset + 1
+
+            chunk = source[cursor:end].strip()
+            if chunk:
+                chunks.append(chunk)
+            if end >= total_len:
+                break
+
+            next_cursor = max(0, end - _SUMMARY_CHUNK_OVERLAP_CHARS)
+            if next_cursor <= cursor:
+                next_cursor = end
+            cursor = next_cursor
+
+        return chunks
+
+    async def _run_skill_chat(
+        self,
+        *,
+        skill: SkillDefinition,
+        messages: list[dict[str, str]],
+        model_override: str | None,
+        model_role_override: str | None = None,
+        max_tokens_override: int | None = None,
+        temperature_override: float | None = None,
+        timeout_override: int | None = None,
+        chat_id: int | None = None,
+    ) -> tuple[str, Any]:
+        resolved_timeout = int(timeout_override or skill.timeout)
+        resolved_role = (model_role_override or skill.model_role).strip().lower()
+        resolved_max_tokens = (
+            max_tokens_override if max_tokens_override is not None else skill.max_tokens
+        )
+        resolved_temperature = (
+            temperature_override if temperature_override is not None else skill.temperature
+        )
+        user_input = self._extract_skill_user_input(messages)
+        if self._should_use_chunked_summary(skill=skill, input_text=user_input):
+            try:
+                return await self._run_chunked_summary_pipeline(
+                    skill=skill,
+                    messages=messages,
+                    model_override=model_override,
+                    timeout_override=resolved_timeout,
+                    chat_id=chat_id,
+                )
+            except Exception as exc:
+                self._logger.warning(
+                    "summarize_chunk_pipeline_failed",
+                    chat_id=chat_id,
+                    error=str(exc),
+                )
+
+        target_model, _ = await self._prepare_target_model(
+            model=model_override,
+            role=resolved_role,
+            timeout=resolved_timeout,
+        )
+        chat_response = await self._llm_client.chat(
+            messages=messages,
+            model=target_model,
+            temperature=resolved_temperature,
+            max_tokens=resolved_max_tokens,
+            timeout=resolved_timeout,
+        )
+        content = sanitize_model_output(chat_response.content)
+        return content, chat_response.usage
+
+    async def _run_chunked_summary_pipeline(
+        self,
+        *,
+        skill: SkillDefinition,
+        messages: list[dict[str, str]],
+        model_override: str | None,
+        timeout_override: int | None = None,
+        chat_id: int | None,
+    ) -> tuple[str, Any]:
+        user_input = self._extract_skill_user_input(messages)
+        chunks = self._split_text_for_summary(user_input)
+        if len(chunks) <= 1:
+            raise RuntimeError("chunked_summary_not_applicable")
+
+        base_timeout = int(timeout_override or skill.timeout)
+        map_timeout = max(base_timeout, _SUMMARY_MAP_TIMEOUT_SECONDS)
+        reduce_timeout = max(base_timeout, _SUMMARY_REDUCE_TIMEOUT_SECONDS)
+
+        if model_override:
+            map_model_candidate = model_override
+            map_role = "skill"
+            reduce_model_candidate = model_override
+            reduce_role = "skill"
+        else:
+            map_model_candidate = self._config.model_registry.low_cost_model
+            map_role = "low_cost"
+            reduce_model_candidate = self._config.model_registry.reasoning_model
+            reduce_role = "reasoning"
+
+        map_model, _ = await self._prepare_target_model(
+            model=map_model_candidate or None,
+            role=map_role,
+            timeout=map_timeout,
+        )
+        reduce_model, _ = await self._prepare_target_model(
+            model=reduce_model_candidate or None,
+            role=reduce_role,
+            timeout=reduce_timeout,
+        )
+
+        self._logger.info(
+            "summarize_chunk_pipeline_started",
+            chat_id=chat_id,
+            chunk_count=len(chunks),
+            map_model=map_model,
+            reduce_model=reduce_model,
+        )
+
+        map_system = self._inject_language_policy(
+            "당신은 긴 문서의 일부를 정확히 요약하는 전문가입니다.\n"
+            "입력 조각에서 핵심 사실만 추려 한국어로 정리하세요.\n"
+            "추측/중복/장황한 문장을 피하고 중국어·영어 혼용을 금지합니다."
+        )
+
+        chunk_summaries: list[str] = []
+        seen_summaries: set[str] = set()
+        for index, chunk_text in enumerate(chunks, start=1):
+            map_prompt = (
+                f"[문서 조각 {index}/{len(chunks)}]\n"
+                f"{chunk_text}\n\n"
+                "출력 규칙:\n"
+                "- 원문의 핵심 포인트만 3~5개 불릿으로 작성\n"
+                "- 원문에 없는 내용 추가 금지\n"
+                "- 중복 표현 금지\n"
+                "- 한국어만 사용"
+            )
+            map_response = await self._llm_client.chat(
+                messages=[
+                    {"role": "system", "content": map_system},
+                    {"role": "user", "content": map_prompt},
+                ],
+                model=map_model,
+                timeout=map_timeout,
+                max_tokens=_SUMMARY_MAP_MAX_TOKENS,
+            )
+            map_summary = sanitize_model_output(map_response.content).strip()
+            if not map_summary:
+                continue
+            normalized = map_summary.lower()
+            if normalized in seen_summaries:
+                continue
+            seen_summaries.add(normalized)
+            chunk_summaries.append(f"[조각 {index}]\n{map_summary}")
+
+        if not chunk_summaries:
+            raise RuntimeError("chunked_summary_empty_intermediate")
+
+        base_system = (
+            messages[0]["content"]
+            if messages and messages[0].get("role") == "system"
+            else self._inject_language_policy(skill.system_prompt)
+        )
+        reduce_system = (
+            f"{base_system}\n\n"
+            "[장문 요약 통합 규칙]\n"
+            "- 아래 중간 요약들을 하나의 최종 요약으로 통합하세요.\n"
+            "- 중복 항목을 제거하고 핵심 정보만 남기세요.\n"
+            "- 중국어/영어 문장을 섞지 말고 한국어로만 작성하세요."
+        )
+        reduce_prompt = (
+            "다음은 긴 원문을 분할 처리한 중간 요약입니다.\n"
+            "중복을 제거해 최종 요약을 작성하세요.\n"
+            "최종 출력 형식:\n"
+            "1) 핵심 포인트 3~7개 불릿\n"
+            "2) 필요하면 마지막에 한 줄 결론\n\n"
+            "[중간 요약]\n"
+            + "\n\n".join(chunk_summaries)
+        )
+        reduce_response = await self._llm_client.chat(
+            messages=[
+                {"role": "system", "content": reduce_system},
+                {"role": "user", "content": reduce_prompt},
+            ],
+            model=reduce_model,
+            timeout=reduce_timeout,
+            max_tokens=_SUMMARY_REDUCE_MAX_TOKENS,
+        )
+        final_summary = sanitize_model_output(reduce_response.content).strip()
+        if not final_summary:
+            raise RuntimeError("chunked_summary_empty_final")
+
+        self._logger.info(
+            "summarize_chunk_pipeline_completed",
+            chat_id=chat_id,
+            chunk_count=len(chunks),
+            intermediate_count=len(chunk_summaries),
+            map_model=map_model,
+            reduce_model=reduce_model,
+        )
+        return final_summary, reduce_response.usage
+
     async def _prepare_target_model(
         self,
         *,
@@ -1420,8 +1719,14 @@ class Engine:
 
         prepare_model을 구현한 클라이언트에서만 동작한다.
         """
-        target_model = model
-        target_role = role
+        target_role = role.strip().lower() if isinstance(role, str) and role.strip() else None
+        target_model = (
+            model.strip()
+            if isinstance(model, str) and model.strip()
+            else None
+        )
+        if target_model is None and target_role is not None:
+            target_model = self._resolve_model_for_role(target_role)
         prepare_model = getattr(self._llm_client, "prepare_model", None)
         if not callable(prepare_model):
             return target_model, target_role
@@ -1476,6 +1781,26 @@ class Engine:
                 error=str(fallback_exc),
             )
             return target_model, target_role
+
+    def _resolve_model_for_role(self, role: str | None) -> str | None:
+        """role 이름을 model_registry 모델명으로 해석한다."""
+        role_key = (role or "").strip().lower()
+        if not role_key:
+            return None
+        registry = self._config.model_registry
+        role_model_map = {
+            "low_cost": registry.low_cost_model,
+            "reasoning": registry.reasoning_model,
+            "coding": registry.coding_model,
+            "vision": registry.vision_model,
+            "embedding": registry.embedding_model,
+            "reranker": registry.reranker_model,
+        }
+        mapped = role_model_map.get(role_key)
+        if not mapped:
+            return None
+        normalized = mapped.strip()
+        return normalized or None
 
     def _resolve_prepare_fallback(self, role: str) -> tuple[str | None, str | None]:
         """모델 사전 로드 실패 시 fallback_chain을 조회한다."""
@@ -1767,6 +2092,11 @@ class Engine:
         skill_name: str,
         parameters: dict,
         chat_id: int | None = None,
+        model_override: str | None = None,
+        model_role_override: str | None = None,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        timeout: int | None = None,
     ) -> str:
         """프로그래밍 방식으로 스킬을 실행한다 (auto_scheduler용)."""
         skill = self._skills.get_skill(skill_name)
@@ -1780,11 +2110,16 @@ class Engine:
             {"role": "user", "content": input_text},
         ]
 
-        chat_response = await self._llm_client.chat(
+        content, _ = await self._run_skill_chat(
+            skill=skill,
             messages=messages,
-            timeout=skill.timeout,
+            model_override=model_override,
+            model_role_override=model_role_override,
+            max_tokens_override=max_tokens,
+            temperature_override=temperature,
+            timeout_override=timeout,
+            chat_id=chat_id,
         )
-        content = sanitize_model_output(chat_response.content)
 
         if chat_id:
             await self._memory.add_message(
@@ -1801,6 +2136,9 @@ class Engine:
         response_format: str | dict | None = None,
         max_tokens: int | None = None,
         temperature: float | None = None,
+        model_override: str | None = None,
+        model_role: str | None = None,
+        timeout: int | None = None,
     ) -> str:
         """단순 프롬프트를 LLM에 전달한다 (auto_scheduler의 prompt 타입용)."""
         system_prompt = self._inject_language_policy(self._system_prompt)
@@ -1808,8 +2146,22 @@ class Engine:
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt},
         ]
+        base_timeout = int(timeout or self._config.bot.response_timeout)
+        effective_timeout = self._resolve_inference_timeout(
+            base_timeout=base_timeout,
+            intent=None,
+            model_role=model_role,
+            has_images=False,
+        )
+        target_model, _ = await self._prepare_target_model(
+            model=model_override,
+            role=model_role,
+            timeout=effective_timeout,
+        )
         chat_response = await self._llm_client.chat(
             messages=messages,
+            model=target_model,
+            timeout=effective_timeout,
             response_format=response_format,
             max_tokens=max_tokens,
             temperature=temperature,

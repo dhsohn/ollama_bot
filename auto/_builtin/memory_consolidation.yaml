@@ -6,6 +6,7 @@ schedule: "0 4 * * sun"
 action:
   type: "callable"
   target: "memory_consolidation"
+  model_role: "reasoning"
   parameters:
     min_entries_per_category: 5
     max_llm_calls: 3

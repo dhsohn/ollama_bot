@@ -14,6 +14,7 @@ from core.logging_setup import get_logger
 from core.text_utils import sanitize_model_output
 
 _logger = get_logger("telegram_message_renderer")
+_MAX_RENDERED_DUPLICATE_CHUNKS = 0
 
 
 @dataclass
@@ -138,6 +139,9 @@ async def stream_and_render(
             if max_repeated_chunks > 0 and repeated_chunk_count >= max_repeated_chunks:
                 stop_reason = "repeated_chunks"
                 break
+            # 동일 청크 반복은 일부만 누적해 과도한 반복 출력을 완화한다.
+            if repeated_chunk_count > _MAX_RENDERED_DUPLICATE_CHUNKS:
+                continue
         else:
             last_chunk = chunk
             repeated_chunk_count = 0

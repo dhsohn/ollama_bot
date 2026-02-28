@@ -381,6 +381,7 @@ class TestRAGContextBuilder:
         assert "[참고 문서]" in suffix
         assert "test context" in suffix
         assert "[#번호]" in suffix
+        assert "최종 답변 설명은 한국어로 작성" in suffix
 
 
 class TestRAGPipeline:

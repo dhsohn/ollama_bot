@@ -25,11 +25,53 @@ def build_daily_summary_callable(
     allowed_users: list[int],
     logger: Any,
 ):
+    def _fallback_summary_from_messages(
+        messages: list[dict],
+        *,
+        max_snippets: int = 3,
+        max_snippet_chars: int = 80,
+    ) -> str:
+        """LLM 구조화 응답이 깨졌을 때 사용할 안전한 텍스트 요약."""
+        user_messages = [
+            m["content"].strip()
+            for m in messages
+            if m.get("role") == "user" and isinstance(m.get("content"), str)
+            and m["content"].strip()
+        ]
+        assistant_messages = [
+            m for m in messages
+            if m.get("role") == "assistant" and isinstance(m.get("content"), str)
+        ]
+
+        lines = [
+            "1) 핵심 주제",
+            "   - 모델 응답 형식 오류로 구조화 요약 생성에 실패했습니다.",
+            "2) 대화 통계",
+            (
+                f"   - 사용자 메시지 {len(user_messages)}개 / "
+                f"봇 메시지 {len(assistant_messages)}개"
+            ),
+            "3) 최근 사용자 발화",
+        ]
+
+        if user_messages:
+            for snippet in user_messages[-max_snippets:]:
+                lines.append(f"   - {truncate(snippet, max_snippet_chars)}")
+        else:
+            lines.append("   - (사용자 발화 없음)")
+
+        lines.append("4) 특이사항: 원본 응답은 형식 오류로 제외됨")
+        return "\n".join(lines)
+
     async def daily_summary(
         days_ago: int = 1,
         timezone_name: str = "UTC",
         max_messages_per_user: int = 200,
         max_chars_per_message: int = 500,
+        model: str | None = None,
+        model_role: str | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
     ) -> str:
         """어제(기본) 대화 기록을 조회해 일일 요약을 생성한다."""
         if days_ago < 0:
@@ -78,8 +120,10 @@ def build_daily_summary_callable(
                 prompt=prompt,
                 chat_id=user_id,
                 response_format=DAILY_SUMMARY_SCHEMA,
-                max_tokens=512,
-                temperature=0.5,
+                max_tokens=max_tokens if max_tokens is not None else 512,
+                temperature=temperature if temperature is not None else 0.5,
+                model_override=model,
+                model_role=model_role,
             )
 
             try:
@@ -90,7 +134,7 @@ def build_daily_summary_callable(
                     chat_id=user_id,
                     response_preview=raw[:200],
                 )
-                summary = raw
+                summary = _fallback_summary_from_messages(messages)
             else:
                 if not isinstance(data, dict):
                     logger.warning(
@@ -98,7 +142,7 @@ def build_daily_summary_callable(
                         chat_id=user_id,
                         got_type=type(data).__name__,
                     )
-                    summary = raw
+                    summary = _fallback_summary_from_messages(messages)
                 else:
                     topics = data.get("topics")
                     decisions = data.get("decisions")
@@ -122,7 +166,7 @@ def build_daily_summary_callable(
                             todos_type=type(todos).__name__,
                             notes_type=type(notes).__name__,
                         )
-                        summary = raw
+                        summary = _fallback_summary_from_messages(messages)
                     else:
                         lines: list[str] = []
                         if topics:
@@ -174,6 +218,10 @@ def build_extract_preferences_callable(
         timezone_name: str = "UTC",
         max_messages_per_user: int = 300,
         max_chars_per_message: int = 500,
+        model: str | None = None,
+        model_role: str | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
     ) -> str:
         """대화에서 사용자 선호도/고정 정보를 추출하여 장기 메모리에 저장한다."""
         tz = safe_timezone(timezone_name, logger)
@@ -216,8 +264,10 @@ def build_extract_preferences_callable(
                 prompt=prompt,
                 chat_id=user_id,
                 response_format=PREFERENCES_SCHEMA,
-                max_tokens=512,
-                temperature=0.3,
+                max_tokens=max_tokens if max_tokens is not None else 512,
+                temperature=temperature if temperature is not None else 0.3,
+                model_override=model,
+                model_role=model_role,
             )
             items = parse_json_array(response)
 

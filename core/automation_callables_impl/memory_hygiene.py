@@ -26,6 +26,10 @@ def build_memory_hygiene_callable(
     async def memory_hygiene(
         stale_days: int = 90,
         max_llm_calls: int = 3,
+        model: str | None = None,
+        model_role: str | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
     ) -> str:
         """메모리 품질을 점검하고 정리한다."""
         if stale_days < 1:
@@ -89,8 +93,10 @@ def build_memory_hygiene_callable(
                     raw = await engine.process_prompt(
                         prompt=prompt,
                         response_format=MEMORY_HYGIENE_SCHEMA,
-                        max_tokens=512,
-                        temperature=0.2,
+                        max_tokens=max_tokens if max_tokens is not None else 512,
+                        temperature=temperature if temperature is not None else 0.2,
+                        model_override=model,
+                        model_role=model_role,
                     )
                     llm_calls_remaining -= 1
                     items = parse_json_array(raw)
@@ -168,8 +174,10 @@ def build_memory_hygiene_callable(
                     raw = await engine.process_prompt(
                         prompt=prompt,
                         response_format=STALE_EVALUATION_SCHEMA,
-                        max_tokens=512,
-                        temperature=0.2,
+                        max_tokens=max_tokens if max_tokens is not None else 512,
+                        temperature=temperature if temperature is not None else 0.2,
+                        model_override=model,
+                        model_role=model_role,
                     )
                     llm_calls_remaining -= 1
                     items = parse_json_array(raw)

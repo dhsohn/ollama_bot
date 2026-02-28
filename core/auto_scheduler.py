@@ -37,6 +37,36 @@ class AutoAction(BaseModel):
     type: ActionType
     target: str
     parameters: dict = Field(default_factory=dict)
+    model: str | None = None
+    model_role: str | None = None
+    temperature: float | None = None
+    max_tokens: int | None = None
+
+    @field_validator("model", "model_role")
+    @classmethod
+    def validate_optional_text_fields(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        return stripped or None
+
+    @field_validator("temperature")
+    @classmethod
+    def validate_temperature(cls, value: float | None) -> float | None:
+        if value is None:
+            return None
+        if not 0.0 <= value <= 2.0:
+            raise ValueError("temperature must be between 0.0 and 2.0")
+        return value
+
+    @field_validator("max_tokens")
+    @classmethod
+    def validate_max_tokens(cls, value: int | None) -> int | None:
+        if value is None:
+            return None
+        if value < 1:
+            raise ValueError("max_tokens must be >= 1")
+        return value
 
 
 class AutoOutput(BaseModel):
@@ -84,6 +114,11 @@ class EngineInterface(Protocol):
         skill_name: str,
         parameters: dict,
         chat_id: int | None = None,
+        model_override: str | None = None,
+        model_role_override: str | None = None,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        timeout: int | None = None,
     ) -> str: ...
 
     async def process_prompt(
@@ -93,6 +128,9 @@ class EngineInterface(Protocol):
         response_format: str | dict | None = None,
         max_tokens: int | None = None,
         temperature: float | None = None,
+        model_override: str | None = None,
+        model_role: str | None = None,
+        timeout: int | None = None,
     ) -> str: ...
 
 
@@ -297,11 +335,11 @@ class AutoScheduler:
             misfire_grace_time=300,
         )
 
-    async def _execute_automation(self, auto_name: str) -> None:
+    async def _execute_automation(self, auto_name: str) -> bool:
         """자동화 작업을 실행한다. 재시도 로직 포함."""
         auto = self._automations.get(auto_name)
         if not auto or not auto.enabled:
-            return
+            return False
 
         self._logger.info("automation_executing", name=auto_name)
 
@@ -323,7 +361,7 @@ class AutoScheduler:
                     "automation_attempt_failed",
                     name=auto_name,
                     attempt=attempt + 1,
-                    error=str(exc),
+                    error=self._format_exception(exc),
                 )
                 if attempt < auto.retry.max_attempts - 1:
                     await asyncio.sleep(auto.retry.delay_seconds)
@@ -334,12 +372,15 @@ class AutoScheduler:
                 await self._deliver_output(auto, result)
             else:
                 self._logger.info("automation_completed_no_output", name=auto_name)
+            return True
         else:
             self._logger.error(
                 "automation_failed",
                 name=auto_name,
-                error=str(last_error),
+                error=self._format_exception(last_error),
             )
+            await self._deliver_failure_notice(auto, last_error)
+            return False
 
     async def _run_action(self, auto: AutoDefinition) -> str:
         """액션 타입에 따라 적절한 처리를 수행한다."""
@@ -356,16 +397,44 @@ class AutoScheduler:
         if self._engine is None:
             raise RuntimeError("Engine not set")
         action = auto.action
+        model_override, model_role = self._resolve_action_model(action)
         return await self._engine.execute_skill(
             skill_name=action.target,
             parameters=action.parameters,
+            model_override=model_override,
+            model_role_override=model_role,
+            max_tokens=action.max_tokens,
+            temperature=action.temperature,
+            timeout=auto.timeout,
         )
 
     async def _run_prompt_action(self, auto: AutoDefinition) -> str:
         if self._engine is None:
             raise RuntimeError("Engine not set")
         action = auto.action
-        return await self._engine.process_prompt(prompt=action.target)
+        model_override, model_role = self._resolve_action_model(action)
+        response_format = action.parameters.get("response_format")
+        chat_id = action.parameters.get("chat_id")
+        max_tokens = (
+            action.max_tokens
+            if action.max_tokens is not None
+            else action.parameters.get("max_tokens")
+        )
+        temperature = (
+            action.temperature
+            if action.temperature is not None
+            else action.parameters.get("temperature")
+        )
+        return await self._engine.process_prompt(
+            prompt=action.target,
+            chat_id=chat_id if isinstance(chat_id, int) else None,
+            response_format=response_format,
+            max_tokens=max_tokens if isinstance(max_tokens, int) else None,
+            temperature=temperature if isinstance(temperature, (int, float)) else None,
+            model_override=model_override,
+            model_role=model_role,
+            timeout=auto.timeout,
+        )
 
     async def _run_callable_action(self, auto: AutoDefinition) -> str:
         action = auto.action
@@ -375,10 +444,68 @@ class AutoScheduler:
                 f"Callable '{action.target}' not registered. "
                 f"Available: {list(self._callables.keys())}"
             )
-        output = func(**action.parameters)
+        call_kwargs = dict(action.parameters)
+        model_override, model_role = self._resolve_action_model(action)
+        optional_kwargs: dict[str, Any] = {}
+        if model_override is not None:
+            optional_kwargs["model"] = model_override
+        if model_role is not None:
+            optional_kwargs["model_role"] = model_role
+        if action.temperature is not None:
+            optional_kwargs["temperature"] = action.temperature
+        if action.max_tokens is not None:
+            optional_kwargs["max_tokens"] = action.max_tokens
+
+        self._inject_callable_kwargs(func, call_kwargs, optional_kwargs)
+
+        output = func(**call_kwargs)
         if inspect.isawaitable(output):
             output = await output
         return "" if output is None else str(output)
+
+    def _resolve_action_model(self, action: AutoAction) -> tuple[str | None, str | None]:
+        """자동화 액션에서 사용할 모델/역할을 결정한다.
+
+        기본값은 global default model이 아니라 low_cost role이다.
+        """
+        model_override = action.model
+        model_role = action.model_role
+        if model_override is not None or model_role is not None:
+            return model_override, model_role
+        fallback_model = self._config.model_registry.low_cost_model.strip() or None
+        return fallback_model, "low_cost"
+
+    @staticmethod
+    def _inject_callable_kwargs(
+        func: Callable[..., Any],
+        call_kwargs: dict[str, Any],
+        optional_kwargs: dict[str, Any],
+    ) -> None:
+        """callable 시그니처를 확인해 지원되는 선택 kwargs만 주입한다."""
+        if not optional_kwargs:
+            return
+        try:
+            signature = inspect.signature(func)
+        except (TypeError, ValueError):
+            return
+
+        accepts_var_kw = any(
+            param.kind == inspect.Parameter.VAR_KEYWORD
+            for param in signature.parameters.values()
+        )
+        accepted_names = {
+            name
+            for name, param in signature.parameters.items()
+            if param.kind in (
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                inspect.Parameter.KEYWORD_ONLY,
+            )
+        }
+        for key, value in optional_kwargs.items():
+            if key in call_kwargs:
+                continue
+            if accepts_var_kw or key in accepted_names:
+                call_kwargs[key] = value
 
     def _run_command_action(self, auto: AutoDefinition) -> str:
         # v0.1에서는 보안상 시스템 명령 실행 비활성화
@@ -435,6 +562,43 @@ class AutoScheduler:
                     error=str(exc),
                 )
 
+    async def _deliver_failure_notice(
+        self,
+        auto: AutoDefinition,
+        error: Exception | None,
+    ) -> None:
+        """자동화 실패 알림을 텔레그램으로 전송한다."""
+        if self._telegram is None:
+            return
+
+        now = datetime.now(self._timezone).strftime("%Y-%m-%d %H:%M:%S %Z")
+        message = (
+            f"⚠️ 자동화 실패: {auto.name}\n"
+            f"- 시각: {now}\n"
+            f"- 원인: {self._format_exception(error)}\n"
+            f"- 재시도: {auto.retry.max_attempts}회 모두 실패"
+        )
+
+        for user_id in self._config.security.allowed_users:
+            try:
+                await self._telegram.send_message(user_id, message)
+            except Exception as exc:
+                self._logger.error(
+                    "auto_failure_notice_send_failed",
+                    user_id=user_id,
+                    error=self._format_exception(exc),
+                )
+
+    @staticmethod
+    def _format_exception(exc: Exception | None) -> str:
+        """예외를 클래스명 포함 문자열로 정규화한다."""
+        if exc is None:
+            return "unknown"
+        message = str(exc).strip()
+        if message:
+            return f"{exc.__class__.__name__}: {message}"
+        return exc.__class__.__name__
+
     def start(self) -> None:
         """스케줄러를 시작한다."""
         if not self.dependencies_ready():
@@ -465,6 +629,8 @@ class AutoScheduler:
                 "schedule": auto.schedule,
                 "enabled": auto.enabled,
                 "action_type": auto.action.type,
+                "action_model": auto.action.model,
+                "action_model_role": auto.action.model_role,
                 "next_run": next_run,
             })
         return result
@@ -500,3 +666,10 @@ class AutoScheduler:
     async def reload_automations(self, *, strict: bool = False) -> int:
         """모든 작업을 제거하고 다시 로드한다."""
         return await self.load_automations(strict=strict)
+
+    async def run_automation_once(self, name: str) -> bool:
+        """지정한 자동화를 즉시 한 번 실행한다."""
+        auto = self._automations.get(name)
+        if auto is None or not auto.enabled:
+            return False
+        return await self._execute_automation(name)

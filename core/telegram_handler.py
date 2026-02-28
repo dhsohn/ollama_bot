@@ -49,10 +49,12 @@ _EDIT_CHAR_THRESHOLD = 100
 _TYPING_INTERVAL = 4.0
 
 # 스트리밍 안전 가드
-_STREAM_DEFAULT_FIRST_CHUNK_TIMEOUT_SECONDS = 45.0
+# 기본 첫 청크 대기 시간(120초)
+_STREAM_DEFAULT_FIRST_CHUNK_TIMEOUT_SECONDS = 120.0
 _STREAM_DEFAULT_CHUNK_TIMEOUT_SECONDS = 20.0
 _STREAM_DEFAULT_MAX_SECONDS_CAP = 300.0
-_STREAM_REASONING_FIRST_CHUNK_TIMEOUT_SECONDS = 3600.0
+# 추론/코딩/비전 첫 청크 대기 시간(10분)
+_STREAM_REASONING_FIRST_CHUNK_TIMEOUT_SECONDS = 600.0
 _STREAM_REASONING_CHUNK_TIMEOUT_SECONDS = 60.0
 _STREAM_REASONING_MAX_SECONDS_CAP = 3600.0
 _STREAM_LONG_TIMEOUT_INTENTS = {"complex", "code"}
@@ -60,14 +62,8 @@ _STREAM_MAX_TOTAL_CHARS = 262_144
 _STREAM_MAX_REPEATED_CHUNKS = 30
 _STREAM_RENDER_WAIT_GRACE_SECONDS = 5.0
 
-# 인텐트별 placeholder 메시지
-_INTENT_PLACEHOLDERS: dict[str | None, str] = {
-    "code": "코드를 분석하고 있습니다...",
-    "complex": "심층 분석 중입니다...",
-    "chitchat": "답변을 준비하고 있습니다...",
-    "simple_qa": "답변을 찾고 있습니다...",
-    None: "...",
-}
+# 사용자 체감용 즉시 안내 메시지
+_THINKING_PLACEHOLDER_TEMPLATE = "{bot_name}이 답변을 위해 생각 중입니다..."
 
 
 class _AutoEvaluatorLike(Protocol):
@@ -365,12 +361,16 @@ class TelegramHandler:
             await self._handle_auto_disable(update, name=args[1])
             return
 
+        if len(args) >= 2 and args[0] == "run":
+            await self._handle_auto_run(update, name=args[1])
+            return
+
         if args[0] == "reload":
             await self._handle_auto_reload(update)
             return
 
         await update.effective_message.reply_text(
-            "사용법: /auto [list|disable <이름>|reload]"
+            "사용법: /auto [list|disable <이름>|run <이름>|reload]"
         )
 
     async def _handle_auto_list(self, update: Update) -> None:
@@ -421,6 +421,30 @@ class TelegramHandler:
                 f"자동화 로드 실패: {exc}"
             )
 
+    async def _handle_auto_run(self, update: Update, name: str) -> None:
+        if self._scheduler is None:
+            await update.effective_message.reply_text("자동화 스케줄러가 초기화되지 않았습니다.")  # type: ignore[union-attr]
+            return
+
+        autos = {item["name"]: item for item in self._scheduler.list_automations()}
+        target = autos.get(name)
+        if target is None:
+            await update.effective_message.reply_text(f"'{name}' 자동화를 찾을 수 없습니다.")
+            return
+        if not bool(target.get("enabled", False)):
+            await update.effective_message.reply_text(f"'{name}' 자동화는 비활성화 상태입니다.")
+            return
+
+        ok = await self._scheduler.run_automation_once(name)
+        if ok:
+            await update.effective_message.reply_text(
+                f"'{name}' 자동화를 수동 실행했습니다."
+            )
+            return
+        await update.effective_message.reply_text(
+            f"'{name}' 자동화 실행에 실패했습니다. 로그를 확인하세요."
+        )
+
     @_auth_required
     @_global_slot_required
     async def _cmd_model(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -430,46 +454,23 @@ class TelegramHandler:
             await self._show_current_model(update)
             return
 
-        if args[0] == "list":
-            await self._show_available_models(update, chat_id)
-            return
-
         await self._change_model(update, chat_id, args[0])
 
     async def _show_current_model(self, update: Update) -> None:
         current = self._engine.get_current_model()
+        registry = self._config.model_registry
         await update.effective_message.reply_text(  # type: ignore[union-attr]
-            f"현재 모델: <code>{self._escape_html(current)}</code>\n\n"
-            "모델 변경: <code>/model &lt;모델명&gt;</code>\n"
-            "모델 목록: <code>/model list</code>",
+            "🤖 <b>모델 설정</b>\n\n"
+            f"현재 기본 응답 모델: <code>{self._escape_html(current)}</code>\n\n"
+            "<b>역할별 모델</b>\n"
+            f"- embedding: <code>{self._escape_html(registry.embedding_model)}</code>\n"
+            f"- reranker: <code>{self._escape_html(registry.reranker_model)}</code>\n"
+            f"- vision: <code>{self._escape_html(registry.vision_model)}</code>\n"
+            f"- low_cost: <code>{self._escape_html(registry.low_cost_model)}</code>\n"
+            f"- reasoning: <code>{self._escape_html(registry.reasoning_model)}</code>\n"
+            f"- coding: <code>{self._escape_html(registry.coding_model)}</code>\n\n"
+            "모델 변경: <code>/model &lt;모델명&gt;</code>",
             parse_mode=ParseMode.HTML,
-        )
-
-    async def _show_available_models(self, update: Update, chat_id: int) -> None:
-        try:
-            models = await self._engine.list_models()
-        except Exception as exc:
-            self._logger.error(
-                "model_list_failed",
-                chat_id=chat_id,
-                error=str(exc),
-            )
-            await update.effective_message.reply_text(  # type: ignore[union-attr]
-                "모델 목록을 가져오지 못했습니다. Ollama 상태를 확인해주세요."
-            )
-            return
-
-        if not models:
-            await update.effective_message.reply_text("설치된 모델이 없습니다.")  # type: ignore[union-attr]
-            return
-        lines = ["📦 <b>설치된 모델</b>\n"]
-        for model in models:
-            size_mb = model["size"] / (1024 * 1024) if model["size"] else 0
-            lines.append(
-                f"• <code>{self._escape_html(model['name'])}</code> ({size_mb:.0f}MB)"
-            )
-        await update.effective_message.reply_text(  # type: ignore[union-attr]
-            "\n".join(lines), parse_mode=ParseMode.HTML
         )
 
     async def _change_model(self, update: Update, chat_id: int, requested_model: str) -> None:
@@ -641,14 +642,19 @@ class TelegramHandler:
         render_timeout: float | None = None
 
         try:
-            # 인텐트 기반 placeholder
+            # 사용자가 즉시 진행 상태를 인지할 수 있도록 먼저 안내한다.
+            sent_message = await message.reply_text(
+                _THINKING_PLACEHOLDER_TEMPLATE.format(
+                    bot_name=self._config.bot.name,
+                )
+            )
+
+            # 인텐트 분류 결과는 timeout 정책 결정에만 사용한다.
             raw_intent = self._engine.classify_intent(text)
             if inspect.isawaitable(raw_intent):
                 intent = await raw_intent
             else:
                 intent = raw_intent
-            placeholder = _INTENT_PLACEHOLDERS.get(intent, _INTENT_PLACEHOLDERS[None])
-            sent_message = await message.reply_text(placeholder)
 
             intent_key = str(intent).strip().lower() if intent is not None else None
             if images or intent_key in _STREAM_LONG_TIMEOUT_INTENTS:

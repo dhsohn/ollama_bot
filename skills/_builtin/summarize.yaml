@@ -19,4 +19,5 @@ parameters:
     required: true
     description: "요약할 텍스트"
 timeout: 30
+streaming: false
 security_level: "safe"

@@ -137,6 +137,77 @@ class TestAutoScheduler:
         assert "*자동화:" not in send_text
 
     @pytest.mark.asyncio
+    async def test_prompt_action_uses_configured_action_model_role(
+        self,
+        scheduler: AutoScheduler,
+    ) -> None:
+        auto = AutoDefinition(
+            name="prompt_model_role",
+            description="prompt role routing",
+            schedule="* * * * *",
+            action=AutoAction(
+                type="prompt",
+                target="상태 점검",
+                model_role="reasoning",
+                temperature=0.1,
+                max_tokens=321,
+            ),
+        )
+
+        await scheduler._run_action(auto)
+
+        scheduler._engine.process_prompt.assert_awaited_once()  # type: ignore[attr-defined]
+        call_kwargs = scheduler._engine.process_prompt.await_args.kwargs  # type: ignore[attr-defined]
+        assert call_kwargs["model_role"] == "reasoning"
+        assert call_kwargs["temperature"] == 0.1
+        assert call_kwargs["max_tokens"] == 321
+
+    @pytest.mark.asyncio
+    async def test_callable_action_injects_model_kwargs_if_supported(
+        self,
+        scheduler: AutoScheduler,
+    ) -> None:
+        captured: dict[str, object] = {}
+
+        async def my_func(
+            greeting: str = "hello",
+            model: str | None = None,
+            model_role: str | None = None,
+            temperature: float | None = None,
+            max_tokens: int | None = None,
+        ) -> str:
+            captured["greeting"] = greeting
+            captured["model"] = model
+            captured["model_role"] = model_role
+            captured["temperature"] = temperature
+            captured["max_tokens"] = max_tokens
+            return "ok"
+
+        scheduler.register_callable("with_model_args", my_func)
+        auto = AutoDefinition(
+            name="callable_model_args",
+            description="callable kwargs injection",
+            schedule="* * * * *",
+            action=AutoAction(
+                type="callable",
+                target="with_model_args",
+                parameters={"greeting": "world"},
+                model="my-model",
+                model_role="low_cost",
+                temperature=0.4,
+                max_tokens=700,
+            ),
+        )
+
+        result = await scheduler._run_action(auto)
+        assert result == "ok"
+        assert captured["greeting"] == "world"
+        assert captured["model"] == "my-model"
+        assert captured["model_role"] == "low_cost"
+        assert captured["temperature"] == 0.4
+        assert captured["max_tokens"] == 700
+
+    @pytest.mark.asyncio
     async def test_command_action_is_disabled(self, scheduler: AutoScheduler) -> None:
         auto = AutoDefinition(
             name="cmd_test",
@@ -452,3 +523,63 @@ class TestAutoScheduler:
         # Asia/Seoul 기준이면 UTC 23:30은 다음날(2026-01-02)
         output_file = auto_dir / "reports" / "tz_20260102.txt"
         assert output_file.exists()
+
+    @pytest.mark.asyncio
+    async def test_failed_automation_sends_failure_notice(
+        self,
+        scheduler: AutoScheduler,
+        auto_dir: Path,
+    ) -> None:
+        scheduler._engine.process_prompt = AsyncMock(side_effect=TimeoutError())  # type: ignore[attr-defined]
+
+        _write_auto_yaml(
+            auto_dir / "custom" / "fail_auto.yaml",
+            """
+            name: "fail_auto"
+            description: "실패 알림 테스트"
+            enabled: true
+            schedule: "0 9 * * *"
+            action:
+              type: "prompt"
+              target: "실패 유도"
+            output:
+              send_to_telegram: true
+            retry:
+              max_attempts: 2
+              delay_seconds: 0
+            timeout: 1
+            """,
+        )
+
+        await scheduler.load_automations()
+        ok = await scheduler._execute_automation("fail_auto")
+
+        assert ok is False
+        assert scheduler._engine.process_prompt.await_count == 2  # type: ignore[attr-defined]
+        scheduler._telegram.send_message.assert_awaited_once()  # type: ignore[attr-defined]
+        send_text = scheduler._telegram.send_message.call_args[0][1]  # type: ignore[attr-defined]
+        assert "자동화 실패: fail_auto" in send_text
+        assert "TimeoutError" in send_text
+
+    @pytest.mark.asyncio
+    async def test_run_automation_once_handles_missing_and_disabled(
+        self,
+        scheduler: AutoScheduler,
+        auto_dir: Path,
+    ) -> None:
+        _write_auto_yaml(
+            auto_dir / "custom" / "disabled.yaml",
+            """
+            name: "disabled_auto"
+            description: "비활성 테스트"
+            enabled: false
+            schedule: "0 9 * * *"
+            action:
+              type: "prompt"
+              target: "실행 안됨"
+            """,
+        )
+        await scheduler.load_automations()
+
+        assert await scheduler.run_automation_once("not_found") is False
+        assert await scheduler.run_automation_once("disabled_auto") is False

@@ -6,6 +6,7 @@ schedule: "30 3 * * *"
 action:
   type: "callable"
   target: "memory_hygiene"
+  model_role: "reasoning"
   parameters:
     stale_days: 90
     max_llm_calls: 3

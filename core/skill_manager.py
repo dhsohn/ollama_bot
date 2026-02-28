@@ -42,6 +42,10 @@ class SkillDefinition(BaseModel):
     allowed_tools: list[str] = Field(default_factory=list)
     parameters: list[SkillParameter] = Field(default_factory=list)
     timeout: int = 30
+    streaming: bool = True
+    model_role: str = "skill"
+    temperature: float | None = None
+    max_tokens: int | None = None
     security_level: SecurityLevel = SecurityLevel.SAFE
 
     @field_validator("triggers")
@@ -50,6 +54,39 @@ class SkillDefinition(BaseModel):
         if not v:
             raise ValueError("At least one trigger is required")
         return v
+
+    @field_validator("timeout")
+    @classmethod
+    def validate_timeout_positive(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("timeout must be >= 1")
+        return value
+
+    @field_validator("model_role")
+    @classmethod
+    def validate_model_role(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if not normalized:
+            raise ValueError("model_role must not be empty")
+        return normalized
+
+    @field_validator("temperature")
+    @classmethod
+    def validate_temperature(cls, value: float | None) -> float | None:
+        if value is None:
+            return None
+        if not 0.0 <= value <= 2.0:
+            raise ValueError("temperature must be between 0.0 and 2.0")
+        return value
+
+    @field_validator("max_tokens")
+    @classmethod
+    def validate_max_tokens(cls, value: int | None) -> int | None:
+        if value is None:
+            return None
+        if value < 1:
+            raise ValueError("max_tokens must be >= 1")
+        return value
 
 
 class DuplicateSkillNameError(ValueError):

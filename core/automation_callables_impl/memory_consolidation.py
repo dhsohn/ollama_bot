@@ -21,6 +21,10 @@ def build_memory_consolidation_callable(
         min_entries_per_category: int = 5,
         max_llm_calls: int = 3,
         max_entries_per_merge: int = 8,
+        model: str | None = None,
+        model_role: str | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
     ) -> str:
         """같은 카테고리의 관련 메모리 항목을 LLM으로 통합하여 압축한다."""
         if min_entries_per_category < 2:
@@ -79,8 +83,10 @@ def build_memory_consolidation_callable(
                     raw = await engine.process_prompt(
                         prompt=prompt,
                         response_format=CONSOLIDATION_MERGE_SCHEMA,
-                        max_tokens=768,
-                        temperature=0.2,
+                        max_tokens=max_tokens if max_tokens is not None else 768,
+                        temperature=temperature if temperature is not None else 0.2,
+                        model_override=model,
+                        model_role=model_role,
                     )
                     llm_calls_remaining -= 1
                 except Exception as exc:

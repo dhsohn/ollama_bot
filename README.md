@@ -158,9 +158,9 @@ python -m apps.cli test
 | `/skills reload` | 스킬 strict 리로드 |
 | `/auto` 또는 `/auto list` | 자동화 목록 |
 | `/auto disable <name>` | 자동화 비활성화 |
+| `/auto run <name>` | 자동화 1회 수동 실행 |
 | `/auto reload` | 자동화 strict 리로드 |
-| `/model` | 현재 모델 확인 |
-| `/model list` | 모델 목록 조회 |
+| `/model` | 현재/역할별 모델 확인 |
 | `/model <name>` | 기본 모델 전환 |
 | `/memory` | 메모리 통계 |
 | `/memory clear` | 현재 채팅 대화 기록 삭제 |
@@ -212,6 +212,10 @@ parameters:
     required: true
     description: "입력"
 timeout: 30
+model_role: "skill"  # optional: skill|low_cost|reasoning|coding|vision
+temperature: 0.7     # optional
+max_tokens: 1024     # optional
+streaming: true      # optional
 security_level: "safe"
 ```
 
@@ -232,6 +236,7 @@ schedule: "0 8 * * *"
 action:
   type: "prompt"   # skill | prompt | callable | command
   target: "오늘의 핵심 이슈를 요약해줘"
+  model_role: "low_cost"  # 권장: low_cost | reasoning | coding | vision
   parameters: {}
 output:
   send_to_telegram: true
@@ -246,6 +251,7 @@ timeout: 120
 - `name` 중복 불가
 - `schedule`은 유효한 cron이어야 함
 - `/auto reload`는 strict 모드
+- 자동화 LLM 호출 모델은 `action.model` 또는 `action.model_role`로 설정하세요.
 - `command` 액션 타입은 현재 버전(v0.1)에서 보안상 비활성화되어 실제 시스템 명령을 실행하지 않습니다.
 - `save_to_file` 경로는 `DATA_DIR` 기준으로 검증됩니다(`{date}` 플레이스홀더 지원).
 

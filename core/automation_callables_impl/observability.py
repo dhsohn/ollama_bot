@@ -25,6 +25,10 @@ def build_error_log_triage_callable(
     async def error_log_triage(
         hours_back: int = 6,
         max_errors: int = 50,
+        model: str | None = None,
+        model_role: str | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
     ) -> str:
         """애플리케이션 로그에서 에러/경고를 분석하고 트리아지 리포트를 생성한다."""
         if hours_back <= 0:
@@ -69,8 +73,10 @@ def build_error_log_triage_callable(
         analysis_raw = await engine.process_prompt(
             prompt=prompt,
             response_format=TRIAGE_SCHEMA,
-            max_tokens=768,
-            temperature=0.3,
+            max_tokens=max_tokens if max_tokens is not None else 768,
+            temperature=temperature if temperature is not None else 0.3,
+            model_override=model,
+            model_role=model_role,
         )
 
         try:
@@ -133,8 +139,13 @@ def build_health_check_callable(
     async def health_check(
         disk_warn_pct: int = 85,
         error_hours_back: int = 1,
+        model: str | None = None,
+        model_role: str | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
     ) -> str:
         """시스템 상태를 점검한다. 이상 발견 시에만 보고서를 반환한다."""
+        _ = (model, model_role, temperature, max_tokens)
         if not (1 <= disk_warn_pct <= 99):
             raise ValueError("disk_warn_pct must be between 1 and 99")
         if error_hours_back <= 0:

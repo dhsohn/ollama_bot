@@ -6,6 +6,7 @@ schedule: "0 3 * * 0"
 action:
   type: "callable"
   target: "export_training_data"
+  model_role: "low_cost"
   parameters:
     min_preview_length: 20
 output:

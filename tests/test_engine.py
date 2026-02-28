@@ -150,6 +150,100 @@ class TestProcessMessage:
         assert "You are a summarizer." in system_msg[0]["content"]
 
     @pytest.mark.asyncio
+    async def test_skill_uses_custom_model_role_and_generation_params(
+        self,
+        engine: Engine,
+        mock_skills,
+        mock_ollama,
+    ) -> None:
+        skill = SkillDefinition(
+            name="code_review",
+            description="코드 리뷰",
+            triggers=["/review"],
+            system_prompt="You are a code reviewer.",
+            timeout=45,
+            model_role="coding",
+            temperature=0.2,
+            max_tokens=1536,
+        )
+        mock_skills.match_trigger.return_value = skill
+        mock_ollama.chat = AsyncMock(return_value=ChatResponse(content="리뷰 결과"))
+
+        result = await engine.process_message(111, "/review print('hi')")
+
+        assert result == "리뷰 결과"
+        mock_ollama.prepare_model.assert_awaited_once()
+        assert mock_ollama.prepare_model.await_args.kwargs.get("role") == "coding"
+        assert mock_ollama.prepare_model.await_args.kwargs.get("timeout_seconds") == 45
+        chat_kwargs = mock_ollama.chat.await_args.kwargs
+        assert chat_kwargs.get("temperature") == 0.2
+        assert chat_kwargs.get("max_tokens") == 1536
+        assert chat_kwargs.get("timeout") == 45
+
+    @pytest.mark.asyncio
+    async def test_summarize_long_input_uses_chunk_pipeline_models(
+        self,
+        engine: Engine,
+        app_settings: AppSettings,
+        mock_skills,
+        mock_ollama,
+    ) -> None:
+        skill = SkillDefinition(
+            name="summarize",
+            description="요약",
+            triggers=["/summarize"],
+            system_prompt="You are a summarizer.",
+            timeout=30,
+            streaming=False,
+        )
+        mock_skills.match_trigger.return_value = skill
+        engine._split_text_for_summary = MagicMock(return_value=["chunk 1", "chunk 2"])
+        mock_ollama.chat = AsyncMock(side_effect=[
+            ChatResponse(content="- 중간 요약 1"),
+            ChatResponse(content="- 중간 요약 2"),
+            ChatResponse(content="최종 요약"),
+        ])
+
+        result = await engine.process_message(111, "/summarize " + ("가" * 7000))
+
+        assert result == "최종 요약"
+        assert mock_ollama.chat.await_count == 3
+        models = [call.kwargs.get("model") for call in mock_ollama.chat.await_args_list]
+        assert models[:2] == [app_settings.model_registry.low_cost_model] * 2
+        assert models[2] == app_settings.model_registry.reasoning_model
+
+    @pytest.mark.asyncio
+    async def test_stream_summarize_long_input_uses_chunk_pipeline_without_stream(
+        self,
+        engine: Engine,
+        mock_skills,
+        mock_ollama,
+    ) -> None:
+        skill = SkillDefinition(
+            name="summarize",
+            description="요약",
+            triggers=["/summarize"],
+            system_prompt="You are a summarizer.",
+            timeout=30,
+            streaming=True,
+        )
+        mock_skills.match_trigger.return_value = skill
+        engine._split_text_for_summary = MagicMock(return_value=["chunk 1", "chunk 2"])
+        mock_ollama.chat = AsyncMock(side_effect=[
+            ChatResponse(content="- 중간 요약 1"),
+            ChatResponse(content="- 중간 요약 2"),
+            ChatResponse(content="최종 요약"),
+        ])
+        mock_ollama.chat_stream = MagicMock()
+
+        chunks = []
+        async for chunk in engine.process_message_stream(111, "/summarize " + ("가" * 7000)):
+            chunks.append(chunk)
+
+        assert chunks == ["최종 요약"]
+        mock_ollama.chat_stream.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_process_message_injects_korean_language_policy(
         self,
         engine: Engine,
@@ -388,6 +482,69 @@ class TestProcessMessage:
 
         call_args = mock_ollama.chat_stream.call_args
         assert call_args.kwargs.get("timeout") == 12
+
+    @pytest.mark.asyncio
+    async def test_stream_skill_uses_custom_model_role_and_generation_params(
+        self,
+        engine: Engine,
+        mock_skills,
+        mock_ollama,
+    ) -> None:
+        async def _stream():
+            yield "review chunk"
+
+        skill = SkillDefinition(
+            name="code_review",
+            description="코드 리뷰",
+            triggers=["/review"],
+            system_prompt="You are a code reviewer.",
+            timeout=33,
+            model_role="coding",
+            temperature=0.15,
+            max_tokens=1024,
+            streaming=True,
+        )
+        mock_skills.match_trigger.return_value = skill
+        mock_ollama.chat_stream = MagicMock(return_value=_stream())
+
+        chunks = []
+        async for chunk in engine.process_message_stream(111, "/review test code"):
+            chunks.append(chunk)
+
+        assert chunks == ["review chunk"]
+        mock_ollama.prepare_model.assert_awaited_once()
+        assert mock_ollama.prepare_model.await_args.kwargs.get("role") == "coding"
+        call_args = mock_ollama.chat_stream.call_args
+        assert call_args.kwargs.get("temperature") == 0.15
+        assert call_args.kwargs.get("max_tokens") == 1024
+        assert call_args.kwargs.get("timeout") == 33
+
+    @pytest.mark.asyncio
+    async def test_skill_with_streaming_disabled_uses_chat(
+        self,
+        engine: Engine,
+        mock_skills,
+        mock_ollama,
+    ) -> None:
+        skill = SkillDefinition(
+            name="summarize",
+            description="요약",
+            triggers=["/summarize"],
+            system_prompt="You are a summarizer.",
+            timeout=12,
+            streaming=False,
+        )
+        mock_skills.match_trigger.return_value = skill
+        mock_ollama.chat = AsyncMock(return_value=ChatResponse(content="non-stream response"))
+        mock_ollama.chat_stream = MagicMock()
+
+        chunks = []
+        async for chunk in engine.process_message_stream(111, "/summarize test"):
+            chunks.append(chunk)
+
+        assert chunks == ["non-stream response"]
+        mock_ollama.chat.assert_awaited_once()
+        mock_ollama.chat_stream.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_skill_stream_error_falls_back_to_chat(
@@ -820,6 +977,30 @@ class TestProcessMessage:
         assert "죄송합니다. 답변 생성에 문제가 있었습니다." in stored_response
 
     @pytest.mark.asyncio
+    async def test_chinese_english_mixed_response_retried_in_korean(
+        self,
+        engine: Engine,
+        mock_ollama: AsyncMock,
+    ) -> None:
+        mock_ollama.chat = AsyncMock(side_effect=[
+            ChatResponse(content=(
+                "data analysis data analysis data analysis "
+                "数据分析 数据分析 数据分析 数据分析 数据分析"
+            )),
+            ChatResponse(content="현재 ORCA 계산 사이클별 에너지 변화는 한국어로 그래프화할 수 있습니다."),
+        ])
+
+        result = await engine.process_message(
+            111,
+            "지금 ORCA 계산중인데 사이클당 에너지변화를 그림으로 보여줄수 있어?",
+        )
+
+        assert "데이터분석" not in result
+        assert "数据分析" not in result
+        assert "한국어" in result
+        assert mock_ollama.chat.await_count == 2
+
+    @pytest.mark.asyncio
     async def test_background_summary_task_creation_is_limited(
         self,
         engine: Engine,
@@ -980,6 +1161,39 @@ class TestExecuteSkill:
         assert result == "LLM 응답"
 
     @pytest.mark.asyncio
+    async def test_execute_skill_uses_model_role_override(
+        self,
+        engine: Engine,
+        app_settings: AppSettings,
+        mock_skills,
+        mock_ollama,
+    ) -> None:
+        skill = SkillDefinition(
+            name="code_review",
+            description="코드 리뷰",
+            triggers=["/review"],
+            system_prompt="You are a code reviewer.",
+            timeout=30,
+            model_role="skill",
+        )
+        mock_skills.get_skill.return_value = skill
+        mock_ollama.prepare_model = AsyncMock()
+        mock_ollama.chat = AsyncMock(return_value=ChatResponse(content="리뷰 결과"))
+
+        result = await engine.execute_skill(
+            "code_review",
+            {"input_text": "print('hi')"},
+            model_role_override="coding",
+        )
+
+        assert result == "리뷰 결과"
+        call_kwargs = mock_ollama.chat.await_args.kwargs
+        assert call_kwargs["model"] == app_settings.model_registry.coding_model
+        assert call_kwargs["timeout"] == 30
+        mock_ollama.prepare_model.assert_awaited_once()
+        assert mock_ollama.prepare_model.await_args.kwargs["role"] == "coding"
+
+    @pytest.mark.asyncio
     async def test_execute_skill_not_found(self, engine: Engine, mock_skills) -> None:
         mock_skills.get_skill.return_value = None
         result = await engine.execute_skill("nonexistent", {})
@@ -1079,6 +1293,28 @@ class TestProcessPrompt:
         assert call_kwargs["response_format"] is schema
         assert call_kwargs["max_tokens"] == 256
         assert call_kwargs["temperature"] == 0.2
+
+    @pytest.mark.asyncio
+    async def test_process_prompt_uses_model_from_model_role(
+        self,
+        engine: Engine,
+        app_settings: AppSettings,
+        mock_ollama,
+    ) -> None:
+        mock_ollama.prepare_model = AsyncMock()
+
+        await engine.process_prompt(
+            prompt="test",
+            model_role="low_cost",
+        )
+
+        call_kwargs = mock_ollama.chat.call_args.kwargs
+        assert call_kwargs["model"] == app_settings.model_registry.low_cost_model
+        mock_ollama.prepare_model.assert_awaited_once()
+        assert mock_ollama.prepare_model.await_args.kwargs["model"] == (
+            app_settings.model_registry.low_cost_model
+        )
+        assert mock_ollama.prepare_model.await_args.kwargs["role"] == "low_cost"
 
 
 class TestGetStatus:

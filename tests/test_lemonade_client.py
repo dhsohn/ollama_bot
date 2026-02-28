@@ -112,6 +112,45 @@ class TestChat:
             await client.close()
 
     @pytest.mark.asyncio
+    async def test_chat_schema_response_format_is_downgraded(
+        self,
+        lemonade_config: LemonadeConfig,
+        ollama_fallback: OllamaConfig,
+    ) -> None:
+        captured_payload: dict | None = None
+
+        def _handler(request: httpx.Request) -> httpx.Response:
+            nonlocal captured_payload
+            if request.url.path == "/api/v1/chat/completions":
+                captured_payload = json.loads(request.content.decode("utf-8"))
+                return httpx.Response(
+                    200,
+                    json={"choices": [{"message": {"content": "{\"ok\":true}"}}]},
+                )
+            return httpx.Response(404, json={"error": "not found"})
+
+        client = LemonadeClient(lemonade_config, fallback_ollama=ollama_fallback)
+        client._client = httpx.AsyncClient(
+            base_url=lemonade_config.host,
+            transport=httpx.MockTransport(_handler),
+        )
+
+        schema = {
+            "type": "object",
+            "properties": {"ok": {"type": "boolean"}},
+            "required": ["ok"],
+        }
+        try:
+            await client.chat(
+                messages=[{"role": "user", "content": "json으로 응답해"}],
+                response_format=schema,
+            )
+            assert captured_payload is not None
+            assert captured_payload["response_format"] == {"type": "json_object"}
+        finally:
+            await client.close()
+
+    @pytest.mark.asyncio
     async def test_chat_stream_parses_sse(
         self,
         lemonade_config: LemonadeConfig,

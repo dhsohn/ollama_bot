@@ -6,6 +6,7 @@ schedule: "0 9 * * *"
 action:
   type: "callable"
   target: "daily_summary"
+  model_role: "low_cost"
   parameters:
     days_ago: 1
     timezone_name: "Asia/Seoul"

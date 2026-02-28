@@ -155,6 +155,19 @@ rag:
   kb_dirs:
     - "/app/orca_runs"
     - "/app/orca_outputs"
+  trigger_keywords:
+    - "문서"
+    - "프로젝트"
+    - "레포"
+    - "노트"
+    - "논문"
+    - "출처"
+    - "인용"
+    - "어디에 적혀"
+    - "내 파일"
+    - "지식베이스"
+    - "kb"
+    - "검색해"
   chunk_min_tokens: 500
   chunk_max_tokens: 1200
   chunk_overlap_ratio: 0.15

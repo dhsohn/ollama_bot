@@ -67,6 +67,7 @@ class RuntimeState:
     feedback: FeedbackManager | None = None
     auto_evaluator: AutoEvaluator | None = None
     semantic_cache: Any = None  # SemanticCache | None
+    rag_startup_index_task: asyncio.Task[Any] | None = None
 
 
 def _is_running_in_container() -> bool:
@@ -422,6 +423,7 @@ async def _build_runtime(
         model_router = None
         rag_pipeline = None
         model_registry = None
+        rag_startup_index_task: asyncio.Task[Any] | None = None
 
         if llm_provider == "lemonade" and config.model_routing.enabled:
             try:
@@ -503,7 +505,27 @@ async def _build_runtime(
                         continue
                     kb_dirs_to_index.append(root_dir)
                 if kb_dirs_to_index:
-                    await indexer.index_corpus(kb_dirs_to_index)
+                    async def _run_rag_startup_index() -> None:
+                        try:
+                            result = await indexer.index_corpus(kb_dirs_to_index)
+                            logger.info(
+                                "rag_startup_index_completed",
+                                indexed=result.get("indexed", 0),
+                                skipped=result.get("skipped", 0),
+                                removed=result.get("removed", 0),
+                                total_chunks=result.get("total_chunks", 0),
+                            )
+                        except Exception as exc:
+                            logger.error("rag_startup_index_failed", error=str(exc))
+
+                    rag_startup_index_task = asyncio.create_task(
+                        _run_rag_startup_index(),
+                        name="rag_startup_index",
+                    )
+                    logger.info(
+                        "rag_startup_index_started",
+                        roots=len(kb_dirs_to_index),
+                    )
                 else:
                     logger.warning("rag_kb_dirs_empty_or_missing")
 
@@ -633,6 +655,7 @@ async def _build_runtime(
             feedback=feedback,
             auto_evaluator=auto_evaluator,
             semantic_cache=semantic_cache,
+            rag_startup_index_task=rag_startup_index_task,
         )
     except Exception:
         await cleanup_stack.aclose()
@@ -671,6 +694,10 @@ async def _shutdown_runtime(
     if llm_recovery_task is not None:
         llm_recovery_task.cancel()
         await asyncio.gather(llm_recovery_task, return_exceptions=True)
+
+    if runtime.rag_startup_index_task is not None:
+        runtime.rag_startup_index_task.cancel()
+        await asyncio.gather(runtime.rag_startup_index_task, return_exceptions=True)
 
     if updater_started:
         try:

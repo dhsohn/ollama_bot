@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
+from telegram.constants import ParseMode
 
 from core.config import AppSettings, BotConfig, FeedbackConfig, OllamaConfig, SecurityConfig, MemoryConfig, TelegramConfig
 from core.security import SecurityManager, AuthenticationError, RateLimitError
@@ -157,9 +158,11 @@ class TestPrivateChatOnly:
 
 class TestModelCommand:
     @pytest.mark.asyncio
-    async def test_model_list_error_returns_message(self, telegram_handler: TelegramHandler) -> None:
-        telegram_handler._engine.list_models = AsyncMock(side_effect=RuntimeError("down"))
-
+    async def test_model_shows_registry_roles(
+        self,
+        telegram_handler: TelegramHandler,
+        app_config: AppSettings,
+    ) -> None:
         chat = MagicMock()
         chat.id = 111
         chat.type = "private"
@@ -172,13 +175,22 @@ class TestModelCommand:
         update.effective_message = message
 
         context = MagicMock()
-        context.args = ["list"]
+        context.args = []
 
         await telegram_handler._cmd_model(update, context)
 
-        message.reply_text.assert_awaited_once_with(
-            "모델 목록을 가져오지 못했습니다. Ollama 상태를 확인해주세요."
-        )
+        message.reply_text.assert_awaited_once()
+        sent_text = message.reply_text.await_args.args[0]
+        assert "현재 기본 응답 모델" in sent_text
+        assert "역할별 모델" in sent_text
+        assert app_config.model_registry.embedding_model in sent_text
+        assert app_config.model_registry.reranker_model in sent_text
+        assert app_config.model_registry.vision_model in sent_text
+        assert app_config.model_registry.low_cost_model in sent_text
+        assert app_config.model_registry.reasoning_model in sent_text
+        assert app_config.model_registry.coding_model in sent_text
+        assert "/model list" not in sent_text
+        assert message.reply_text.await_args.kwargs["parse_mode"] == ParseMode.HTML
 
     @pytest.mark.asyncio
     async def test_model_change_error_returns_message(self, telegram_handler: TelegramHandler) -> None:
@@ -342,7 +354,7 @@ class TestHandleMessage:
         reply_msg.message_id = 43
         reply_msg.edit_reply_markup = AsyncMock()
 
-        # reply_text는 처음에 sent_message("..."), 두 번째 파트에서 reply_msg를 반환
+        # reply_text는 처음에 진행 안내 메시지, 두 번째 파트에서 reply_msg를 반환
         message = MagicMock()
         message.text = "hello"
         message.reply_text = AsyncMock(side_effect=[sent_message, reply_msg])
@@ -356,7 +368,10 @@ class TestHandleMessage:
 
         # 첫 파트는 edit_text, 두 번째 파트는 reply_text로 전송되어야 한다.
         sent_message.edit_text.assert_awaited_once_with("SAME")
-        message.reply_text.assert_has_awaits([call("..."), call("SAME")])
+        expected_placeholder = (
+            f"{telegram_handler._config.bot.name}이 답변을 위해 생각 중입니다..."
+        )
+        message.reply_text.assert_has_awaits([call(expected_placeholder), call("SAME")])
 
     @pytest.mark.asyncio
     async def test_handle_message_passes_configured_max_edit_length(

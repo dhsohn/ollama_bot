@@ -71,6 +71,10 @@ def build_feedback_analysis_callable(
         max_negative_samples: int = 15,
         max_positive_samples: int = 10,
         max_guidelines: int = 5,
+        model: str | None = None,
+        model_role: str | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
     ) -> str:
         """사용자 피드백을 분석해 응답 품질 가이드라인을 갱신한다."""
         results: list[str] = []
@@ -100,6 +104,10 @@ def build_feedback_analysis_callable(
                 prompt=prompt,
                 chat_id=chat_id,
                 response_format=FEEDBACK_ANALYSIS_SCHEMA,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                model_override=model,
+                model_role=model_role,
             )
 
             parsed = parse_json_array(raw)

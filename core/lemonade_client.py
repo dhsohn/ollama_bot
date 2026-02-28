@@ -439,6 +439,18 @@ class LemonadeClient:
         if response_format is not None:
             if response_format == "json":
                 payload["response_format"] = {"type": "json_object"}
+            elif isinstance(response_format, dict):
+                format_type = str(response_format.get("type", "")).strip().lower()
+                if format_type in {"json_object", "text"}:
+                    payload["response_format"] = response_format
+                else:
+                    # Lemonade(OpenAI-compatible) 백엔드는 schema dict를 지원하지 않는다.
+                    # schema 요청은 json_object로 강등하여 호출 실패를 방지한다.
+                    payload["response_format"] = {"type": "json_object"}
+                    self._logger.debug(
+                        "lemonade_response_format_downgraded",
+                        requested_type=format_type or None,
+                    )
             else:
                 payload["response_format"] = response_format
         return payload

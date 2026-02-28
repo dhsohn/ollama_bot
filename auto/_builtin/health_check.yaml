@@ -6,6 +6,7 @@ schedule: "*/30 * * * *"
 action:
   type: "callable"
   target: "health_check"
+  model_role: "low_cost"
   parameters:
     disk_warn_pct: 85
     error_hours_back: 1

@@ -186,7 +186,7 @@ class TestDailySummaryCallable:
         app_settings: AppSettings,
         memory_manager: MemoryManager,
     ) -> None:
-        """JSON 파싱 실패 시 원본 텍스트를 사용한다."""
+        """JSON 파싱 실패 시 안전한 폴백 요약을 사용한다."""
         engine = AsyncMock()
         engine.process_prompt = AsyncMock(return_value="이것은 JSON이 아닙니다")
         _setup_callables(scheduler, engine, memory_manager, app_settings)
@@ -205,7 +205,9 @@ class TestDailySummaryCallable:
         )
         result = await scheduler._run_action(auto)
 
-        assert "이것은 JSON이 아닙니다" in result
+        assert "구조화 요약 생성에 실패했습니다" in result
+        assert "최근 사용자 발화" in result
+        assert "이것은 JSON이 아닙니다" not in result
 
     @pytest.mark.asyncio
     async def test_daily_summary_unexpected_type_fallback(
@@ -214,7 +216,7 @@ class TestDailySummaryCallable:
         app_settings: AppSettings,
         memory_manager: MemoryManager,
     ) -> None:
-        """json.loads 결과가 dict가 아닐 때 원본을 사용한다."""
+        """json.loads 결과가 dict가 아닐 때 안전한 폴백 요약을 사용한다."""
         engine = AsyncMock()
         engine.process_prompt = AsyncMock(return_value='["이것은 리스트"]')
         _setup_callables(scheduler, engine, memory_manager, app_settings)
@@ -233,7 +235,9 @@ class TestDailySummaryCallable:
         )
         result = await scheduler._run_action(auto)
 
-        assert '["이것은 리스트"]' in result
+        assert "구조화 요약 생성에 실패했습니다" in result
+        assert "최근 사용자 발화" in result
+        assert '["이것은 리스트"]' not in result
 
     @pytest.mark.asyncio
     async def test_daily_summary_invalid_field_types_fallback(
@@ -242,7 +246,7 @@ class TestDailySummaryCallable:
         app_settings: AppSettings,
         memory_manager: MemoryManager,
     ) -> None:
-        """필드 타입이 스키마와 다르면 원본 텍스트를 사용한다."""
+        """필드 타입이 스키마와 다르면 안전한 폴백 요약을 사용한다."""
         engine = AsyncMock()
         engine.process_prompt = AsyncMock(
             return_value='{"topics":"문자열","decisions":[],"todos":[],"notes":null}',
@@ -263,7 +267,9 @@ class TestDailySummaryCallable:
         )
         result = await scheduler._run_action(auto)
 
-        assert '"topics":"문자열"' in result
+        assert "구조화 요약 생성에 실패했습니다" in result
+        assert "최근 사용자 발화" in result
+        assert '"topics":"문자열"' not in result
 
     @pytest.mark.asyncio
     async def test_daily_summary_transcript_no_timestamp(

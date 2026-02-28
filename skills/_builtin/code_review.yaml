@@ -21,5 +21,8 @@ parameters:
     type: "string"
     required: true
     description: "리뷰할 코드"
-timeout: 60
+model_role: "coding"
+temperature: 0.2
+max_tokens: 2048
+timeout: 600
 security_level: "safe"

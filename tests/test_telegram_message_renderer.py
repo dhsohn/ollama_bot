@@ -182,5 +182,6 @@ class TestStreamAndRender:
         )
 
         assert "반복 출력이 감지" in result.full_response
+        assert result.full_response.split("\n\n")[0] == "가"
         sent_message.edit_text.assert_awaited_once()
         assert "반복 출력이 감지" in sent_message.edit_text.await_args.args[0]
