@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import inspect
+import json
 import re as _re
 import time
 import uuid
@@ -64,6 +65,7 @@ class _PreparedFullRequest:
     timeout: int
     max_tokens: int | None
     target_model: str | None
+    review_required: bool = False
     model_decision: ModelRoutingDecision | None = None
     rag_result: Any = None  # RAGResult | None
 
@@ -121,6 +123,11 @@ _LOW_QUALITY_HINT_RE = _re.compile(
 )
 _STREAM_META_TTL_SECONDS = 600.0
 _STREAM_META_MAX_ENTRIES = 2048
+_REASONING_TIMEOUT_SECONDS = 3600
+_REASONING_INTENTS = {"complex", "code"}
+_REASONING_MODEL_ROLES = {"reasoning", "coding", "vision"}
+_RESPONSE_REVIEW_TIMEOUT_SECONDS = 300
+_RESPONSE_REVIEW_MAX_TOKENS = 1200
 
 
 def _strip_prompt_injection(text: str) -> str:
@@ -256,6 +263,7 @@ class Engine:
                     model_override=model_override,
                     images=images,
                     metadata=metadata,
+                    intent=routing.intent,
                     strategy=routing.strategy,
                     stream=False,
                 )
@@ -273,6 +281,8 @@ class Engine:
                     target_model=prepared_full.target_model,
                     timeout=prepared_full.timeout,
                     max_tokens=prepared_full.max_tokens,
+                    review_required=prepared_full.review_required,
+                    has_images=bool(images),
                 )
                 await self._persist_turn(chat_id, text, content)
 
@@ -433,6 +443,7 @@ class Engine:
                     model_override=model_override,
                     images=images,
                     metadata=metadata,
+                    intent=routing.intent,
                     strategy=routing.strategy,
                     stream=True,
                 )
@@ -442,6 +453,7 @@ class Engine:
                 stream_state = ChatStreamState()
                 usage = None
                 stream_error: Exception | None = None
+                should_stream_chunks = not prepared_full.review_required
                 try:
                     async for chunk in self._llm_client.chat_stream(
                         messages=prepared_full.messages,
@@ -451,7 +463,8 @@ class Engine:
                         stream_state=stream_state,
                     ):
                         full_response += chunk
-                        yield chunk
+                        if should_stream_chunks:
+                            yield chunk
                 except Exception as exc:
                     stream_error = exc
                     if full_response.strip():
@@ -476,7 +489,7 @@ class Engine:
                         )
                         full_response = sanitize_model_output(chat_response.content)
                         usage = chat_response.usage
-                        if full_response:
+                        if full_response and should_stream_chunks:
                             yield full_response
                 if usage is None:
                     usage = stream_state.usage
@@ -494,7 +507,7 @@ class Engine:
                     )
                     full_response = sanitize_model_output(chat_response.content)
                     usage = chat_response.usage or usage
-                    if full_response:
+                    if full_response and should_stream_chunks:
                         yield full_response
                 if stream_error is not None and not full_response.strip():
                     raise stream_error
@@ -507,7 +520,11 @@ class Engine:
                     target_model=prepared_full.target_model,
                     timeout=prepared_full.timeout,
                     max_tokens=prepared_full.max_tokens,
+                    review_required=prepared_full.review_required,
+                    has_images=bool(images),
                 )
+                if prepared_full.review_required and full_response:
+                    yield full_response
 
                 await self._persist_turn(chat_id, text, full_response)
                 turn_persisted = True
@@ -536,7 +553,9 @@ class Engine:
                         if prepared_full.rag_result else None
                     ),
                     warnings=warnings or None,
-                    repaired_response=repaired_response,
+                    repaired_response=(
+                        None if prepared_full.review_required else repaired_response
+                    ),
                 )
                 self._log_request(
                     t0, chat_id, "full", usage, len(prepared_full.messages), intent=routing.intent,
@@ -1107,6 +1126,38 @@ class Engine:
             skill=None, messages=messages, timeout=timeout, max_tokens=max_tokens,
         )
 
+    @staticmethod
+    def _resolve_inference_timeout(
+        *,
+        base_timeout: int,
+        intent: str | None,
+        model_role: str | None,
+        has_images: bool = False,
+    ) -> int:
+        timeout = max(1, int(base_timeout))
+        if has_images:
+            return max(timeout, _REASONING_TIMEOUT_SECONDS)
+        role = (model_role or "").strip().lower()
+        intent_name = (intent or "").strip().lower()
+        if role in _REASONING_MODEL_ROLES or intent_name in _REASONING_INTENTS:
+            return max(timeout, _REASONING_TIMEOUT_SECONDS)
+        return timeout
+
+    @staticmethod
+    def _should_review_response(
+        *,
+        intent: str | None,
+        model_role: str | None,
+        has_images: bool,
+    ) -> bool:
+        if has_images:
+            return True
+        role = (model_role or "").strip().lower()
+        if role in _REASONING_MODEL_ROLES:
+            return True
+        intent_name = (intent or "").strip().lower()
+        return intent_name in _REASONING_INTENTS
+
     async def _prepare_full_request(
         self,
         *,
@@ -1115,6 +1166,7 @@ class Engine:
         model_override: str | None,
         images: list[bytes] | None,
         metadata: dict | None,
+        intent: str | None,
         strategy: ContextStrategy | None,
         stream: bool,
     ) -> _PreparedFullRequest:
@@ -1135,10 +1187,16 @@ class Engine:
         prepared = await self._prepare_request(
             chat_id, text, stream=stream, strategy=strategy,
         )
+        prepare_timeout = self._resolve_inference_timeout(
+            base_timeout=prepared.timeout,
+            intent=intent,
+            model_role=model_decision.selected_role if model_decision else None,
+            has_images=bool(images),
+        )
         target_model, prepared_role = await self._prepare_target_model(
             model=target_model,
             role=model_decision.selected_role if model_decision else None,
-            timeout=prepared.timeout,
+            timeout=prepare_timeout,
         )
         if (
             model_decision is not None
@@ -1151,15 +1209,28 @@ class Engine:
             model_decision.fallback_used = True
             model_decision.original_role = original_role
 
+        effective_timeout = self._resolve_inference_timeout(
+            base_timeout=prepared.timeout,
+            intent=intent,
+            model_role=prepared_role,
+            has_images=bool(images),
+        )
+        review_required = self._should_review_response(
+            intent=intent,
+            model_role=prepared_role,
+            has_images=bool(images),
+        )
+
         messages = prepared.messages
         if rag_result and rag_result.contexts:
             messages = self._inject_rag_context(messages, rag_result)
 
         return _PreparedFullRequest(
             messages=messages,
-            timeout=prepared.timeout,
+            timeout=effective_timeout,
             max_tokens=prepared.max_tokens,
             target_model=target_model,
+            review_required=review_required,
             model_decision=model_decision,
             rag_result=rag_result,
         )
@@ -1173,10 +1244,27 @@ class Engine:
         target_model: str | None,
         timeout: int,
         max_tokens: int | None,
+        review_required: bool,
+        has_images: bool,
     ) -> tuple[str, str | None]:
         """응답 정제 + 저품질 재시도/가드레일 폴백을 적용한다."""
         content = sanitize_model_output(raw_response)
         repaired_response: str | None = None
+        if review_required and content.strip():
+            reviewed = await self._review_response_draft(
+                query=query,
+                draft_response=content,
+                target_model=target_model,
+                timeout=timeout,
+                max_tokens=max_tokens,
+                has_images=has_images,
+            )
+            if reviewed:
+                reviewed_clean = sanitize_model_output(reviewed).strip()
+                if reviewed_clean:
+                    if reviewed_clean != content:
+                        repaired_response = reviewed_clean
+                    content = reviewed_clean
         if not self._is_cache_response_acceptable(query, content):
             repaired = await self._retry_low_quality_response(
                 messages=messages,
@@ -1185,9 +1273,118 @@ class Engine:
                 timeout=timeout,
                 max_tokens=max_tokens,
             )
-            repaired_response = repaired or self._build_guardrail_fallback(query)
-            content = repaired_response
+            replacement = repaired or self._build_guardrail_fallback(query)
+            replacement = sanitize_model_output(replacement).strip()
+            if replacement and replacement != content:
+                repaired_response = replacement
+            content = replacement
         return content, repaired_response
+
+    @staticmethod
+    def _extract_json_payload(text: str) -> dict[str, Any] | None:
+        payload_text = text.strip()
+        if not payload_text:
+            return None
+        try:
+            payload = json.loads(payload_text)
+            if isinstance(payload, dict):
+                return payload
+        except json.JSONDecodeError:
+            pass
+
+        start = payload_text.find("{")
+        end = payload_text.rfind("}")
+        if start < 0 or end <= start:
+            return None
+        try:
+            payload = json.loads(payload_text[start:end + 1])
+        except json.JSONDecodeError:
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    async def _review_response_draft(
+        self,
+        *,
+        query: str,
+        draft_response: str,
+        target_model: str | None,
+        timeout: int,
+        max_tokens: int | None,
+        has_images: bool,
+    ) -> str | None:
+        review_timeout = max(20, min(int(timeout), _RESPONSE_REVIEW_TIMEOUT_SECONDS))
+        review_max_tokens = _RESPONSE_REVIEW_MAX_TOKENS
+        if max_tokens is not None and max_tokens > 0:
+            review_max_tokens = min(review_max_tokens, int(max_tokens))
+        vision_note = (
+            "\n- 이 요청은 이미지 기반일 수 있으므로 보이지 않는 정보는 단정하지 말고 "
+            "불확실성을 명시하세요."
+            if has_images
+            else ""
+        )
+        review_system = (
+            "당신은 답변 품질 검수기입니다. 사용자에게 직접 말하지 말고 JSON만 반환하세요."
+        )
+        review_prompt = (
+            "아래 [초안 답변]을 검수하세요.\n"
+            "검수 기준:\n"
+            "- 사용자 질문에 직접 답했는가\n"
+            "- 논리/정합성 오류가 없는가\n"
+            "- 근거 없는 단정/과장 표현이 없는가"
+            f"{vision_note}\n\n"
+            "출력 형식(JSON만):\n"
+            "{\"pass\": true|false, \"issues\": [\"...\"], \"revised_answer\": \"수정 답변 또는 빈 문자열\"}\n\n"
+            "[사용자 질문]\n"
+            f"{query}\n\n"
+            "[초안 답변]\n"
+            f"{draft_response}\n"
+        )
+        try:
+            review_resp = await self._llm_client.chat(
+                messages=[
+                    {"role": "system", "content": review_system},
+                    {"role": "user", "content": review_prompt},
+                ],
+                model=target_model,
+                timeout=review_timeout,
+                max_tokens=review_max_tokens,
+                temperature=0.0,
+                response_format="json",
+            )
+        except Exception as exc:
+            self._logger.warning(
+                "response_review_failed",
+                error=str(exc),
+                model=target_model,
+            )
+            return None
+
+        payload = self._extract_json_payload(review_resp.content)
+        if payload is None:
+            self._logger.warning("response_review_invalid_payload", model=target_model)
+            return None
+
+        passed = bool(payload.get("pass", True))
+        revised_answer = payload.get("revised_answer", "")
+        revised_text = (
+            sanitize_model_output(str(revised_answer)).strip()
+            if revised_answer is not None
+            else ""
+        )
+        if revised_text:
+            self._logger.info(
+                "response_review_revised",
+                model=target_model,
+                passed=passed,
+            )
+            return revised_text
+
+        if not passed:
+            self._logger.warning(
+                "response_review_reject_without_revision",
+                model=target_model,
+            )
+        return None
 
     async def _maybe_store_semantic_cache(
         self,

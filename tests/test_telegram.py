@@ -405,6 +405,113 @@ class TestHandleMessage:
         assert captured["first_chunk_timeout_seconds"] > captured["chunk_timeout_seconds"]
 
     @pytest.mark.asyncio
+    async def test_handle_message_uses_long_timeouts_for_complex_intent(
+        self,
+        app_config: AppSettings,
+        mock_engine: AsyncMock,
+        security: SecurityManager,
+    ) -> None:
+        app_config.bot.response_timeout = 300
+        handler = TelegramHandler(config=app_config, engine=mock_engine, security=security)
+
+        async def _stream():
+            if False:
+                yield ""
+
+        handler._engine.process_message_stream = MagicMock(return_value=_stream())
+        handler._engine.classify_intent = MagicMock(return_value="complex")
+
+        chat = MagicMock()
+        chat.id = 111
+        chat.type = "private"
+        chat.send_action = AsyncMock()
+
+        sent_message = MagicMock()
+        sent_message.edit_text = AsyncMock()
+        sent_message.message_id = 42
+        sent_message.edit_reply_markup = AsyncMock()
+
+        message = MagicMock()
+        message.text = "심층 분석해줘"
+        message.reply_text = AsyncMock(return_value=sent_message)
+
+        update = MagicMock()
+        update.effective_chat = chat
+        update.effective_message = message
+
+        captured: dict[str, float] = {}
+
+        async def fake_stream_and_render(**kwargs):
+            captured["first_chunk_timeout_seconds"] = kwargs["first_chunk_timeout_seconds"]
+            captured["chunk_timeout_seconds"] = kwargs["chunk_timeout_seconds"]
+            captured["max_stream_seconds"] = kwargs["max_stream_seconds"]
+            return SimpleNamespace(full_response="", last_message=None)
+
+        with patch("core.telegram_handler.stream_and_render", new=fake_stream_and_render):
+            await handler._handle_message(update, MagicMock())
+
+        assert captured["first_chunk_timeout_seconds"] == 3600.0
+        assert captured["chunk_timeout_seconds"] == 60.0
+        assert captured["max_stream_seconds"] == 3600.0
+
+    @pytest.mark.asyncio
+    async def test_handle_message_uses_long_timeouts_for_image_input(
+        self,
+        app_config: AppSettings,
+        mock_engine: AsyncMock,
+        security: SecurityManager,
+    ) -> None:
+        app_config.bot.response_timeout = 300
+        handler = TelegramHandler(config=app_config, engine=mock_engine, security=security)
+
+        async def _stream():
+            if False:
+                yield ""
+
+        handler._engine.process_message_stream = MagicMock(return_value=_stream())
+        handler._engine.classify_intent = MagicMock(return_value=None)
+
+        chat = MagicMock()
+        chat.id = 111
+        chat.type = "private"
+        chat.send_action = AsyncMock()
+
+        sent_message = MagicMock()
+        sent_message.edit_text = AsyncMock()
+        sent_message.message_id = 42
+        sent_message.edit_reply_markup = AsyncMock()
+
+        photo_file = MagicMock()
+        photo_file.download_as_bytearray = AsyncMock(return_value=bytearray(b"img-bytes"))
+        photo = MagicMock()
+        photo.get_file = AsyncMock(return_value=photo_file)
+
+        message = MagicMock()
+        message.text = None
+        message.caption = None
+        message.photo = [photo]
+        message.reply_text = AsyncMock(return_value=sent_message)
+
+        update = MagicMock()
+        update.effective_chat = chat
+        update.effective_message = message
+
+        captured: dict[str, float] = {}
+
+        async def fake_stream_and_render(**kwargs):
+            captured["first_chunk_timeout_seconds"] = kwargs["first_chunk_timeout_seconds"]
+            captured["chunk_timeout_seconds"] = kwargs["chunk_timeout_seconds"]
+            captured["max_stream_seconds"] = kwargs["max_stream_seconds"]
+            return SimpleNamespace(full_response="", last_message=None)
+
+        with patch("core.telegram_handler.stream_and_render", new=fake_stream_and_render):
+            await handler._handle_message(update, MagicMock())
+
+        assert captured["first_chunk_timeout_seconds"] == 3600.0
+        assert captured["chunk_timeout_seconds"] == 60.0
+        assert captured["max_stream_seconds"] == 3600.0
+
+    @pytest.mark.asyncio
     async def test_handle_message_shows_runtime_warning_from_stream_meta(
         self,
         app_config: AppSettings,

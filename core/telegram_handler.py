@@ -49,9 +49,13 @@ _EDIT_CHAR_THRESHOLD = 100
 _TYPING_INTERVAL = 4.0
 
 # 스트리밍 안전 가드
-_STREAM_FIRST_CHUNK_TIMEOUT_SECONDS = 45.0
-_STREAM_CHUNK_TIMEOUT_SECONDS = 20.0
-_STREAM_MAX_SECONDS_CAP = 300.0
+_STREAM_DEFAULT_FIRST_CHUNK_TIMEOUT_SECONDS = 45.0
+_STREAM_DEFAULT_CHUNK_TIMEOUT_SECONDS = 20.0
+_STREAM_DEFAULT_MAX_SECONDS_CAP = 300.0
+_STREAM_REASONING_FIRST_CHUNK_TIMEOUT_SECONDS = 3600.0
+_STREAM_REASONING_CHUNK_TIMEOUT_SECONDS = 60.0
+_STREAM_REASONING_MAX_SECONDS_CAP = 3600.0
+_STREAM_LONG_TIMEOUT_INTENTS = {"complex", "code"}
 _STREAM_MAX_TOTAL_CHARS = 262_144
 _STREAM_MAX_REPEATED_CHUNKS = 30
 _STREAM_RENDER_WAIT_GRACE_SECONDS = 5.0
@@ -646,10 +650,21 @@ class TelegramHandler:
             placeholder = _INTENT_PLACEHOLDERS.get(intent, _INTENT_PLACEHOLDERS[None])
             sent_message = await message.reply_text(placeholder)
 
-            effective_stream_seconds = min(
-                float(self._config.bot.response_timeout),
-                _STREAM_MAX_SECONDS_CAP,
-            )
+            intent_key = str(intent).strip().lower() if intent is not None else None
+            if images or intent_key in _STREAM_LONG_TIMEOUT_INTENTS:
+                first_chunk_timeout_seconds = _STREAM_REASONING_FIRST_CHUNK_TIMEOUT_SECONDS
+                chunk_timeout_seconds = _STREAM_REASONING_CHUNK_TIMEOUT_SECONDS
+                effective_stream_seconds = max(
+                    float(self._config.bot.response_timeout),
+                    _STREAM_REASONING_MAX_SECONDS_CAP,
+                )
+            else:
+                first_chunk_timeout_seconds = _STREAM_DEFAULT_FIRST_CHUNK_TIMEOUT_SECONDS
+                chunk_timeout_seconds = _STREAM_DEFAULT_CHUNK_TIMEOUT_SECONDS
+                effective_stream_seconds = min(
+                    float(self._config.bot.response_timeout),
+                    _STREAM_DEFAULT_MAX_SECONDS_CAP,
+                )
             render_timeout = effective_stream_seconds + _STREAM_RENDER_WAIT_GRACE_SECONDS
             result = await asyncio.wait_for(
                 stream_and_render(
@@ -660,8 +675,8 @@ class TelegramHandler:
                     edit_interval=_EDIT_INTERVAL,
                     edit_char_threshold=_EDIT_CHAR_THRESHOLD,
                     max_edit_length=self._max_message_length,
-                    first_chunk_timeout_seconds=_STREAM_FIRST_CHUNK_TIMEOUT_SECONDS,
-                    chunk_timeout_seconds=_STREAM_CHUNK_TIMEOUT_SECONDS,
+                    first_chunk_timeout_seconds=first_chunk_timeout_seconds,
+                    chunk_timeout_seconds=chunk_timeout_seconds,
                     max_stream_seconds=effective_stream_seconds,
                     max_total_chars=_STREAM_MAX_TOTAL_CHARS,
                     max_repeated_chunks=_STREAM_MAX_REPEATED_CHUNKS,

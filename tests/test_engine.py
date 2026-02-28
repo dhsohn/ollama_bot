@@ -241,6 +241,134 @@ class TestProcessMessage:
         assert call_args.kwargs.get("timeout") == app_settings.bot.response_timeout
 
     @pytest.mark.asyncio
+    async def test_stream_uses_reasoning_timeout_for_reasoning_role(
+        self,
+        app_settings: AppSettings,
+        mock_ollama,
+        memory: MemoryManager,
+        mock_skills: MagicMock,
+    ) -> None:
+        async def _stream():
+            yield "충분한 한국어 응답입니다."
+
+        mock_ollama.chat_stream = MagicMock(return_value=_stream())
+        mock_ollama.chat = AsyncMock(return_value=ChatResponse(
+            content='{"pass": true, "issues": [], "revised_answer": ""}'
+        ))
+        model_router = AsyncMock()
+        model_router.route = AsyncMock(return_value=SimpleNamespace(
+            selected_model="reason-model",
+            selected_role="reasoning",
+            trigger="semantic",
+            confidence=0.9,
+            fallback_used=False,
+            classifier_used=True,
+            degraded=False,
+            degradation_reasons=[],
+        ))
+
+        engine = Engine(
+            config=app_settings,
+            llm_client=mock_ollama,
+            memory=memory,
+            skills=mock_skills,
+            model_router=model_router,
+        )
+
+        chunks = []
+        async for chunk in engine.process_message_stream(111, "깊은 분석이 필요해"):
+            chunks.append(chunk)
+
+        assert chunks == ["충분한 한국어 응답입니다."]
+        call_args = mock_ollama.chat_stream.call_args
+        assert call_args.kwargs.get("timeout") == 3600
+
+    @pytest.mark.asyncio
+    async def test_process_message_reviews_vision_response_before_return(
+        self,
+        app_settings: AppSettings,
+        mock_ollama,
+        memory: MemoryManager,
+        mock_skills: MagicMock,
+    ) -> None:
+        model_router = AsyncMock()
+        model_router.route = AsyncMock(return_value=SimpleNamespace(
+            selected_model="vision-model",
+            selected_role="vision",
+            trigger="image",
+            confidence=1.0,
+            fallback_used=False,
+            classifier_used=False,
+            degraded=False,
+            degradation_reasons=[],
+        ))
+        mock_ollama.chat = AsyncMock(side_effect=[
+            ChatResponse(content="초안 응답"),
+            ChatResponse(content='{"pass": false, "issues": ["근거가 약함"], "revised_answer": "검수된 최종 응답"}'),
+        ])
+
+        engine = Engine(
+            config=app_settings,
+            llm_client=mock_ollama,
+            memory=memory,
+            skills=mock_skills,
+            model_router=model_router,
+        )
+
+        result = await engine.process_message(111, "이미지 분석", images=[b"fake-image"])
+
+        assert result == "검수된 최종 응답"
+        assert mock_ollama.chat.await_count == 2
+        generation_call, review_call = mock_ollama.chat.await_args_list
+        assert generation_call.kwargs.get("timeout") == 3600
+        assert review_call.kwargs.get("timeout") == 300
+
+    @pytest.mark.asyncio
+    async def test_stream_reviews_reasoning_response_before_first_emit(
+        self,
+        app_settings: AppSettings,
+        mock_ollama,
+        memory: MemoryManager,
+        mock_skills: MagicMock,
+    ) -> None:
+        async def _stream():
+            yield "초안 "
+            yield "응답"
+
+        mock_ollama.chat_stream = MagicMock(return_value=_stream())
+        mock_ollama.chat = AsyncMock(return_value=ChatResponse(
+            content='{"pass": false, "issues": ["논리 보완"], "revised_answer": "검수 후 최종 응답"}'
+        ))
+        model_router = AsyncMock()
+        model_router.route = AsyncMock(return_value=SimpleNamespace(
+            selected_model="reason-model",
+            selected_role="reasoning",
+            trigger="semantic",
+            confidence=0.9,
+            fallback_used=False,
+            classifier_used=True,
+            degraded=False,
+            degradation_reasons=[],
+        ))
+
+        engine = Engine(
+            config=app_settings,
+            llm_client=mock_ollama,
+            memory=memory,
+            skills=mock_skills,
+            model_router=model_router,
+        )
+
+        chunks = []
+        async for chunk in engine.process_message_stream(111, "심층 분석해줘"):
+            chunks.append(chunk)
+
+        assert chunks == ["검수 후 최종 응답"]
+        stream_meta = engine.consume_last_stream_meta(111)
+        assert stream_meta is not None
+        assert stream_meta.get("repaired_response") is None
+
+    @pytest.mark.asyncio
     async def test_stream_uses_skill_timeout(self, engine: Engine, mock_skills, mock_ollama) -> None:
         async def _stream():
             yield "chunk"
