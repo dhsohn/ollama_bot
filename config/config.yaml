@@ -133,7 +133,7 @@ model_registry:
   embedding_model: "Qwen3-Embedding-0.6B-GGUF"
   reranker_model: "bge-reranker-v2-m3-GGUF"
   vision_model: "Qwen3-VL-8B-Instruct-GGUF"
-  low_cost_model: "Qwen3-VL-8B-Instruct-GGUF"
+  low_cost_model: "GLM-4.7-Flash-GGUF"
   reasoning_model: "gpt-oss-20b-NPU"
   coding_model: "gpt-oss-20b-NPU"
   fallback_chain:
