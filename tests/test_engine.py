@@ -86,7 +86,7 @@ class TestProcessMessage:
         mock_ollama,
     ) -> None:
         mock_ollama.chat = AsyncMock(side_effect=[
-            ChatResponse(content="ㅊ...번역 ... The conversation is now ended.."),
+            ChatResponse(content="반복 반복 반복 반복"),
             ChatResponse(content="네, 가능합니다. 화학 DFT 데이터 분석/정리를 도와드릴 수 있어요."),
         ])
 
@@ -94,6 +94,36 @@ class TestProcessMessage:
 
         assert result == "네, 가능합니다. 화학 DFT 데이터 분석/정리를 도와드릴 수 있어요."
         assert mock_ollama.chat.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_process_message_allows_meaningful_long_ellipsis_response(
+        self,
+        engine: Engine,
+        mock_ollama,
+    ) -> None:
+        mock_ollama.chat = AsyncMock(
+            return_value=ChatResponse(
+                content="현재 배치 작업을 마무리하는 중이며 상태 점검까지 이어서 진행하고 있습니다...",
+            ),
+        )
+
+        result = await engine.process_message(111, "지금 뭐하고 있어?")
+
+        assert result == "현재 배치 작업을 마무리하는 중이며 상태 점검까지 이어서 진행하고 있습니다..."
+        assert mock_ollama.chat.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_process_message_allows_short_ellipsis_response_without_length_guardrail(
+        self,
+        engine: Engine,
+        mock_ollama,
+    ) -> None:
+        mock_ollama.chat = AsyncMock(return_value=ChatResponse(content="작업 중..."))
+
+        result = await engine.process_message(111, "지금 뭐해?")
+
+        assert result == "작업 중..."
+        assert mock_ollama.chat.await_count == 1
 
     @pytest.mark.asyncio
     async def test_process_message_sanitizes_internal_channel_tokens(
@@ -773,7 +803,7 @@ class TestProcessMessage:
 
         mock_ollama.chat_stream = MagicMock(return_value=_broken_stream())
         mock_ollama.chat = AsyncMock(side_effect=[
-            ChatResponse(content="ㅊ...번역 ... The conversation is now ended.."),
+            ChatResponse(content="반복 반복 반복 반복"),
             ChatResponse(content="네, 가능합니다. 화학 DFT 데이터 분석/정리를 도와드릴 수 있어요."),
         ])
         engine._decide_routing = AsyncMock(return_value=SimpleNamespace(
@@ -792,14 +822,14 @@ class TestProcessMessage:
         async for chunk in engine.process_message_stream(111, "너한테 화학 dft 데이터 분석시킬거야 잘할수 있지?"):
             chunks.append(chunk)
 
-        assert chunks == ["ㅊ...번역 ... The conversation is now ended.."]
+        assert chunks == ["반복 반복 반복 반복"]
         assert mock_ollama.chat.await_count == 2
         fallback_call, repair_call = mock_ollama.chat.await_args_list
         assert fallback_call.kwargs.get("max_tokens") == 777
         assert fallback_call.kwargs.get("timeout") == 23
         repair_messages = repair_call.kwargs.get("messages") or []
         assert len(repair_messages) == 3
-        assert "직전 답변이 품질이 낮았습니다." in repair_messages[-1]["content"]
+        assert "반복 출력 또는 중국어 포함" in repair_messages[-1]["content"]
 
         meta = engine.consume_last_stream_meta(111)
         assert meta is not None
@@ -898,7 +928,7 @@ class TestProcessMessage:
         memory: MemoryManager,
     ) -> None:
         async def _stream():
-            yield "ㅊ...번역 ... The conversation is now ended.."
+            yield "반복 반복 반복 반복"
 
         mock_ollama.chat_stream = MagicMock(return_value=_stream())
         mock_ollama.chat = AsyncMock(return_value=ChatResponse(
@@ -909,7 +939,7 @@ class TestProcessMessage:
         async for chunk in engine.process_message_stream(111, "너한테 화학 dft 데이터 분석시킬거야 잘할수 있지?"):
             chunks.append(chunk)
 
-        assert chunks == ["ㅊ...번역 ... The conversation is now ended.."]
+        assert chunks == ["반복 반복 반복 반복"]
         meta = engine.consume_last_stream_meta(111)
         assert meta is not None
         assert meta.get("repaired_response") == "네, 가능합니다. 화학 DFT 데이터 분석/정리를 도와드릴 수 있어요."
@@ -1028,7 +1058,7 @@ class TestProcessMessage:
         semantic_cache = AsyncMock()
         semantic_cache.is_cacheable = MagicMock(return_value=True)
         semantic_cache.get = AsyncMock(return_value=SimpleNamespace(
-            response="ㅎㅎ…(I’ll keep it short!)!)",
+            response="数据分析 数据分析 数据分析",
             cache_id=77,
         ))
         semantic_cache.invalidate_by_id = AsyncMock(return_value=True)
@@ -1061,10 +1091,7 @@ class TestProcessMessage:
         semantic_cache.is_cacheable = MagicMock(return_value=True)
         semantic_cache.get = AsyncMock(return_value=None)
         semantic_cache.put = AsyncMock()
-        mock_ollama.chat = AsyncMock(return_value=ChatResponse(content=(
-            "예! 아래 기본 흐름으로 진행하실 수 있어요...\n\n"
-            "The first part is what you are supposed to do.."
-        )))
+        mock_ollama.chat = AsyncMock(return_value=ChatResponse(content="数据分析 数据分析 数据分析"))
 
         engine = Engine(
             config=app_settings,
@@ -1079,11 +1106,11 @@ class TestProcessMessage:
         semantic_cache.put.assert_awaited_once()
         put_call = semantic_cache.put.await_args
         stored_response = put_call.args[1]
-        assert "The first part is what you are supposed to do" not in stored_response
-        assert "번역" not in stored_response
+        assert "数据分析" not in stored_response
+        assert "죄송합니다. 답변 생성에 문제가 있었습니다." in stored_response
 
     @pytest.mark.asyncio
-    async def test_short_mixed_language_response_repaired_before_semantic_cache_store(
+    async def test_repetition_response_repaired_before_semantic_cache_store(
         self,
         app_settings: AppSettings,
         mock_ollama: AsyncMock,
@@ -1094,7 +1121,9 @@ class TestProcessMessage:
         semantic_cache.is_cacheable = MagicMock(return_value=True)
         semantic_cache.get = AsyncMock(return_value=None)
         semantic_cache.put = AsyncMock()
-        mock_ollama.chat = AsyncMock(return_value=ChatResponse(content="ㅎㅎ…(I’ll keep it short!)!)"))
+        mock_ollama.chat = AsyncMock(return_value=ChatResponse(
+            content="summarysummarysummarysummarysummarysummary",
+        ))
 
         engine = Engine(
             config=app_settings,
@@ -1109,7 +1138,7 @@ class TestProcessMessage:
         semantic_cache.put.assert_awaited_once()
         put_call = semantic_cache.put.await_args
         stored_response = put_call.args[1]
-        assert "keep it short" not in stored_response.lower()
+        assert "summarysummary" not in stored_response
         assert "죄송합니다. 답변 생성에 문제가 있었습니다." in stored_response
 
     @pytest.mark.asyncio
@@ -1126,6 +1155,70 @@ class TestProcessMessage:
         result = await engine.process_message(111, "현재 상태를 간단히 설명해줘")
 
         assert result == "정상화된 답변입니다."
+        assert mock_ollama.chat.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_compact_repetition_response_retried_before_return(
+        self,
+        engine: Engine,
+        mock_ollama: AsyncMock,
+    ) -> None:
+        mock_ollama.chat = AsyncMock(side_effect=[
+            ChatResponse(content="summarysummarysummarysummarysummarysummary"),
+            ChatResponse(content="지금은 대기 중이에요. 필요한 작업을 말해줘."),
+        ])
+
+        result = await engine.process_message(111, "뭐해")
+
+        assert result == "지금은 대기 중이에요. 필요한 작업을 말해줘."
+        assert mock_ollama.chat.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_character_run_repetition_response_retried_before_return(
+        self,
+        engine: Engine,
+        mock_ollama: AsyncMock,
+    ) -> None:
+        mock_ollama.chat = AsyncMock(side_effect=[
+            ChatResponse(content="Page.PageNumber" + ("页" * 120)),
+            ChatResponse(content="지금은 요청을 기다리는 중이야."),
+        ])
+
+        result = await engine.process_message(111, "뭐해")
+
+        assert result == "지금은 요청을 기다리는 중이야."
+        assert mock_ollama.chat.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_short_korean_query_english_response_is_allowed(
+        self,
+        engine: Engine,
+        mock_ollama: AsyncMock,
+    ) -> None:
+        mock_ollama.chat = AsyncMock(return_value=ChatResponse(content=(
+            "I am currently waiting for commands and monitoring the pipeline "
+            "for next tasks from the system without interruption."
+        )))
+
+        result = await engine.process_message(111, "뭐해")
+
+        assert "currently waiting for commands" in result
+        assert mock_ollama.chat.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_short_status_query_uses_generic_guardrail_fallback_on_double_failure(
+        self,
+        engine: Engine,
+        mock_ollama: AsyncMock,
+    ) -> None:
+        mock_ollama.chat = AsyncMock(side_effect=[
+            ChatResponse(content="summarysummarysummarysummarysummarysummary"),
+            ChatResponse(content="Page.PageNumber" + ("页" * 80)),
+        ])
+
+        result = await engine.process_message(111, "뭐해")
+
+        assert result == "죄송합니다. 답변 생성에 문제가 있었습니다. 다시 한번 질문해 주시면 더 나은 답변을 드리겠습니다."
         assert mock_ollama.chat.await_count == 2
 
     @pytest.mark.asyncio

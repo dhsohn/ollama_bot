@@ -1,0 +1,17 @@
+name: "rag_reindex"
+description: "주 1회 RAG 코퍼스를 증분 재인덱싱합니다"
+version: "1.0"
+enabled: true
+schedule: "30 3 * * 0"
+action:
+  type: "callable"
+  target: "rag_reindex"
+  model_role: "low_cost"
+  parameters: {}
+output:
+  send_to_telegram: true
+  save_to_file: "reports/rag_reindex_{date}.md"
+retry:
+  max_attempts: 1
+  delay_seconds: 60
+timeout: 7200

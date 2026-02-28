@@ -237,6 +237,78 @@ class TestRAGIndexer:
 
             await indexer.close()
 
+    @pytest.mark.asyncio
+    async def test_index_corpus_skips_large_files(self, rag_config, mock_client):
+        rag_config.max_file_size_mb = 1
+        indexer = RAGIndexer(rag_config, mock_client, "test-embed")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(Path(tmpdir) / "test.db")
+            await indexer.initialize(db_path)
+
+            corpus_dir = Path(tmpdir) / "kb"
+            corpus_dir.mkdir()
+            (corpus_dir / "small.txt").write_text("small content " * 20, encoding="utf-8")
+            (corpus_dir / "large.txt").write_bytes(b"a" * (2 * 1024 * 1024))
+
+            result = await indexer.index_corpus(str(corpus_dir))
+            assert result["indexed"] >= 1
+            assert result["skipped_large"] >= 1
+
+            assert indexer._db is not None
+            async with indexer._db.execute(
+                "SELECT DISTINCT source_path FROM rag_chunks"
+            ) as cursor:
+                rows = await cursor.fetchall()
+            sources = {row[0] for row in rows}
+            assert os.path.normpath(str(corpus_dir / "small.txt")) in sources
+            assert os.path.normpath(str(corpus_dir / "large.txt")) not in sources
+
+            await indexer.close()
+
+    @pytest.mark.asyncio
+    async def test_index_corpus_commits_per_file_and_keeps_progress_on_failure(
+        self, rag_config,
+    ):
+        call_count = 0
+
+        async def embed_side_effect(texts, model=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count >= 2:
+                raise RuntimeError("embedding failure")
+            dim = 10
+            return [np.random.randn(dim).tolist() for _ in texts]
+
+        mock_client = AsyncMock()
+        mock_client.embed = AsyncMock(side_effect=embed_side_effect)
+
+        indexer = RAGIndexer(rag_config, mock_client, "test-embed")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(Path(tmpdir) / "test.db")
+            await indexer.initialize(db_path)
+
+            corpus_dir = Path(tmpdir) / "kb"
+            corpus_dir.mkdir()
+            file_a = corpus_dir / "a.txt"
+            file_b = corpus_dir / "b.txt"
+            file_a.write_text("alpha content " * 50, encoding="utf-8")
+            file_b.write_text("beta content " * 50, encoding="utf-8")
+
+            result = await indexer.index_corpus(str(corpus_dir))
+            assert result["indexed"] == 1
+            assert result["failed"] == 1
+
+            assert indexer._db is not None
+            async with indexer._db.execute(
+                "SELECT DISTINCT source_path FROM rag_chunks"
+            ) as cursor:
+                rows = await cursor.fetchall()
+            sources = {row[0] for row in rows}
+            assert os.path.normpath(str(file_a)) in sources
+            assert os.path.normpath(str(file_b)) not in sources
+
+            await indexer.close()
+
 
 class TestRAGRetriever:
 

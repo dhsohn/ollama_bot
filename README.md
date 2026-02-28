@@ -231,6 +231,7 @@ python -m apps.cli test
 | `memory_consolidation` | `0 4 * * sun` | 메모리 통합 압축 |
 | `export_training_data` | `0 3 * * 0` | KTO 학습 데이터 내보내기 |
 | `daily_summary` | `0 9 * * *` | 전일 대화 요약 |
+| `rag_reindex` | `30 3 * * 0` | 주 1회 RAG 증분 재인덱싱 |
 | `error_log_triage` | `0 */6 * * *` | 오류 로그 triage |
 | `health_check` | `*/30 * * * *` | 주기 헬스체크 |
 
@@ -313,9 +314,17 @@ timeout: 120
 ```yaml
 rag:
   enabled: true
+  startup_index_enabled: false   # 부팅 시 백그라운드 인덱싱 비활성화
   kb_dirs:
     - "/app/orca_runs"
     - "/app/orca_outputs"
+  max_file_size_mb: 2
+  supported_extensions:
+    - ".md"
+    - ".json"
+    - ".py"
+    - ".js"
+    - ".ts"
 ```
 
 `lemonade.instances` 예시:

@@ -124,14 +124,7 @@ _INJECTION_RE = _re.compile(
     _re.IGNORECASE,
 )
 _CODE_BLOCK_RE = _re.compile(r"```.*?```", _re.DOTALL)
-_ENGLISH_REQUEST_RE = _re.compile(
-    r"(영어|영문|in\s+english|english|translate|번역)",
-    _re.IGNORECASE,
-)
-_LOW_QUALITY_HINT_RE = _re.compile(
-    r"(i[’']?ll\s+keep\s+it\s+short|conversation\s+is\s+now\s+ended|^\s*ㅊ\.\.\.)",
-    _re.IGNORECASE,
-)
+_HAN_CHAR_RE = _re.compile(r"[\u4E00-\u9FFF]")
 _STREAM_META_TTL_SECONDS = 600.0
 _STREAM_META_MAX_ENTRIES = 2048
 _REASONING_TIMEOUT_SECONDS = 3600
@@ -140,6 +133,7 @@ _REASONING_MODEL_ROLES = {"reasoning", "coding", "vision"}
 _STREAM_REPEATED_CHUNK_ABORT_THRESHOLD = 30
 _RESPONSE_REVIEW_TIMEOUT_SECONDS = 300
 _RESPONSE_REVIEW_MAX_TOKENS = 1200
+_CONTEXT_HISTORY_MESSAGE_MAX_CHARS = 4000
 _SUMMARY_CHUNK_TRIGGER_CHARS = 6000
 _SUMMARY_CHUNK_MAX_CHARS = 3200
 _SUMMARY_CHUNK_OVERLAP_CHARS = 320
@@ -222,6 +216,7 @@ class Engine:
         self._summary_task_limit = max(2, summary_concurrency * 3)
         self._summary_tasks: set[asyncio.Task[Any]] = set()
         self._degraded_since: dict[str, float] = {}
+        self._rag_reindex_lock = asyncio.Lock()
 
     # ── 메시지 처리 (계층형 라우팅) ──
 
@@ -251,12 +246,25 @@ class Engine:
                         raise RuntimeError("routing_decision_invalid: missing skill")
                     self._logger.info("skill_triggered", chat_id=chat_id, skill=skill.name)
                     messages = await self._build_context(chat_id, text, skill=skill)
-                    content, usage = await self._run_skill_chat(
+                    content, usage, target_model = await self._run_skill_chat(
                         skill=skill,
                         messages=messages,
                         model_override=model_override,
                         chat_id=chat_id,
                     )
+                    content = sanitize_model_output(content).strip()
+                    if not self._is_cache_response_acceptable(text, content):
+                        repaired = await self._retry_low_quality_response(
+                            messages=messages,
+                            query=text,
+                            model=target_model,
+                            timeout=skill.timeout,
+                            max_tokens=skill.max_tokens,
+                        )
+                        replacement = repaired or self._build_guardrail_fallback(text)
+                        content = sanitize_model_output(replacement).strip()
+                    if not content:
+                        raise RuntimeError("empty_response_from_llm")
                     await self._persist_turn(chat_id, text, content, skill=skill)
                     self._log_request(t0, chat_id, "skill", usage, len(messages))
                     return content
@@ -364,6 +372,8 @@ class Engine:
                     self._logger.info("skill_triggered_stream", chat_id=chat_id, skill=skill.name)
                     messages = await self._build_context(chat_id, text, skill=skill)
                     full_response = ""
+                    repaired_response = None
+                    target_model: str | None = None
                     usage = None
                     if (
                         not skill.streaming
@@ -372,7 +382,7 @@ class Engine:
                             input_text=self._extract_skill_user_input(messages),
                         )
                     ):
-                        full_response, usage = await self._run_skill_chat(
+                        full_response, usage, target_model = await self._run_skill_chat(
                             skill=skill,
                             messages=messages,
                             model_override=model_override,
@@ -469,10 +479,30 @@ class Engine:
                             raise skill_stream_error
                     if not full_response.strip():
                         raise RuntimeError("empty_response_from_llm")
-                    full_response = sanitize_model_output(full_response)
+                    full_response = sanitize_model_output(full_response).strip()
+                    if not self._is_cache_response_acceptable(text, full_response):
+                        repaired = await self._retry_low_quality_response(
+                            messages=messages,
+                            query=text,
+                            model=target_model,
+                            timeout=skill.timeout,
+                            max_tokens=skill.max_tokens,
+                        )
+                        replacement = repaired or self._build_guardrail_fallback(text)
+                        replacement = sanitize_model_output(replacement).strip()
+                        if replacement and replacement != full_response:
+                            repaired_response = replacement
+                        full_response = replacement
+                    if not full_response.strip():
+                        raise RuntimeError("empty_response_from_llm")
                     await self._persist_turn(chat_id, text, full_response, skill=skill)
                     turn_persisted = True
-                    self._set_stream_meta(chat_id, tier="skill", usage=usage)
+                    self._set_stream_meta(
+                        chat_id,
+                        tier="skill",
+                        usage=usage,
+                        repaired_response=repaired_response,
+                    )
                     self._log_request(t0, chat_id, "skill", usage, len(messages))
                     return
 
@@ -1057,6 +1087,24 @@ class Engine:
             },
         }
 
+    async def reindex_rag_corpus(self, kb_dirs: list[str] | None = None) -> dict[str, Any]:
+        """RAG 코퍼스를 증분 재인덱싱하고 통계를 반환한다."""
+        if not self._config.rag.enabled or self._rag_pipeline is None:
+            raise RuntimeError("rag_pipeline_disabled")
+
+        roots = [str(path).strip() for path in (kb_dirs or self._config.rag.kb_dirs)]
+        roots = [path for path in roots if path]
+        if not roots:
+            raise ValueError("rag_kb_dirs_empty")
+
+        async with self._rag_reindex_lock:
+            result = await self._rag_pipeline.reindex_corpus(roots)
+
+        if isinstance(result, dict):
+            result.setdefault("roots", roots)
+            return result
+        return {"roots": roots}
+
     def consume_last_stream_meta(self, chat_id: int) -> dict[str, Any] | None:
         """스트리밍 처리 후 메타데이터를 1회성으로 반환한다."""
         self._cleanup_stream_meta()
@@ -1219,54 +1267,42 @@ class Engine:
             chat_id=chat_id if scope == "user" else None,
         )
 
-    @staticmethod
-    def _is_response_incomplete_for_cache(response: str) -> bool:
-        stripped = response.strip()
-        if not stripped:
-            return True
-        if stripped.endswith(("..", "...", "…", ":", "：", "-", "—", "•", "*")):
-            return True
-        return False
-
-    @staticmethod
-    def _query_requests_english(query: str) -> bool:
-        return bool(_ENGLISH_REQUEST_RE.search(query))
+    def _contains_disallowed_chinese(self, text: str) -> bool:
+        if self._normalize_language(self._config.bot.language) != "ko":
+            return False
+        probe = _CODE_BLOCK_RE.sub("", text)
+        return bool(_HAN_CHAR_RE.search(probe))
 
     def _is_language_consistent_for_cache(self, query: str, response: str) -> bool:
-        language = self._normalize_language(self._config.bot.language)
-        if language != "ko":
-            return True
-        if self._query_requests_english(query):
-            return True
-
-        probe = _CODE_BLOCK_RE.sub("", response)
-
-        hangul_count = len(_re.findall(r"[가-힣]", probe))
-        latin_count = len(_re.findall(r"[A-Za-z]", probe))
-        han_count = len(_re.findall(r"[\u4E00-\u9FFF]", probe))
-        query_hangul_count = len(_re.findall(r"[가-힣]", query))
-
-        if hangul_count >= 8 and latin_count > hangul_count * 2:
-            return False
-        if query_hangul_count >= 4 and han_count >= 6 and hangul_count < max(12, han_count // 2):
-            return False
-        if (
-            query_hangul_count >= 4
-            and hangul_count < 20
-            and (latin_count + han_count) > hangul_count * 2
-        ):
-            return False
-        if query_hangul_count >= 4 and hangul_count < 8 and latin_count >= 60:
-            return False
-        if query_hangul_count >= 4 and len(probe) < 60 and latin_count >= 8 and hangul_count < 10:
-            return False
-        if query_hangul_count >= 4 and len(probe) < 40 and latin_count >= 4:
-            return False
-        return True
+        _ = query
+        return not self._contains_disallowed_chinese(response)
 
     @staticmethod
     def _has_excessive_token_repetition(response: str) -> bool:
         probe = _CODE_BLOCK_RE.sub("", response).lower()
+        compact = _re.sub(r"\s+", "", probe)
+        if compact:
+            # 동일 문자 런(예: 页页页... 또는 ㅋㅋㅋㅋ...)을 탐지한다.
+            run_len = 1
+            for idx in range(1, len(compact)):
+                if compact[idx] == compact[idx - 1]:
+                    run_len += 1
+                    if (
+                        run_len >= 12
+                        and _re.match(r"[a-z0-9가-힣\u4e00-\u9fff]", compact[idx])
+                    ):
+                        return True
+                else:
+                    run_len = 1
+
+            # 붙여쓰기 반복 루프(예: summarysummary..., 뭐해뭐해...)를 탐지한다.
+            if _re.search(r"([a-z]{2,12})\1{4,}", compact):
+                return True
+            if _re.search(r"([가-힣]{1,6})\1{4,}", compact):
+                return True
+            if _re.search(r"([\u4e00-\u9fff]{1,3})\1{6,}", compact):
+                return True
+
         tokens = _re.findall(r"[a-z]{2,}|[가-힣]{2,}|[\u4e00-\u9fff]{1,}", probe)
         if len(tokens) < 4:
             return False
@@ -1297,16 +1333,11 @@ class Engine:
         stripped = sanitize_model_output(response).strip()
         if not stripped:
             return True
-        if _LOW_QUALITY_HINT_RE.search(stripped):
-            return True
         if self._has_excessive_token_repetition(stripped):
-            return True
-        if self._is_response_incomplete_for_cache(stripped):
             return True
         return False
 
     def _build_guardrail_fallback(self, query: str) -> str:
-        _ = query
         if self._normalize_language(self._config.bot.language) == "ko":
             return (
                 "죄송합니다. 답변 생성에 문제가 있었습니다. "
@@ -1330,9 +1361,9 @@ class Engine:
         retry_messages.append({
             "role": "user",
             "content": (
-                "직전 답변이 품질이 낮았습니다. 내부 주석/번역 문구/영어 혼용을 제거하고, "
-                "중국어/영어 문장을 섞지 말고, "
-                "사용자 질문에 대해 한국어로 완결된 3~6문장 답변을 다시 작성하세요."
+                "직전 답변이 반복 출력 또는 중국어 포함으로 품질 기준을 통과하지 못했습니다. "
+                "동일 단어/구절 반복을 제거하고 중국어(한자)를 사용하지 말고 "
+                "사용자 질문에 맞춰 자연스럽게 다시 답하세요."
             ),
         })
         try:
@@ -2060,7 +2091,7 @@ class Engine:
         temperature_override: float | None = None,
         timeout_override: int | None = None,
         chat_id: int | None = None,
-    ) -> tuple[str, Any]:
+    ) -> tuple[str, Any, str | None]:
         resolved_timeout = int(timeout_override or skill.timeout)
         resolved_role = (model_role_override or skill.model_role).strip().lower()
         resolved_max_tokens = (
@@ -2099,7 +2130,7 @@ class Engine:
             timeout=resolved_timeout,
         )
         content = sanitize_model_output(chat_response.content)
-        return content, chat_response.usage
+        return content, chat_response.usage, target_model
 
     async def _run_chunked_summary_pipeline(
         self,
@@ -2109,7 +2140,7 @@ class Engine:
         model_override: str | None,
         timeout_override: int | None = None,
         chat_id: int | None,
-    ) -> tuple[str, Any]:
+    ) -> tuple[str, Any, str | None]:
         user_input = self._extract_skill_user_input(messages)
         chunks = self._split_text_for_summary(user_input)
         if len(chunks) <= 1:
@@ -2230,7 +2261,7 @@ class Engine:
             map_model=map_model,
             reduce_model=reduce_model,
         )
-        return final_summary, reduce_response.usage
+        return final_summary, reduce_response.usage, reduce_model
 
     async def _prepare_target_model(
         self,
@@ -2438,6 +2469,7 @@ class Engine:
         if skill:
             system = skill.system_prompt
             history = await self._memory.get_conversation(chat_id, limit=5)
+            history = self._sanitize_history_for_prompt(history)
             return system, history
 
         system = self._system_prompt
@@ -2451,7 +2483,59 @@ class Engine:
             )
         else:
             history = await self._memory.get_conversation(chat_id, limit=max_hist)
+        history = self._sanitize_history_for_prompt(history)
         return system, history
+
+    def _sanitize_history_for_prompt(
+        self,
+        history: list[dict[str, str]],
+    ) -> list[dict[str, str]]:
+        """프롬프트 오염을 유발하는 저품질 이력을 제거/축약한다."""
+        if not history:
+            return []
+
+        sanitized_history: list[dict[str, str]] = []
+        dropped_assistant_messages = 0
+        truncated_messages = 0
+
+        for turn in history:
+            role = str(turn.get("role", "")).strip().lower()
+            if role not in {"user", "assistant", "system"}:
+                continue
+
+            content = sanitize_model_output(str(turn.get("content", ""))).strip()
+            if not content:
+                continue
+
+            if role == "assistant":
+                if self._has_excessive_token_repetition(content):
+                    dropped_assistant_messages += 1
+                    continue
+                if self._contains_disallowed_chinese(content):
+                    dropped_assistant_messages += 1
+                    continue
+
+            if len(content) > _CONTEXT_HISTORY_MESSAGE_MAX_CHARS:
+                content = (
+                    content[:_CONTEXT_HISTORY_MESSAGE_MAX_CHARS].rstrip()
+                    + "\n...(중략)"
+                )
+                truncated_messages += 1
+
+            sanitized_history.append({"role": role, "content": content})
+
+        if dropped_assistant_messages:
+            self._logger.info(
+                "history_suspicious_assistant_messages_dropped",
+                dropped=dropped_assistant_messages,
+            )
+        if truncated_messages:
+            self._logger.debug(
+                "history_messages_truncated_for_prompt",
+                truncated=truncated_messages,
+                max_chars=_CONTEXT_HISTORY_MESSAGE_MAX_CHARS,
+            )
+        return sanitized_history
 
     async def _inject_preferences(self, system: str, chat_id: int) -> str:
         preferences = await self._memory.recall_memory(chat_id, category="preferences")
@@ -2634,7 +2718,7 @@ class Engine:
             {"role": "user", "content": input_text},
         ]
 
-        content, _ = await self._run_skill_chat(
+        content, _, _ = await self._run_skill_chat(
             skill=skill,
             messages=messages,
             model_override=model_override,

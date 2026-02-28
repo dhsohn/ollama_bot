@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -39,6 +39,10 @@ class RAGRetriever:
     async def get_all_chunks(self) -> list[Chunk]:
         """인덱스의 전체 청크를 반환한다 (full-scan 용도)."""
         return await self._indexer.get_all_chunks()
+
+    async def reindex(self, kb_paths: str | list[str]) -> dict[str, Any]:
+        """지정 경로를 대상으로 증분 재인덱싱을 수행한다."""
+        return await self._indexer.index_corpus(kb_paths)
 
     async def retrieve(
         self,

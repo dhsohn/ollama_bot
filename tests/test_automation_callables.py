@@ -1198,6 +1198,76 @@ class TestHealthCheckCallable:
         assert "1건" in result
 
 
+def _rag_reindex_auto(**overrides) -> AutoDefinition:
+    """rag_reindex AutoDefinition 생성 헬퍼."""
+    payload: dict[str, object] = {
+        "name": "rag_reindex",
+        "description": "RAG 인덱스 재생성",
+        "schedule": "30 3 * * 0",
+        "action": AutoAction(
+            type="callable",
+            target="rag_reindex",
+            parameters=overrides.get("parameters", {}),
+        ),
+    }
+    if "output" in overrides:
+        payload["output"] = overrides["output"]
+    if "retry" in overrides:
+        payload["retry"] = overrides["retry"]
+    if "timeout" in overrides:
+        payload["timeout"] = overrides["timeout"]
+    return AutoDefinition(
+        **payload,
+    )
+
+
+class TestRAGReindexCallable:
+    @pytest.mark.asyncio
+    async def test_rag_reindex_formats_result(
+        self,
+        scheduler: AutoScheduler,
+        app_settings: AppSettings,
+        memory_manager: MemoryManager,
+    ) -> None:
+        engine = AsyncMock()
+        engine.reindex_rag_corpus = AsyncMock(return_value={
+            "roots": ["/app/orca_runs", "/app/orca_outputs"],
+            "indexed": 12,
+            "skipped": 44,
+            "removed": 2,
+            "failed": 0,
+            "skipped_large": 3,
+            "total_chunks": 1234,
+        })
+        _setup_callables(scheduler, engine, memory_manager, app_settings)
+
+        result = await scheduler._run_action(_rag_reindex_auto())
+
+        assert "RAG 재인덱싱 결과" in result
+        assert "indexed: 12" in result
+        assert "skipped: 44" in result
+        assert "대용량 제외: 3" in result
+        assert "total_chunks: 1234" in result
+        engine.reindex_rag_corpus.assert_awaited_once_with(None)
+
+    @pytest.mark.asyncio
+    async def test_rag_reindex_passes_custom_kb_dirs(
+        self,
+        scheduler: AutoScheduler,
+        app_settings: AppSettings,
+        memory_manager: MemoryManager,
+    ) -> None:
+        engine = AsyncMock()
+        engine.reindex_rag_corpus = AsyncMock(return_value={"indexed": 0})
+        _setup_callables(scheduler, engine, memory_manager, app_settings)
+
+        await scheduler._run_action(
+            _rag_reindex_auto(parameters={"kb_dirs": [" /app/a ", "/app/b"]}),
+        )
+
+        engine.reindex_rag_corpus.assert_awaited_once_with(["/app/a", "/app/b"])
+
+
 # ── memory_hygiene 테스트 ──
 
 

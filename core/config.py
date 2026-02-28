@@ -330,7 +330,9 @@ class RAGConfig(BaseModel):
 
     enabled: bool = True
     kb_dirs: list[str] = Field(default_factory=lambda: ["./kb"])
+    startup_index_enabled: bool = True
     index_dir: str = ""
+    max_file_size_mb: int = 16
     chunk_min_tokens: int = 500
     chunk_max_tokens: int = 1200
     chunk_overlap_ratio: float = 0.15
@@ -354,6 +356,13 @@ class RAGConfig(BaseModel):
     def validate_overlap(cls, value: float) -> float:
         if not 0.0 <= value <= 0.5:
             raise ValueError("chunk_overlap_ratio must be between 0.0 and 0.5")
+        return value
+
+    @field_validator("max_file_size_mb")
+    @classmethod
+    def validate_max_file_size_mb(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("max_file_size_mb must be >= 1")
         return value
 
 

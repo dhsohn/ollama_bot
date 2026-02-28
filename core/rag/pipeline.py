@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from core.config import RAGConfig
 from core.logging_setup import get_logger
@@ -43,6 +43,10 @@ class RAGPipeline:
     async def get_all_chunks(self) -> list[Chunk]:
         """인덱스의 전체 청크를 반환한다 (full-scan 용도)."""
         return await self._retriever.get_all_chunks()
+
+    async def reindex_corpus(self, kb_paths: str | list[str]) -> dict[str, Any]:
+        """지정 경로를 대상으로 증분 재인덱싱을 수행한다."""
+        return await self._retriever.reindex(kb_paths)
 
     def should_trigger_rag(
         self,

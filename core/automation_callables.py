@@ -21,6 +21,9 @@ from core.automation_callables_impl.observability import (
     build_error_log_triage_callable,
     build_health_check_callable,
 )
+from core.automation_callables_impl.rag import (
+    build_rag_reindex_callable,
+)
 from core.automation_callables_impl.summary import (
     build_daily_summary_callable,
     build_extract_preferences_callable,
@@ -92,6 +95,13 @@ def register_builtin_callables(
             engine=engine,
             memory=memory,
             allowed_users=allowed_users,
+            logger=logger,
+        ),
+    )
+    scheduler.register_callable(
+        "rag_reindex",
+        build_rag_reindex_callable(
+            engine=engine,
             logger=logger,
         ),
     )

@@ -130,6 +130,8 @@ class RAGIndexer:
         # 1) 지원 확장자 파일 목록
         active_roots: list[str] = []
         files_set: set[str] = set()
+        skipped_large = 0
+        max_file_size_bytes = int(self._config.max_file_size_mb) * 1024 * 1024
         for root in normalized_dirs:
             kb_path = Path(root)
             if not kb_path.exists():
@@ -138,10 +140,20 @@ class RAGIndexer:
             root_text = self._normalize_path(str(kb_path))
             active_roots.append(root_text)
             for ext in self._config.supported_extensions:
-                files_set.update(
-                    self._normalize_path(str(p))
-                    for p in kb_path.rglob(f"*{ext}")
-                )
+                for path_obj in kb_path.rglob(f"*{ext}"):
+                    if not path_obj.is_file():
+                        continue
+                    normalized_path = self._normalize_path(str(path_obj))
+                    if normalized_path in files_set:
+                        continue
+                    try:
+                        size_bytes = path_obj.stat().st_size
+                    except OSError:
+                        continue
+                    if size_bytes > max_file_size_bytes:
+                        skipped_large += 1
+                        continue
+                    files_set.add(normalized_path)
         files = sorted(files_set)
 
         if not active_roots:
@@ -181,60 +193,76 @@ class RAGIndexer:
                 "DELETE FROM rag_chunks WHERE source_path = ?", (raw_path,),
             )
             removed += 1
+        if removed:
+            await self._db.commit()
 
         # 5) 변경/신규 파일 재인덱싱
         indexed = 0
+        failed = 0
         for fpath in to_index:
-            # 기존 청크 삭제
-            await self._db.execute(
-                "DELETE FROM rag_chunks WHERE source_path = ?", (fpath,),
-            )
-            chunks = self._chunker.chunk_file(fpath)
-            if not chunks:
-                continue
-
-            # 배치 임베딩
-            texts = [c.text for c in chunks]
-            embeddings = await self._batch_embed(texts)
-
-            for chunk, emb in zip(chunks, embeddings):
-                emb_blob = np.array(emb, dtype=np.float32).tobytes()
+            try:
+                # 기존 청크 삭제
                 await self._db.execute(
-                    """INSERT INTO rag_chunks
-                    (doc_id, source_path, chunk_id, section_title, text,
-                     embedding, content_hash, mtime, tokens_estimate, file_type)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (
-                        chunk.metadata.doc_id,
-                        chunk.metadata.source_path,
-                        chunk.metadata.chunk_id,
-                        chunk.metadata.section_title,
-                        chunk.text,
-                        emb_blob,
-                        chunk.metadata.content_hash,
-                        chunk.metadata.mtime,
-                        chunk.metadata.tokens_estimate,
-                        chunk.metadata.file_type,
-                    ),
+                    "DELETE FROM rag_chunks WHERE source_path = ?", (fpath,),
                 )
-            indexed += 1
+                chunks = self._chunker.chunk_file(fpath)
+                if chunks:
+                    # 배치 임베딩
+                    texts = [c.text for c in chunks]
+                    embeddings = await self._batch_embed(texts)
 
-        await self._db.commit()
+                    for chunk, emb in zip(chunks, embeddings):
+                        emb_blob = np.array(emb, dtype=np.float32).tobytes()
+                        await self._db.execute(
+                            """INSERT INTO rag_chunks
+                            (doc_id, source_path, chunk_id, section_title, text,
+                             embedding, content_hash, mtime, tokens_estimate, file_type)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                            (
+                                chunk.metadata.doc_id,
+                                chunk.metadata.source_path,
+                                chunk.metadata.chunk_id,
+                                chunk.metadata.section_title,
+                                chunk.text,
+                                emb_blob,
+                                chunk.metadata.content_hash,
+                                chunk.metadata.mtime,
+                                chunk.metadata.tokens_estimate,
+                                chunk.metadata.file_type,
+                            ),
+                        )
+                    indexed += 1
+                await self._db.commit()
+            except Exception as exc:
+                failed += 1
+                await self._db.rollback()
+                self._logger.warning(
+                    "rag_file_index_failed",
+                    path=fpath,
+                    error=str(exc),
+                )
+
         await self._load_index_to_memory()
 
         elapsed = (time.monotonic() - t0) * 1000
+        skipped_unchanged = len(files) - len(to_index)
+        skipped_total = skipped_unchanged + skipped_large
         self._logger.info(
             "corpus_indexed",
             indexed=indexed,
-            skipped=len(files) - len(to_index),
+            skipped=skipped_total,
             removed=removed,
+            skipped_large=skipped_large,
+            failed=failed,
             total_chunks=self.chunk_count,
             latency_ms=round(elapsed, 1),
         )
         return {
             "indexed": indexed,
-            "skipped": len(files) - len(to_index),
+            "skipped": skipped_total,
             "removed": removed,
+            "skipped_large": skipped_large,
+            "failed": failed,
             "total_chunks": self.chunk_count,
         }
 

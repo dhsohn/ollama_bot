@@ -152,9 +152,11 @@ model_routing:
 
 rag:
   enabled: true
+  startup_index_enabled: false
   kb_dirs:
     - "/app/orca_runs"
     - "/app/orca_outputs"
+  max_file_size_mb: 2
   trigger_keywords:
     - "문서"
     - "프로젝트"
@@ -178,13 +180,7 @@ rag:
   retrieval_score_floor: 0.3
   supported_extensions:
     - ".md"
-    - ".txt"
-    - ".pdf"
-    - ".docx"
-    - ".html"
-    - ".htm"
     - ".json"
-    - ".csv"
     - ".py"
     - ".js"
     - ".ts"

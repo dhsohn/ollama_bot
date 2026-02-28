@@ -504,7 +504,7 @@ async def _build_runtime(
                         logger.warning("rag_kb_path_not_found", path=root_dir)
                         continue
                     kb_dirs_to_index.append(root_dir)
-                if kb_dirs_to_index:
+                if kb_dirs_to_index and config.rag.startup_index_enabled:
                     async def _run_rag_startup_index() -> None:
                         try:
                             result = await indexer.index_corpus(kb_dirs_to_index)
@@ -524,6 +524,12 @@ async def _build_runtime(
                     )
                     logger.info(
                         "rag_startup_index_started",
+                        roots=len(kb_dirs_to_index),
+                    )
+                elif kb_dirs_to_index:
+                    logger.info(
+                        "rag_startup_index_skipped",
+                        reason="disabled",
                         roots=len(kb_dirs_to_index),
                     )
                 else:
