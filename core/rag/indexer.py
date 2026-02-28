@@ -84,44 +84,101 @@ class RAGIndexer:
     def chunk_count(self) -> int:
         return len(self._row_ids)
 
-    async def index_corpus(self, kb_dir: str) -> dict[str, Any]:
-        """코퍼스를 인덱싱한다. 증분 지원."""
+    @staticmethod
+    def _normalize_path(path: str) -> str:
+        return os.path.normpath(path)
+
+    @classmethod
+    def _is_under_roots(cls, path: str, roots: list[str]) -> bool:
+        normalized_path = cls._normalize_path(path)
+        for root in roots:
+            normalized_root = cls._normalize_path(root)
+            if normalized_path == normalized_root:
+                return True
+            if normalized_path.startswith(normalized_root + os.sep):
+                return True
+        return False
+
+    async def index_corpus(self, kb_dir: str | list[str]) -> dict[str, Any]:
+        """코퍼스를 인덱싱한다. 증분 지원.
+
+        Args:
+            kb_dir:
+                단일 경로(str) 또는 다중 경로(list[str]).
+                다중 경로일 경우 합집합 기준으로 인덱싱/정리를 수행한다.
+        """
         assert self._db is not None
         t0 = time.monotonic()
-        kb_path = Path(kb_dir)
-        if not kb_path.exists():
+
+        requested_dirs = [kb_dir] if isinstance(kb_dir, str) else list(kb_dir)
+        seen_dirs: set[str] = set()
+        kb_dirs: list[str] = []
+        for item in requested_dirs:
+            path_text = str(item).strip()
+            if not path_text:
+                continue
+            normalized = self._normalize_path(path_text)
+            if normalized in seen_dirs:
+                continue
+            seen_dirs.add(normalized)
+            kb_dirs.append(path_text)
+
+        if not kb_dirs:
             self._logger.warning("kb_dir_not_found", path=kb_dir)
-            return {"indexed": 0, "skipped": 0, "removed": 0}
+            return {"indexed": 0, "skipped": 0, "removed": 0, "total_chunks": self.chunk_count}
 
         # 1) 지원 확장자 파일 목록
-        files: list[str] = []
-        for ext in self._config.supported_extensions:
-            files.extend(str(p) for p in kb_path.rglob(f"*{ext}"))
+        active_roots: list[str] = []
+        files_set: set[str] = set()
+        for root in kb_dirs:
+            kb_path = Path(root)
+            if not kb_path.exists():
+                self._logger.warning("kb_dir_not_found", path=root)
+                continue
+            root_text = self._normalize_path(str(kb_path))
+            active_roots.append(root_text)
+            for ext in self._config.supported_extensions:
+                files_set.update(
+                    self._normalize_path(str(p))
+                    for p in kb_path.rglob(f"*{ext}")
+                )
+        files = sorted(files_set)
+
+        if not active_roots:
+            return {"indexed": 0, "skipped": 0, "removed": 0, "total_chunks": self.chunk_count}
 
         # 2) 기존 인덱스의 source_path → content_hash 매핑
-        existing: dict[str, str] = {}
+        existing_hash_by_norm: dict[str, str] = {}
+        existing_raw_by_norm: dict[str, str] = {}
         async with self._db.execute(
             "SELECT DISTINCT source_path, content_hash FROM rag_chunks"
         ) as cursor:
             async for row in cursor:
-                existing[row["source_path"]] = row["content_hash"]
+                source_path = str(row["source_path"])
+                normalized_path = self._normalize_path(source_path)
+                existing_hash_by_norm[normalized_path] = row["content_hash"]
+                existing_raw_by_norm[normalized_path] = source_path
 
         # 3) 변경분 검출
         to_index: list[str] = []
-        to_remove: set[str] = set(existing.keys())
+        to_remove: set[str] = {
+            path for path in existing_hash_by_norm
+            if self._is_under_roots(path, active_roots)
+        }
 
         for fpath in files:
             to_remove.discard(fpath)
             current_hash = DocumentChunker.content_hash(fpath)
-            if existing.get(fpath) == current_hash:
+            if existing_hash_by_norm.get(fpath) == current_hash:
                 continue
             to_index.append(fpath)
 
         # 4) 삭제된 파일의 청크 제거
         removed = 0
         for path in to_remove:
+            raw_path = existing_raw_by_norm.get(path, path)
             await self._db.execute(
-                "DELETE FROM rag_chunks WHERE source_path = ?", (path,),
+                "DELETE FROM rag_chunks WHERE source_path = ?", (raw_path,),
             )
             removed += 1
 

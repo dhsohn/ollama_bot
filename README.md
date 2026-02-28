@@ -260,6 +260,17 @@ timeout: 120
 - `instant_responder`, `semantic_cache`, `intent_router`, `context_compressor`
 - `model_registry`, `model_routing`, `rag`
 
+`rag` 다중 코퍼스 디렉토리 예시:
+
+```yaml
+rag:
+  enabled: true
+  kb_dir: "/app/orca_runs"      # 호환용 단일 경로
+  kb_dirs:                      # 권장: 다중 경로
+    - "/app/orca_runs"
+    - "/app/orca_outputs"
+```
+
 `lemonade.instances` 예시:
 
 ```yaml

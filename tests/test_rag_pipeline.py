@@ -202,6 +202,41 @@ class TestRAGIndexer:
 
             await indexer.close()
 
+    @pytest.mark.asyncio
+    async def test_index_multiple_kb_dirs_keeps_all_sources(self, rag_config, mock_client):
+        indexer = RAGIndexer(rag_config, mock_client, "test-embed")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(Path(tmpdir) / "test.db")
+            await indexer.initialize(db_path)
+
+            kb_a = Path(tmpdir) / "kb_a"
+            kb_b = Path(tmpdir) / "kb_b"
+            kb_a.mkdir()
+            kb_b.mkdir()
+            file_a = kb_a / "a.txt"
+            file_b = kb_b / "b.txt"
+            file_a.write_text("A content " * 20, encoding="utf-8")
+            file_b.write_text("B content " * 20, encoding="utf-8")
+
+            result = await indexer.index_corpus([str(kb_a), str(kb_b)])
+            assert result["indexed"] >= 2
+            assert indexer.chunk_count > 0
+
+            assert indexer._db is not None
+            async with indexer._db.execute(
+                "SELECT DISTINCT source_path FROM rag_chunks"
+            ) as cursor:
+                rows = await cursor.fetchall()
+            sources = {row[0] for row in rows}
+            assert os.path.normpath(str(file_a)) in sources
+            assert os.path.normpath(str(file_b)) in sources
+
+            result_2 = await indexer.index_corpus([str(kb_a), str(kb_b)])
+            assert result_2["indexed"] == 0
+            assert result_2["skipped"] >= 2
+
+            await indexer.close()
+
 
 class TestRAGRetriever:
 

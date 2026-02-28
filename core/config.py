@@ -330,6 +330,7 @@ class RAGConfig(BaseModel):
 
     enabled: bool = True
     kb_dir: str = "./kb"
+    kb_dirs: list[str] = Field(default_factory=list)
     index_dir: str = ""
     chunk_min_tokens: int = 500
     chunk_max_tokens: int = 1200

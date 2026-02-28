@@ -151,8 +151,11 @@ model_routing:
   embedding_cache_size: 5000
 
 rag:
-  enabled: false
-  kb_dir: "./kb"
+  enabled: true
+  kb_dir: "/app/orca_runs"
+  kb_dirs:
+    - "/app/orca_runs"
+    - "/app/orca_outputs"
   chunk_min_tokens: 500
   chunk_max_tokens: 1200
   chunk_overlap_ratio: 0.15

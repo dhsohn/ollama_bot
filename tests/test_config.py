@@ -404,3 +404,28 @@ def test_invalid_llm_provider_raises(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="llm_provider"):
         load_config(config_path=str(config_path), env_file=str(env_path))
+
+
+def test_rag_kb_dirs_loaded_from_yaml(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    env_path = tmp_path / ".env"
+    config_path.write_text(
+        "\n".join(
+            [
+                "rag:",
+                "  enabled: true",
+                "  kb_dirs:",
+                "    - \"/app/orca_runs\"",
+                "    - \"/app/orca_outputs\"",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    env_path.write_text(
+        "TELEGRAM_BOT_TOKEN=test_token\nALLOWED_TELEGRAM_USERS=111",
+        encoding="utf-8",
+    )
+
+    settings = load_config(config_path=str(config_path), env_file=str(env_path))
+    assert settings.rag.enabled is True
+    assert settings.rag.kb_dirs == ["/app/orca_runs", "/app/orca_outputs"]
