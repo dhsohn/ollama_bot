@@ -58,6 +58,16 @@ def mock_engine() -> AsyncMock:
         "memory_count": 5,
         "oldest_conversation": "2026-01-01",
     })
+    engine.analyze_all_corpus = AsyncMock(return_value={
+        "answer": "전체 분석 결과",
+        "stats": {
+            "total_chunks": 10,
+            "total_segments": 2,
+            "mapped_segments": 2,
+            "evidence_lines": 4,
+            "duration_ms": 1234.5,
+        },
+    })
     engine.clear_conversation = AsyncMock(return_value=0)
     engine.export_conversation_markdown = AsyncMock()
     return engine
@@ -215,6 +225,86 @@ class TestModelCommand:
         message.reply_text.assert_awaited_once_with(
             "모델 변경 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요."
         )
+
+
+class TestAnalyzeAllCommand:
+    @pytest.mark.asyncio
+    async def test_analyze_all_requires_query_arg(
+        self,
+        telegram_handler: TelegramHandler,
+    ) -> None:
+        chat = MagicMock()
+        chat.id = 111
+        chat.type = "private"
+
+        message = MagicMock()
+        message.reply_text = AsyncMock()
+
+        update = MagicMock()
+        update.effective_chat = chat
+        update.effective_message = message
+
+        context = MagicMock()
+        context.args = []
+
+        await telegram_handler._cmd_analyze_all(update, context)
+
+        message.reply_text.assert_awaited_once_with("사용법: /analyze_all [질문]")
+
+    @pytest.mark.asyncio
+    async def test_analyze_all_runs_and_updates_progress(
+        self,
+        telegram_handler: TelegramHandler,
+    ) -> None:
+        async def _analyze(query: str, progress_callback=None):
+            assert query == "전체 문서를 분석해줘"
+            if progress_callback is not None:
+                await progress_callback({"phase": "collect"})
+                await progress_callback({"phase": "map_start", "total_chunks": 12, "total_segments": 3})
+                await progress_callback({
+                    "phase": "map",
+                    "processed_segments": 3,
+                    "total_segments": 3,
+                    "mapped_segments": 2,
+                    "evidence_lines": 5,
+                })
+                await progress_callback({"phase": "final"})
+            return {
+                "answer": "최종 분석 결과입니다.",
+                "stats": {
+                    "total_chunks": 12,
+                    "total_segments": 3,
+                    "mapped_segments": 2,
+                    "evidence_lines": 5,
+                    "duration_ms": 888.8,
+                },
+            }
+
+        telegram_handler._engine.analyze_all_corpus = AsyncMock(side_effect=_analyze)
+
+        chat = MagicMock()
+        chat.id = 111
+        chat.type = "private"
+        chat.send_action = AsyncMock()
+
+        progress_message = MagicMock()
+        progress_message.edit_text = AsyncMock()
+        message = MagicMock()
+        message.reply_text = AsyncMock(return_value=progress_message)
+
+        update = MagicMock()
+        update.effective_chat = chat
+        update.effective_message = message
+
+        context = MagicMock()
+        context.args = ["전체", "문서를", "분석해줘"]
+
+        await telegram_handler._cmd_analyze_all(update, context)
+
+        telegram_handler._engine.analyze_all_corpus.assert_awaited_once()
+        edited_texts = [call.args[0] for call in progress_message.edit_text.await_args_list]
+        assert any("전체 문서 분석 결과" in text for text in edited_texts)
+        assert any("최종 분석 결과입니다." in text for text in edited_texts)
 
 
 class TestReloadCommands:
@@ -629,6 +719,62 @@ class TestHandleMessage:
 
         edited_texts = [call.args[0] for call in sent_message.edit_text.await_args_list]
         assert "수정된 최종 답변입니다." in edited_texts
+
+    @pytest.mark.asyncio
+    async def test_handle_message_recovers_with_non_stream_call_when_stream_stops_early(
+        self,
+        app_config: AppSettings,
+        mock_engine: AsyncMock,
+        security: SecurityManager,
+    ) -> None:
+        handler = TelegramHandler(config=app_config, engine=mock_engine, security=security)
+
+        async def _stream():
+            yield "partial"
+
+        handler._engine.process_message_stream = MagicMock(return_value=_stream())
+        handler._engine.consume_last_stream_meta = MagicMock(return_value=None)
+        handler._engine.process_message = AsyncMock(return_value="복구된 최종 답변")
+
+        chat = MagicMock()
+        chat.id = 111
+        chat.type = "private"
+        chat.send_action = AsyncMock()
+
+        sent_message = MagicMock()
+        sent_message.edit_text = AsyncMock()
+        sent_message.message_id = 42
+        sent_message.edit_reply_markup = AsyncMock()
+
+        message = MagicMock()
+        message.text = "hello"
+        message.reply_text = AsyncMock(return_value=sent_message)
+
+        update = MagicMock()
+        update.effective_chat = chat
+        update.effective_message = message
+
+        async def fake_stream_and_render(**kwargs):
+            return SimpleNamespace(
+                full_response="partial",
+                last_message=sent_message,
+                stop_reason="repeated_chunks",
+                tier="full",
+                intent=None,
+                cache_id=None,
+                usage=None,
+            )
+
+        with patch("core.telegram_handler.stream_and_render", new=fake_stream_and_render):
+            await handler._handle_message(update, MagicMock())
+
+        handler._engine.process_message.assert_awaited_once_with(
+            111,
+            "hello",
+            images=None,
+        )
+        edited_texts = [call.args[0] for call in sent_message.edit_text.await_args_list]
+        assert "복구된 최종 답변" in edited_texts
 
     @pytest.mark.asyncio
     async def test_handle_image_only_message_routes_with_empty_text(

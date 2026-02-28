@@ -60,9 +60,9 @@ flowchart TD
     ACT -->|prompt| P[Engine.process_prompt]
     ACT -->|skill| K[Engine.execute_skill]
     ACT -->|callable| C[등록 callable 실행]
-    P --> AM[action.model / action.model_role]
+    P --> AM[action.model, action.model_role]
     K --> AM
-    C --> CK[선택 kwargs 주입(model/model_role 등)]
+    C --> CK[선택 kwargs 주입: model, model_role 등]
     AM --> LLM[LLM 호출]
     CK --> LLM
     LLM --> AO[텔레그램 전송/파일 저장]
@@ -207,6 +207,7 @@ python -m apps.cli test
 | `/memory clear` | 현재 채팅 대화 기록 삭제 |
 | `/memory export` | 현재 채팅 기록 markdown 내보내기 |
 | `/status` | 시스템 상태 |
+| `/analyze_all <질문>` | RAG 인덱스 전체 문서를 map-reduce로 읽어 분석 |
 | `/feedback` | 피드백 통계 (`feedback.enabled: true`일 때) |
 | `/skip` | 부정 피드백 사유 입력 건너뛰기 (`collect_reason: true`일 때) |
 

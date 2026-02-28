@@ -23,6 +23,7 @@ class StreamResult:
 
     full_response: str
     last_message: Any  # telegram.Message
+    stop_reason: str | None = None
     tier: str = "full"
     intent: str | None = None
     cache_id: int | None = None
@@ -228,4 +229,8 @@ async def stream_and_render(
     final_response = sanitize_model_output(full_response)
     if notice:
         final_response = f"{final_response}\n\n{notice}".strip()
-    return StreamResult(full_response=final_response, last_message=last_msg)
+    return StreamResult(
+        full_response=final_response,
+        last_message=last_msg,
+        stop_reason=stop_reason,
+    )

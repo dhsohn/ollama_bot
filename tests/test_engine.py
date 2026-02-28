@@ -15,6 +15,7 @@ from core.config import AppSettings, BotConfig, OllamaConfig, SecurityConfig, Me
 from core.engine import Engine
 from core.memory import MemoryManager
 from core.ollama_client import ChatResponse, ChatUsage
+from core.rag.types import Chunk, ChunkMetadata, RAGResult, RAGTrace
 from core.skill_manager import SkillDefinition, SecurityLevel, SkillManager
 
 
@@ -316,6 +317,117 @@ class TestProcessMessage:
         model_router.route.assert_awaited_once()
         call_args = mock_ollama.chat.call_args
         assert call_args.kwargs.get("model") == "vision-model"
+
+    @pytest.mark.asyncio
+    async def test_rag_context_promotes_reasoning_model_when_available(
+        self,
+        app_settings: AppSettings,
+        mock_ollama,
+        memory: MemoryManager,
+        mock_skills: MagicMock,
+    ) -> None:
+        model_router = AsyncMock()
+        model_router.route = AsyncMock(return_value=SimpleNamespace(
+            selected_model=app_settings.model_registry.low_cost_model,
+            selected_role="low_cost",
+            trigger="classifier",
+            confidence=0.8,
+            fallback_used=False,
+            classifier_used=True,
+            degraded=False,
+            degradation_reasons=[],
+        ))
+        rag_pipeline = AsyncMock()
+        rag_pipeline.should_trigger_rag = MagicMock(return_value=True)
+        rag_pipeline.execute = AsyncMock(return_value=RAGResult(
+            contexts=["[#1] /kb/doc.md\n문서 근거"],
+            candidates=[],
+            trace=RAGTrace(rag_used=True),
+        ))
+        mock_ollama.chat = AsyncMock(return_value=ChatResponse(content="문서 기반 답변"))
+
+        engine = Engine(
+            config=app_settings,
+            llm_client=mock_ollama,
+            memory=memory,
+            skills=mock_skills,
+            model_router=model_router,
+            rag_pipeline=rag_pipeline,
+        )
+
+        await engine.process_message(111, "내 문서에서 검색해줘")
+
+        chat_kwargs = mock_ollama.chat.await_args.kwargs
+        assert chat_kwargs.get("model") == app_settings.model_registry.reasoning_model
+
+    @pytest.mark.asyncio
+    async def test_analyze_all_corpus_requires_rag_pipeline(
+        self,
+        engine: Engine,
+    ) -> None:
+        with pytest.raises(RuntimeError, match="rag_pipeline_disabled"):
+            await engine.analyze_all_corpus("전체 문서를 분석해줘")
+
+    @pytest.mark.asyncio
+    async def test_analyze_all_corpus_runs_full_scan_map_reduce(
+        self,
+        app_settings: AppSettings,
+        mock_ollama,
+        memory: MemoryManager,
+        mock_skills: MagicMock,
+    ) -> None:
+        rag_pipeline = AsyncMock()
+        rag_pipeline.get_all_chunks = AsyncMock(return_value=[
+            Chunk(
+                text="문서 A의 핵심 사실",
+                metadata=ChunkMetadata(
+                    doc_id="doc-a",
+                    source_path="/kb/doc_a.md",
+                    chunk_id=0,
+                ),
+            ),
+            Chunk(
+                text="문서 A의 추가 근거",
+                metadata=ChunkMetadata(
+                    doc_id="doc-a",
+                    source_path="/kb/doc_a.md",
+                    chunk_id=1,
+                ),
+            ),
+        ])
+        mock_ollama.chat = AsyncMock(side_effect=[
+            ChatResponse(content='{"relevant": true, "findings": ["핵심 사실 A"]}'),
+            ChatResponse(content="최종 답변 [#/kb/doc_a.md#0-1]"),
+        ])
+
+        engine = Engine(
+            config=app_settings,
+            llm_client=mock_ollama,
+            memory=memory,
+            skills=mock_skills,
+            rag_pipeline=rag_pipeline,
+        )
+
+        phases: list[str] = []
+
+        async def _on_progress(payload: dict[str, object]) -> None:
+            phase = str(payload.get("phase", ""))
+            if phase:
+                phases.append(phase)
+
+        result = await engine.analyze_all_corpus(
+            "전체 문서를 읽고 핵심 내용을 정리해줘",
+            progress_callback=_on_progress,
+        )
+
+        assert "collect" in phases
+        assert "map_start" in phases
+        assert "map" in phases
+        assert "final" in phases
+        assert "최종 답변" in result["answer"]
+        assert result["stats"]["total_chunks"] == 2
+        assert result["stats"]["total_segments"] == 1
+        assert mock_ollama.chat.await_count == 2
 
     @pytest.mark.asyncio
     async def test_stream_uses_default_timeout(
@@ -724,6 +836,30 @@ class TestProcessMessage:
         assert history[-1]["content"] == "fallback response"
 
     @pytest.mark.asyncio
+    async def test_stream_repeating_chunks_are_collapsed_before_finalize(
+        self,
+        engine: Engine,
+        mock_ollama,
+        memory: MemoryManager,
+    ) -> None:
+        async def _stream():
+            for _ in range(50):
+                yield "반복"
+
+        mock_ollama.chat_stream = MagicMock(return_value=_stream())
+        mock_ollama.chat = AsyncMock()
+
+        chunks = []
+        async for chunk in engine.process_message_stream(111, "hello"):
+            chunks.append(chunk)
+
+        assert chunks == ["반복"]
+        mock_ollama.chat.assert_not_awaited()
+        history = await memory.get_conversation(111)
+        assert history[-1]["role"] == "assistant"
+        assert history[-1]["content"] == "반복"
+
+    @pytest.mark.asyncio
     async def test_stream_persists_sanitized_response_in_memory(
         self,
         engine: Engine,
@@ -975,6 +1111,22 @@ class TestProcessMessage:
         stored_response = put_call.args[1]
         assert "keep it short" not in stored_response.lower()
         assert "죄송합니다. 답변 생성에 문제가 있었습니다." in stored_response
+
+    @pytest.mark.asyncio
+    async def test_short_repetition_response_retried_before_return(
+        self,
+        engine: Engine,
+        mock_ollama: AsyncMock,
+    ) -> None:
+        mock_ollama.chat = AsyncMock(side_effect=[
+            ChatResponse(content="반복 반복 반복 반복"),
+            ChatResponse(content="정상화된 답변입니다."),
+        ])
+
+        result = await engine.process_message(111, "현재 상태를 간단히 설명해줘")
+
+        assert result == "정상화된 답변입니다."
+        assert mock_ollama.chat.await_count == 2
 
     @pytest.mark.asyncio
     async def test_chinese_english_mixed_response_retried_in_korean(

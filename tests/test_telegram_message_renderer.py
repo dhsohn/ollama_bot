@@ -128,6 +128,7 @@ class TestStreamAndRender:
             max_stream_seconds=1.0,
         )
 
+        assert result.stop_reason == "chunk_timeout"
         assert "중단" in result.full_response
         sent_message.edit_text.assert_awaited_once()
         assert "중단" in sent_message.edit_text.await_args.args[0]
@@ -181,6 +182,7 @@ class TestStreamAndRender:
             edit_char_threshold=10_000,
         )
 
+        assert result.stop_reason == "repeated_chunks"
         assert "반복 출력이 감지" in result.full_response
         assert result.full_response.split("\n\n")[0] == "가"
         sent_message.edit_text.assert_awaited_once()

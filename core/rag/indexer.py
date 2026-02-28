@@ -292,6 +292,17 @@ class RAGIndexer:
         chunk_map = {row["id"]: self._row_to_chunk(row) for row in rows}
         return [chunk_map[rid] for rid in row_ids if rid in chunk_map]
 
+    async def get_all_chunks(self) -> list[Chunk]:
+        """현재 인덱스의 모든 청크를 source/chunk 순으로 반환한다."""
+        assert self._db is not None
+        chunks: list[Chunk] = []
+        async with self._db.execute(
+            "SELECT * FROM rag_chunks ORDER BY source_path, chunk_id, id"
+        ) as cursor:
+            async for row in cursor:
+                chunks.append(self._row_to_chunk(row))
+        return chunks
+
     async def _load_index_to_memory(self) -> None:
         """DB에서 인메모리 벡터 인덱스를 로드한다."""
         assert self._db is not None

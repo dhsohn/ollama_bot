@@ -32,6 +32,14 @@ class RAGRetriever:
         self._embedding_model = embedding_model
         self._logger = get_logger("rag_retriever")
 
+    @property
+    def chunk_count(self) -> int:
+        return self._indexer.chunk_count
+
+    async def get_all_chunks(self) -> list[Chunk]:
+        """인덱스의 전체 청크를 반환한다 (full-scan 용도)."""
+        return await self._indexer.get_all_chunks()
+
     async def retrieve(
         self,
         query: str,

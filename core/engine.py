@@ -21,7 +21,7 @@ import re as _re
 import time
 import uuid
 from collections import Counter
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -107,6 +107,16 @@ class _RoutingDecision:
         return self.route.context_strategy if self.route else None
 
 
+@dataclass
+class _FullScanSegment:
+    """RAG full-scan 분석을 위한 문서 세그먼트."""
+
+    source_path: str
+    start_chunk_id: int
+    end_chunk_id: int
+    text: str
+
+
 _INJECTION_RE = _re.compile(
     r"\[/?(?:system|user|assistant|INST)\]"
     r"|<\|(?:im_start|im_end|system|user|assistant)\|>"
@@ -127,6 +137,7 @@ _STREAM_META_MAX_ENTRIES = 2048
 _REASONING_TIMEOUT_SECONDS = 3600
 _REASONING_INTENTS = {"complex", "code"}
 _REASONING_MODEL_ROLES = {"reasoning", "coding", "vision"}
+_STREAM_REPEATED_CHUNK_ABORT_THRESHOLD = 30
 _RESPONSE_REVIEW_TIMEOUT_SECONDS = 300
 _RESPONSE_REVIEW_MAX_TOKENS = 1200
 _SUMMARY_CHUNK_TRIGGER_CHARS = 6000
@@ -136,6 +147,13 @@ _SUMMARY_MAP_TIMEOUT_SECONDS = 180
 _SUMMARY_REDUCE_TIMEOUT_SECONDS = 600
 _SUMMARY_MAP_MAX_TOKENS = 384
 _SUMMARY_REDUCE_MAX_TOKENS = 1024
+_FULL_SCAN_SEGMENT_MAX_CHARS = 12_000
+_FULL_SCAN_MAP_MAX_TOKENS = 384
+_FULL_SCAN_REDUCE_MAX_TOKENS = 768
+_FULL_SCAN_FINAL_MAX_TOKENS = 1600
+_FULL_SCAN_PROGRESS_EVERY_SEGMENTS = 10
+_FULL_SCAN_REDUCE_GROUP_MAX_CHARS = 12_000
+_FULL_SCAN_REDUCE_MAX_PASSES = 6
 
 
 def _strip_prompt_injection(text: str) -> str:
@@ -370,6 +388,8 @@ class Engine:
                         )
                         stream_state = ChatStreamState()
                         skill_stream_error: Exception | None = None
+                        skill_last_stream_chunk: str | None = None
+                        skill_repeated_stream_chunk_count = 0
                         try:
                             async for chunk in self._llm_client.chat_stream(
                                 messages=messages,
@@ -379,6 +399,24 @@ class Engine:
                                 timeout=skill.timeout,
                                 stream_state=stream_state,
                             ):
+                                if not chunk:
+                                    continue
+                                if chunk == skill_last_stream_chunk:
+                                    skill_repeated_stream_chunk_count += 1
+                                    if (
+                                        skill_repeated_stream_chunk_count
+                                        >= _STREAM_REPEATED_CHUNK_ABORT_THRESHOLD
+                                    ):
+                                        self._logger.warning(
+                                            "stream_repeating_chunk_abort",
+                                            tier="skill",
+                                            chat_id=chat_id,
+                                            repeated_chunks=skill_repeated_stream_chunk_count,
+                                        )
+                                        break
+                                    continue
+                                skill_last_stream_chunk = chunk
+                                skill_repeated_stream_chunk_count = 0
                                 full_response += chunk
                                 yield chunk
                         except Exception as exc:
@@ -481,6 +519,8 @@ class Engine:
                 usage = None
                 stream_error: Exception | None = None
                 should_stream_chunks = not prepared_full.review_required
+                full_last_stream_chunk: str | None = None
+                full_repeated_stream_chunk_count = 0
                 try:
                     async for chunk in self._llm_client.chat_stream(
                         messages=prepared_full.messages,
@@ -489,6 +529,24 @@ class Engine:
                         max_tokens=prepared_full.max_tokens,
                         stream_state=stream_state,
                     ):
+                        if not chunk:
+                            continue
+                        if chunk == full_last_stream_chunk:
+                            full_repeated_stream_chunk_count += 1
+                            if (
+                                full_repeated_stream_chunk_count
+                                >= _STREAM_REPEATED_CHUNK_ABORT_THRESHOLD
+                            ):
+                                self._logger.warning(
+                                    "stream_repeating_chunk_abort",
+                                    tier="full",
+                                    chat_id=chat_id,
+                                    repeated_chunks=full_repeated_stream_chunk_count,
+                                )
+                                break
+                            continue
+                        full_last_stream_chunk = chunk
+                        full_repeated_stream_chunk_count = 0
                         full_response += chunk
                         if should_stream_chunks:
                             yield chunk
@@ -713,6 +771,292 @@ class Engine:
             "rag_trace": rag_trace,
         }
 
+    async def analyze_all_corpus(
+        self,
+        query: str,
+        *,
+        progress_callback: Callable[[dict[str, Any]], Awaitable[None] | None] | None = None,
+    ) -> dict[str, Any]:
+        """RAG 인덱스 전체를 읽어 map-reduce 방식으로 분석한다."""
+        t0 = time.monotonic()
+        question = query.strip()
+        if not question:
+            raise ValueError("query_is_empty")
+        if self._rag_pipeline is None:
+            raise RuntimeError("rag_pipeline_disabled")
+
+        await self._emit_full_scan_progress(
+            progress_callback,
+            {"phase": "collect", "message": "RAG 인덱스 전체 청크를 수집 중입니다..."},
+        )
+        chunks = await self._rag_pipeline.get_all_chunks()
+        total_chunks = len(chunks)
+        if total_chunks == 0:
+            return {
+                "answer": "RAG 인덱스가 비어 있어 전체 분석을 수행할 수 없습니다.",
+                "stats": {
+                    "total_chunks": 0,
+                    "total_segments": 0,
+                    "mapped_segments": 0,
+                    "evidence_lines": 0,
+                    "duration_ms": round((time.monotonic() - t0) * 1000, 1),
+                },
+            }
+
+        segments = self._build_full_scan_segments(
+            chunks,
+            max_chars=_FULL_SCAN_SEGMENT_MAX_CHARS,
+        )
+        total_segments = len(segments)
+        await self._emit_full_scan_progress(
+            progress_callback,
+            {
+                "phase": "map_start",
+                "message": "전체 문서 맵 분석을 시작합니다.",
+                "total_chunks": total_chunks,
+                "total_segments": total_segments,
+            },
+        )
+
+        map_timeout = max(int(self._config.bot.response_timeout), _SUMMARY_MAP_TIMEOUT_SECONDS)
+        reduce_timeout = max(int(self._config.bot.response_timeout), _SUMMARY_REDUCE_TIMEOUT_SECONDS)
+        final_timeout = max(int(self._config.bot.response_timeout), _REASONING_TIMEOUT_SECONDS)
+
+        map_model_candidate = self._resolve_model_for_role("low_cost")
+        if map_model_candidate is None:
+            map_model_candidate = self._resolve_model_for_role("reasoning")
+        map_model, _ = await self._prepare_target_model(
+            model=map_model_candidate,
+            role="low_cost",
+            timeout=map_timeout,
+        )
+
+        reduce_model_candidate = self._resolve_model_for_role("reasoning")
+        if reduce_model_candidate is None:
+            reduce_model_candidate = map_model
+        reduce_model, _ = await self._prepare_target_model(
+            model=reduce_model_candidate,
+            role="reasoning",
+            timeout=reduce_timeout,
+        )
+        final_model, _ = await self._prepare_target_model(
+            model=reduce_model_candidate,
+            role="reasoning",
+            timeout=final_timeout,
+        )
+
+        map_system = self._inject_language_policy(
+            "당신은 문서 증거 추출기입니다. 질문과 직접 관련된 사실만 JSON으로 추출하세요. "
+            "불확실하면 relevant=false로 답하세요."
+        )
+        evidence_lines: list[str] = []
+        mapped_segments = 0
+        for idx, segment in enumerate(segments, start=1):
+            map_prompt = (
+                "[질문]\n"
+                f"{question}\n\n"
+                "[문서 세그먼트 메타]\n"
+                f"source_path: {segment.source_path}\n"
+                f"chunk_range: {segment.start_chunk_id}-{segment.end_chunk_id}\n\n"
+                "[문서 세그먼트 본문]\n"
+                f"{segment.text}\n\n"
+                "다음 JSON만 출력하세요:\n"
+                "{\"relevant\": true|false, \"findings\": [\"근거 기반 문장\"], \"confidence\": 0.0~1.0}\n"
+                "규칙:\n"
+                "- findings는 최대 4개\n"
+                "- 질문과 직접 관련된 정보만 포함\n"
+                "- 추측 금지"
+            )
+            try:
+                map_resp = await self._llm_client.chat(
+                    messages=[
+                        {"role": "system", "content": map_system},
+                        {"role": "user", "content": map_prompt},
+                    ],
+                    model=map_model,
+                    timeout=map_timeout,
+                    max_tokens=_FULL_SCAN_MAP_MAX_TOKENS,
+                    temperature=0.0,
+                    response_format="json",
+                )
+            except Exception as exc:
+                self._logger.warning(
+                    "full_scan_map_failed",
+                    segment_index=idx,
+                    total_segments=total_segments,
+                    source_path=segment.source_path,
+                    error=str(exc),
+                )
+                continue
+
+            payload = self._extract_json_payload(map_resp.content)
+            if payload is None:
+                continue
+            relevant = bool(payload.get("relevant", False))
+            findings_raw = payload.get("findings", [])
+            findings: list[str] = []
+            if isinstance(findings_raw, list):
+                for item in findings_raw:
+                    text_item = sanitize_model_output(str(item)).strip()
+                    if text_item:
+                        findings.append(text_item)
+            if not relevant and not findings:
+                continue
+            if not findings:
+                continue
+
+            mapped_segments += 1
+            citation = (
+                f"{segment.source_path}"
+                f"#{segment.start_chunk_id}-{segment.end_chunk_id}"
+            )
+            for finding in findings[:4]:
+                evidence_lines.append(f"- [{citation}] {finding}")
+
+            if (
+                idx == 1
+                or idx == total_segments
+                or idx % _FULL_SCAN_PROGRESS_EVERY_SEGMENTS == 0
+            ):
+                await self._emit_full_scan_progress(
+                    progress_callback,
+                    {
+                        "phase": "map",
+                        "processed_segments": idx,
+                        "total_segments": total_segments,
+                        "mapped_segments": mapped_segments,
+                        "evidence_lines": len(evidence_lines),
+                    },
+                )
+
+        if not evidence_lines:
+            duration_ms = round((time.monotonic() - t0) * 1000, 1)
+            return {
+                "answer": (
+                    "전체 문서를 읽었지만 질문과 직접 연결되는 근거를 찾지 못했습니다. "
+                    "질문 범위를 더 구체적으로 지정해 주세요."
+                ),
+                "stats": {
+                    "total_chunks": total_chunks,
+                    "total_segments": total_segments,
+                    "mapped_segments": mapped_segments,
+                    "evidence_lines": 0,
+                    "duration_ms": duration_ms,
+                },
+            }
+
+        reduced_blocks = list(evidence_lines)
+        reduce_pass = 0
+        while reduce_pass < _FULL_SCAN_REDUCE_MAX_PASSES:
+            groups = self._pack_blocks_for_reduction(
+                reduced_blocks,
+                max_chars=_FULL_SCAN_REDUCE_GROUP_MAX_CHARS,
+            )
+            if len(groups) <= 1:
+                reduced_blocks = groups
+                break
+
+            reduce_pass += 1
+            await self._emit_full_scan_progress(
+                progress_callback,
+                {
+                    "phase": "reduce",
+                    "reduce_pass": reduce_pass,
+                    "groups": len(groups),
+                },
+            )
+
+            next_blocks: list[str] = []
+            reduce_system = self._inject_language_policy(
+                "당신은 근거 통합 요약기입니다. 입력된 근거를 손실 없이 압축하세요. "
+                "인용 표식([경로#chunk])은 보존하세요."
+            )
+            for group_idx, group_text in enumerate(groups, start=1):
+                reduce_prompt = (
+                    "[질문]\n"
+                    f"{question}\n\n"
+                    "[근거 목록]\n"
+                    f"{group_text}\n\n"
+                    "중복을 제거해 핵심 근거만 불릿으로 재작성하세요.\n"
+                    "출력 규칙:\n"
+                    "- 최대 12개 불릿\n"
+                    "- 각 불릿에 최소 1개 인용 표식 유지\n"
+                    "- 한국어만 사용"
+                )
+                try:
+                    reduce_resp = await self._llm_client.chat(
+                        messages=[
+                            {"role": "system", "content": reduce_system},
+                            {"role": "user", "content": reduce_prompt},
+                        ],
+                        model=reduce_model,
+                        timeout=reduce_timeout,
+                        max_tokens=_FULL_SCAN_REDUCE_MAX_TOKENS,
+                        temperature=0.0,
+                    )
+                except Exception as exc:
+                    self._logger.warning(
+                        "full_scan_reduce_failed",
+                        reduce_pass=reduce_pass,
+                        group_index=group_idx,
+                        groups=len(groups),
+                        error=str(exc),
+                    )
+                    continue
+                reduced = sanitize_model_output(reduce_resp.content).strip()
+                if reduced:
+                    next_blocks.append(reduced)
+
+            if not next_blocks:
+                break
+            reduced_blocks = next_blocks
+
+        evidence_text = "\n\n".join(reduced_blocks).strip()
+        await self._emit_full_scan_progress(
+            progress_callback,
+            {"phase": "final", "message": "최종 답변을 생성 중입니다..."},
+        )
+        final_system = self._inject_language_policy(
+            "당신은 전체 문서를 검토한 수석 분석가입니다. "
+            "아래 근거만 사용해 질문에 답하고, 핵심 주장마다 인용 표식([경로#chunk])을 붙이세요. "
+            "근거가 부족한 부분은 '근거 부족'이라고 명시하세요."
+        )
+        final_prompt = (
+            "[질문]\n"
+            f"{question}\n\n"
+            "[통합 근거]\n"
+            f"{evidence_text}\n\n"
+            "최종 출력 형식:\n"
+            "1) 결론(2~4문장)\n"
+            "2) 핵심 근거 불릿 3~8개 (각 불릿에 인용 표식)\n"
+            "3) 근거 부족/추가 확인 필요 항목 (있으면)"
+        )
+        final_resp = await self._llm_client.chat(
+            messages=[
+                {"role": "system", "content": final_system},
+                {"role": "user", "content": final_prompt},
+            ],
+            model=final_model,
+            timeout=final_timeout,
+            max_tokens=_FULL_SCAN_FINAL_MAX_TOKENS,
+            temperature=0.0,
+        )
+        answer = sanitize_model_output(final_resp.content).strip()
+        duration_ms = round((time.monotonic() - t0) * 1000, 1)
+        return {
+            "answer": answer,
+            "stats": {
+                "total_chunks": total_chunks,
+                "total_segments": total_segments,
+                "mapped_segments": mapped_segments,
+                "evidence_lines": len(evidence_lines),
+                "duration_ms": duration_ms,
+                "map_model": map_model,
+                "reduce_model": reduce_model,
+                "final_model": final_model,
+            },
+        }
+
     def consume_last_stream_meta(self, chat_id: int) -> dict[str, Any] | None:
         """스트리밍 처리 후 메타데이터를 1회성으로 반환한다."""
         self._cleanup_stream_meta()
@@ -924,11 +1268,30 @@ class Engine:
     def _has_excessive_token_repetition(response: str) -> bool:
         probe = _CODE_BLOCK_RE.sub("", response).lower()
         tokens = _re.findall(r"[a-z]{2,}|[가-힣]{2,}|[\u4e00-\u9fff]{1,}", probe)
-        if len(tokens) < 12:
+        if len(tokens) < 4:
             return False
-        token, count = Counter(tokens).most_common(1)[0]
-        _ = token
-        return count >= 8 and (count / len(tokens)) >= 0.35
+        _token, count = Counter(tokens).most_common(1)[0]
+        ratio = count / len(tokens)
+
+        # 짧은 반복 루프(예: 동일 단어/구절 반복)도 조기에 감지한다.
+        if count >= 4 and ratio >= 0.5:
+            return True
+        if len(tokens) >= 12 and count >= 8 and ratio >= 0.35:
+            return True
+
+        if len(tokens) >= 6:
+            for n in (2, 3):
+                if len(tokens) < n * 3:
+                    continue
+                ngrams = [
+                    " ".join(tokens[i:i + n])
+                    for i in range(len(tokens) - n + 1)
+                ]
+                _ngram, ng_count = Counter(ngrams).most_common(1)[0]
+                if ng_count >= 3 and (ng_count * n) / len(tokens) >= 0.6:
+                    return True
+
+        return False
 
     def _is_response_suspicious(self, response: str) -> bool:
         stripped = sanitize_model_output(response).strip()
@@ -1159,6 +1522,144 @@ class Engine:
                 "background_task_failed", task_name=task.get_name(), error=str(exc),
             )
 
+    @staticmethod
+    async def _emit_full_scan_progress(
+        callback: Callable[[dict[str, Any]], Awaitable[None] | None] | None,
+        payload: dict[str, Any],
+    ) -> None:
+        if callback is None:
+            return
+        try:
+            maybe_result = callback(payload)
+            if inspect.isawaitable(maybe_result):
+                await maybe_result
+        except Exception:
+            # 진행률 업데이트 실패가 본 분석 플로우를 중단시키지 않도록 무시한다.
+            return
+
+    @staticmethod
+    def _build_full_scan_segments(
+        chunks: list[Any],
+        *,
+        max_chars: int,
+    ) -> list[_FullScanSegment]:
+        """source_path/chunk_id 순으로 전체 청크를 세그먼트로 패킹한다."""
+        if not chunks:
+            return []
+
+        sorted_chunks = sorted(
+            chunks,
+            key=lambda c: (
+                str(getattr(getattr(c, "metadata", None), "source_path", "")),
+                int(getattr(getattr(c, "metadata", None), "chunk_id", 0)),
+            ),
+        )
+        segments: list[_FullScanSegment] = []
+
+        current_source: str | None = None
+        current_start = 0
+        current_end = 0
+        current_parts: list[str] = []
+        current_chars = 0
+
+        def flush() -> None:
+            nonlocal current_source, current_start, current_end, current_parts, current_chars
+            if not current_source or not current_parts:
+                return
+            text = "\n\n".join(current_parts).strip()
+            if text:
+                segments.append(
+                    _FullScanSegment(
+                        source_path=current_source,
+                        start_chunk_id=current_start,
+                        end_chunk_id=current_end,
+                        text=text,
+                    )
+                )
+            current_source = None
+            current_start = 0
+            current_end = 0
+            current_parts = []
+            current_chars = 0
+
+        for chunk in sorted_chunks:
+            meta = getattr(chunk, "metadata", None)
+            source_path = str(getattr(meta, "source_path", "") or "")
+            chunk_id = int(getattr(meta, "chunk_id", 0))
+            chunk_text = sanitize_model_output(str(getattr(chunk, "text", ""))).strip()
+            if not source_path or not chunk_text:
+                continue
+
+            block = f"[chunk {chunk_id}]\n{chunk_text}"
+            block_len = len(block)
+            if (
+                current_source is not None
+                and (source_path != current_source or current_chars + block_len > max_chars)
+            ):
+                flush()
+
+            if current_source is None:
+                current_source = source_path
+                current_start = chunk_id
+                current_end = chunk_id
+            else:
+                current_end = chunk_id
+
+            current_parts.append(block)
+            current_chars += block_len
+
+        flush()
+        return segments
+
+    @staticmethod
+    def _pack_blocks_for_reduction(
+        blocks: list[str],
+        *,
+        max_chars: int,
+    ) -> list[str]:
+        """여러 텍스트 블록을 reduce 단계 입력 크기에 맞춰 그룹화한다."""
+        if not blocks:
+            return []
+
+        groups: list[str] = []
+        current_lines: list[str] = []
+        current_chars = 0
+
+        def flush() -> None:
+            nonlocal current_lines, current_chars
+            if not current_lines:
+                return
+            groups.append("\n".join(current_lines).strip())
+            current_lines = []
+            current_chars = 0
+
+        for block in blocks:
+            normalized = sanitize_model_output(block).strip()
+            if not normalized:
+                continue
+            lines = [line.strip() for line in normalized.splitlines() if line.strip()]
+            if not lines:
+                continue
+            for line in lines:
+                line_len = len(line)
+                if current_lines and current_chars + line_len > max_chars:
+                    flush()
+                if line_len > max_chars:
+                    # 단일 라인이 큰 경우 잘라서 넣는다.
+                    cursor = 0
+                    while cursor < len(line):
+                        part = line[cursor:cursor + max_chars].strip()
+                        if part:
+                            if current_lines:
+                                flush()
+                            groups.append(part)
+                        cursor += max_chars
+                    continue
+                current_lines.append(line)
+                current_chars += line_len
+        flush()
+        return groups
+
     async def _prepare_request(
         self,
         chat_id: int,
@@ -1229,9 +1730,32 @@ class Engine:
                 text, images=images, metadata=metadata,
             )
             target_model = model_decision.selected_model
+        selected_role = model_decision.selected_role if model_decision else None
 
         if self._rag_pipeline and self._rag_pipeline.should_trigger_rag(text, metadata):
             rag_result = await self._rag_pipeline.execute(text, metadata)
+        if (
+            rag_result is not None
+            and getattr(rag_result, "contexts", None)
+            and not model_override
+        ):
+            reasoning_model = self._resolve_model_for_role("reasoning")
+            if reasoning_model:
+                original_role = selected_role
+                target_model = reasoning_model
+                selected_role = "reasoning"
+                if model_decision is not None:
+                    if model_decision.selected_role != "reasoning":
+                        model_decision.original_role = model_decision.selected_role
+                        model_decision.fallback_used = True
+                    model_decision.selected_role = "reasoning"
+                    model_decision.selected_model = reasoning_model
+                self._logger.info(
+                    "rag_context_promotes_reasoning_model",
+                    chat_id=chat_id,
+                    original_role=original_role,
+                    promoted_model=reasoning_model,
+                )
 
         prepared = await self._prepare_request(
             chat_id, text, stream=stream, strategy=strategy,
@@ -1239,12 +1763,12 @@ class Engine:
         prepare_timeout = self._resolve_inference_timeout(
             base_timeout=prepared.timeout,
             intent=intent,
-            model_role=model_decision.selected_role if model_decision else None,
+            model_role=selected_role,
             has_images=bool(images),
         )
         target_model, prepared_role = await self._prepare_target_model(
             model=target_model,
-            role=model_decision.selected_role if model_decision else None,
+            role=selected_role,
             timeout=prepare_timeout,
         )
         if (

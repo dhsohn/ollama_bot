@@ -198,6 +198,7 @@ class TelegramHandler:
             CommandHandler("model", self._cmd_model),
             CommandHandler("memory", self._cmd_memory),
             CommandHandler("status", self._cmd_status),
+            CommandHandler("analyze_all", self._cmd_analyze_all),
         ]
         if self._feedback_enabled:
             handlers.append(CommandHandler("feedback", self._cmd_feedback))
@@ -212,6 +213,7 @@ class TelegramHandler:
             BotCommand("model", "모델 관리"),
             BotCommand("memory", "메모리 관리"),
             BotCommand("status", "시스템 상태"),
+            BotCommand("analyze_all", "전체 문서 분석"),
         ]
         if self._feedback_enabled:
             commands.append(BotCommand("feedback", "피드백 통계"))
@@ -288,6 +290,7 @@ class TelegramHandler:
             "/model — 모델 확인/변경",
             "/memory — 메모리 관리",
             "/status — 시스템 상태",
+            "/analyze_all — RAG 전체 문서 분석",
         ]
         if self._feedback_enabled:
             command_lines.insert(6, "/feedback — 피드백 통계")
@@ -584,6 +587,144 @@ class TelegramHandler:
             text, parse_mode=ParseMode.HTML
         )
 
+    @_auth_required
+    @_global_slot_required
+    async def _cmd_analyze_all(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """RAG 인덱스 전체를 읽어 map-reduce 분석을 수행한다."""
+        chat = update.effective_chat
+        message = update.effective_message
+        if chat is None or message is None:
+            return
+
+        args = context.args or []
+        query = " ".join(args).strip()
+        if not query:
+            await message.reply_text("사용법: /analyze_all [질문]")
+            return
+
+        await chat.send_action(ChatAction.TYPING)
+        progress_message = await message.reply_text(
+            "전체 문서 분석을 시작합니다.\n"
+            "- 단계: 준비\n"
+            "- 진행: 0%"
+        )
+
+        typing_stop = asyncio.Event()
+        typing_task = asyncio.create_task(
+            self._keep_typing(chat, typing_stop),
+            name=f"analyze_all_typing_{chat.id}",
+        )
+        last_progress_update = 0.0
+
+        async def _on_progress(payload: dict[str, Any]) -> None:
+            nonlocal last_progress_update
+            now = time.monotonic()
+            phase = str(payload.get("phase", "")).strip().lower()
+            force_update = phase in {"final", "map_start", "collect"}
+            if not force_update and (now - last_progress_update) < 1.5:
+                return
+            last_progress_update = now
+
+            if phase == "collect":
+                text = "전체 문서 분석을 시작합니다.\n- 단계: 인덱스 수집\n- 진행: 준비 중"
+            elif phase == "map_start":
+                total_chunks = int(payload.get("total_chunks", 0))
+                total_segments = int(payload.get("total_segments", 0))
+                text = (
+                    "전체 문서 분석을 시작합니다.\n"
+                    "- 단계: 맵 분석 시작\n"
+                    f"- 청크: {total_chunks}개\n"
+                    f"- 세그먼트: {total_segments}개"
+                )
+            elif phase == "map":
+                processed = int(payload.get("processed_segments", 0))
+                total = max(1, int(payload.get("total_segments", 1)))
+                mapped = int(payload.get("mapped_segments", 0))
+                evidence = int(payload.get("evidence_lines", 0))
+                percent = int((processed / total) * 100)
+                text = (
+                    "전체 문서 분석 진행 중\n"
+                    "- 단계: 맵 분석\n"
+                    f"- 진행: {processed}/{total} ({percent}%)\n"
+                    f"- 근거 세그먼트: {mapped}개\n"
+                    f"- 근거 라인: {evidence}개"
+                )
+            elif phase == "reduce":
+                reduce_pass = int(payload.get("reduce_pass", 0))
+                groups = int(payload.get("groups", 0))
+                text = (
+                    "전체 문서 분석 진행 중\n"
+                    "- 단계: 리듀스(통합)\n"
+                    f"- 패스: {reduce_pass}\n"
+                    f"- 그룹: {groups}개"
+                )
+            elif phase == "final":
+                text = "전체 문서 분석 진행 중\n- 단계: 최종 답변 생성"
+            else:
+                return
+
+            try:
+                await progress_message.edit_text(text)
+            except Exception:
+                pass
+
+        try:
+            result = await self._engine.analyze_all_corpus(
+                query,
+                progress_callback=_on_progress,
+            )
+            answer = str(result.get("answer", "")).strip()
+            stats = result.get("stats", {}) if isinstance(result, dict) else {}
+            if not answer:
+                answer = "분석 결과를 생성하지 못했습니다."
+
+            stats_lines = []
+            if isinstance(stats, dict):
+                total_chunks = stats.get("total_chunks")
+                total_segments = stats.get("total_segments")
+                mapped_segments = stats.get("mapped_segments")
+                evidence_lines = stats.get("evidence_lines")
+                duration_ms = stats.get("duration_ms")
+                if total_chunks is not None:
+                    stats_lines.append(f"- 총 청크: {total_chunks}")
+                if total_segments is not None:
+                    stats_lines.append(f"- 총 세그먼트: {total_segments}")
+                if mapped_segments is not None:
+                    stats_lines.append(f"- 근거 세그먼트: {mapped_segments}")
+                if evidence_lines is not None:
+                    stats_lines.append(f"- 근거 라인: {evidence_lines}")
+                if duration_ms is not None:
+                    stats_lines.append(f"- 소요 시간: {duration_ms}ms")
+
+            final_text = "📚 전체 문서 분석 결과\n\n" + answer
+            if stats_lines:
+                final_text += "\n\n[분석 통계]\n" + "\n".join(stats_lines)
+
+            parts = self._split_message(final_text)
+            if parts:
+                try:
+                    await progress_message.edit_text(parts[0])
+                except Exception:
+                    await message.reply_text(parts[0])
+                for part in parts[1:]:
+                    await message.reply_text(part)
+        except Exception as exc:
+            self._logger.error(
+                "analyze_all_failed",
+                chat_id=chat.id,
+                error=str(exc),
+            )
+            await message.reply_text(
+                "전체 문서 분석 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요."
+            )
+        finally:
+            typing_stop.set()
+            typing_task.cancel()
+            try:
+                await typing_task
+            except asyncio.CancelledError:
+                pass
+
     # ── 일반 메시지 핸들러 (스트리밍) ──
 
     @_auth_required
@@ -689,12 +830,14 @@ class TelegramHandler:
                 ),
                 timeout=render_timeout,
             )
+            stream_meta_found = False
             consume_meta = getattr(self._engine, "consume_last_stream_meta", None)
             if callable(consume_meta):
                 stream_meta = consume_meta(chat_id)
                 if inspect.isawaitable(stream_meta):
                     stream_meta = await stream_meta
                 if isinstance(stream_meta, dict):
+                    stream_meta_found = True
                     result.tier = stream_meta.get("tier", result.tier)
                     result.intent = stream_meta.get("intent")
                     result.cache_id = stream_meta.get("cache_id")
@@ -731,6 +874,44 @@ class TelegramHandler:
                                 "⚠️ <b>실행 모드 알림</b>\n" + "\n".join(warning_lines),
                                 parse_mode=ParseMode.HTML,
                             )
+            stop_reason = getattr(result, "stop_reason", None)
+            if stop_reason in {"chunk_timeout", "repeated_chunks"} and not stream_meta_found:
+                self._logger.warning(
+                    "stream_recovery_triggered",
+                    chat_id=chat_id,
+                    reason=stop_reason,
+                )
+                try:
+                    recovered_response = await self._engine.process_message(
+                        chat_id,
+                        text,
+                        images=images,
+                    )
+                except Exception as exc:
+                    self._logger.warning(
+                        "stream_recovery_failed",
+                        chat_id=chat_id,
+                        reason=stop_reason,
+                        error=str(exc),
+                    )
+                else:
+                    recovered_text = str(recovered_response).strip()
+                    if recovered_text:
+                        recovered_parts = self._split_message(recovered_text)
+                        if recovered_parts:
+                            last_recovered = None
+                            try:
+                                await sent_message.edit_text(recovered_parts[0])
+                                last_recovered = sent_message
+                            except Exception:
+                                last_recovered = await message.reply_text(recovered_parts[0])
+
+                            for part in recovered_parts[1:]:
+                                last_recovered = await message.reply_text(part)
+
+                            if last_recovered is not None:
+                                result.last_message = last_recovered
+                                result.full_response = recovered_text
 
             # 캐시 피드백 링크 저장
             if (

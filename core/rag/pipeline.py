@@ -13,6 +13,7 @@ from core.rag.types import RAGResult, RAGTrace
 if TYPE_CHECKING:
     from core.rag.reranker import RAGReranker
     from core.rag.retriever import RAGRetriever
+    from core.rag.types import Chunk
 
 
 class RAGPipeline:
@@ -34,6 +35,14 @@ class RAGPipeline:
     @property
     def has_reranker(self) -> bool:
         return self._reranker is not None and self._config.rerank_enabled
+
+    @property
+    def chunk_count(self) -> int:
+        return self._retriever.chunk_count
+
+    async def get_all_chunks(self) -> list[Chunk]:
+        """인덱스의 전체 청크를 반환한다 (full-scan 용도)."""
+        return await self._retriever.get_all_chunks()
 
     def should_trigger_rag(
         self,
