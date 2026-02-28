@@ -383,20 +383,14 @@ class ModelRouter:
         """라우팅 결정을 생성한다. 폴백 처리 포함."""
         try:
             model_name, actual_role, fallback_used = self._registry.resolve_model(role)
-        except ValueError:
-            # 모든 모델 불가 시 default model 사용
-            model_name = self._client.default_model
-            if not model_name:
-                self._logger.error(
-                    "routing_no_fallback_model",
-                    role=role,
-                    trigger=trigger,
-                )
-                raise ValueError(
-                    f"No model available for role '{role}' and default_model is empty"
-                )
-            actual_role = role
-            fallback_used = True
+        except ValueError as exc:
+            self._logger.error(
+                "routing_no_available_model",
+                role=role,
+                trigger=trigger,
+                error=str(exc),
+            )
+            raise ValueError(f"No model available for role '{role}'") from exc
 
         reasons = list(degradation_reasons or [])
         if fallback_used and "model_fallback_used" not in reasons:

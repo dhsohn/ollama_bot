@@ -17,7 +17,6 @@ from core.llm_types import ChatStreamState
 def lemonade_config() -> LemonadeConfig:
     return LemonadeConfig(
         host="http://localhost:8000",
-        model="test-model",
         base_path="/api/v1",
         timeout_seconds=10,
     )
@@ -58,7 +57,7 @@ class TestInitialize:
         with patch("core.lemonade_client.httpx.AsyncClient", return_value=mock_client):
             await client.initialize()
         try:
-            assert client.default_model == "test-model"
+            assert client.default_model == ""
             assert client.system_prompt == "fallback prompt"
         finally:
             await client.close()

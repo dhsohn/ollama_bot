@@ -24,7 +24,7 @@ class LemonadeMultiClient:
     ) -> None:
         self._logger = get_logger("lemonade_multi_client")
         self._default_instance = _PRIMARY_INSTANCE
-        self._default_model = (config.model or "").strip()
+        self._default_model = ""
         self._clients: dict[str, LemonadeClient] = {
             _PRIMARY_INSTANCE: LemonadeClient(
                 config,
@@ -41,9 +41,6 @@ class LemonadeMultiClient:
             "reranker": _PRIMARY_INSTANCE,
         }
 
-        if self._default_model:
-            self._static_model_routes[self._default_model] = _PRIMARY_INSTANCE
-
         for instance in config.instances:
             key = self._normalize_instance_key(instance.name)
             if key == _PRIMARY_INSTANCE:
@@ -52,7 +49,6 @@ class LemonadeMultiClient:
             instance_config = LemonadeConfig(
                 host=instance.host,
                 api_key=instance.api_key,
-                model=instance.model,
                 base_path=instance.base_path,
                 timeout_seconds=instance.timeout_seconds,
                 model_load_timeout_seconds=instance.model_load_timeout_seconds,

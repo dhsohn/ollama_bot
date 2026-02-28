@@ -24,7 +24,7 @@ class LemonadeClientError(Exception):
 
 
 class LemonadeModelNotFoundError(LemonadeClientError):
-    """요청한 기본 모델이 서버 모델 목록에 없음."""
+    """요청한 모델이 서버 모델 목록에 없음."""
 
 
 class LemonadeClient:
@@ -43,8 +43,8 @@ class LemonadeClient:
         else:
             self._base_path = ""
         self._api_key = config.api_key
-        # 기본 모델 고정 설정을 제거한다. (비어 있으면 요청 단위 모델/서버 기본 모델 사용)
-        self._default_model = (config.model or "").strip()
+        # Lemonade는 config 기본 모델 고정을 사용하지 않는다.
+        self._default_model = ""
         self._temperature = (
             fallback_ollama.temperature if fallback_ollama is not None else 0.7
         )
@@ -145,12 +145,6 @@ class LemonadeClient:
                 host=self._host,
                 models_count=len(models),
             )
-            if self._default_model and self._default_model not in models:
-                self._logger.warning(
-                    "lemonade_default_model_not_listed_on_init",
-                    model=self._default_model,
-                    available=models,
-                )
             self._mark_healthy()
         except Exception as exc:
             self._mark_unhealthy(exc)
@@ -201,13 +195,6 @@ class LemonadeClient:
                 )
                 await candidate.aclose()
                 return False
-
-            if self._default_model and self._default_model not in models:
-                self._logger.warning(
-                    "lemonade_default_model_not_listed_on_reconnect",
-                    model=self._default_model,
-                    available=models,
-                )
 
             previous = self._client
             self._client = candidate

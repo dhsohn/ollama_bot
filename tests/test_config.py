@@ -378,7 +378,6 @@ def test_llm_provider_and_lemonade_env_values_ignored(tmp_path: Path) -> None:
     settings = load_config(config_path=str(config_path), env_file=str(env_path))
     assert settings.llm_provider == "ollama"
     assert settings.lemonade.host == "http://host.docker.internal:8000"
-    assert settings.lemonade.model == ""
     assert settings.lemonade.api_key == ""
     assert settings.lemonade.base_path == "/api/v1"
     assert settings.lemonade.timeout_seconds == 60

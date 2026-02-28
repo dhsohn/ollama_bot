@@ -9,7 +9,6 @@ from core.lemonade_multi_client import LemonadeMultiClient
 def test_embedding_and_reranker_are_pinned_to_primary_by_default() -> None:
     config = LemonadeConfig(
         host="http://primary:11434",
-        model="DeepSeek-R1-Distill-Qwen-7B-NPU",
         instances=[
             LemonadeInstanceConfig(
                 name="coder",
@@ -45,7 +44,6 @@ def test_embedding_and_reranker_are_pinned_to_primary_by_default() -> None:
 def test_route_roles_can_explicitly_override_embedding_and_reranker() -> None:
     config = LemonadeConfig(
         host="http://primary:11434",
-        model="DeepSeek-R1-Distill-Qwen-7B-NPU",
         instances=[
             LemonadeInstanceConfig(
                 name="vector",

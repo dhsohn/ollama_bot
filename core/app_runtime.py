@@ -147,7 +147,7 @@ def _resolve_provider(
 
 def _model_for_provider(config: AppSettings, provider: str) -> str:
     if provider == "lemonade":
-        return config.lemonade.model or config.ollama.model
+        return config.model_registry.low_cost_model
     return config.ollama.model
 
 

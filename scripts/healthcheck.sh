@@ -21,7 +21,6 @@ async def check() -> None:
     provider = str(getattr(config, "llm_provider", "ollama")).strip().lower()
     if provider == "lemonade":
         client = LemonadeClient(config.lemonade, fallback_ollama=config.ollama)
-        expected_model = config.lemonade.model or config.ollama.model
     else:
         client = OllamaClient(config.ollama)
         expected_model = config.ollama.model
@@ -31,7 +30,7 @@ async def check() -> None:
         if health.get("status") != "ok":
             print(f"FAIL: {provider} unhealthy: {health}")
             sys.exit(1)
-        if not health.get("default_model_available", False):
+        if provider == "ollama" and not health.get("default_model_available", False):
             print(f"FAIL: default model unavailable: {expected_model}")
             sys.exit(1)
         print("OK")

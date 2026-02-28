@@ -23,8 +23,7 @@ ollama:
 lemonade:
   host: "http://windows-host:11434"
   api_key: ""
-  # 기본 응답 모델은 low_cost 인스턴스로 라우팅한다.
-  model: "GLM-4.7-Flash-GGUF"
+  # 응답 모델은 model_routing + model_registry로 결정한다.
   base_path: "/api/v1"
   timeout_seconds: 120
   model_load_timeout_seconds: 120

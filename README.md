@@ -148,9 +148,8 @@ ollama serve
 
 `config/config.yaml`에서 `llm_provider: "lemonade"`로 변경합니다.
 
-- 기본 모델 우선순위: `lemonade.model` -> 비어있으면 `ollama.model`
-- 선택된 기본 모델이 Lemonade `/models` 목록에 없으면 시작되지 않습니다.
-- 안정 운영 권장: `lemonade.model`은 NPU 상주 1개로 고정, `model_routing.enabled`는 기본 `false`
+- Lemonade는 기본 응답 모델을 고정하지 않습니다.
+- 응답 모델은 `model_routing` + `model_registry` 역할 매핑으로 결정됩니다.
 - 멀티 인스턴스 라우팅: `lemonade.instances`에 추가 endpoint를 등록하면 모델명/역할 기준으로 endpoint를 분기할 수 있습니다.
   - 예: `low_cost(GLM)`는 `glm` 인스턴스, `coding(Qwen3-Coder)`는 `coder` 인스턴스로 분리
 
@@ -332,7 +331,6 @@ rag:
 ```yaml
 lemonade:
   host: "http://windows-host:11434"   # primary (NPU reasoning)
-  model: "DeepSeek-R1-Distill-Qwen-7B-NPU"
   instances:
     - name: "glm"
       host: "http://windows-host:21434"

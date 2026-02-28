@@ -72,7 +72,6 @@ class LemonadeInstanceConfig(BaseModel):
 class LemonadeConfig(BaseModel):
     host: str = "http://host.docker.internal:8000"
     api_key: str = ""
-    model: str = ""
     base_path: str = "/api/v1"
     timeout_seconds: int = 60
     model_load_timeout_seconds: int = 120
