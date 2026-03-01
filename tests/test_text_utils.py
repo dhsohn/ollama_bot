@@ -39,6 +39,24 @@ def test_sanitize_model_output_hides_analysis_only_output() -> None:
     assert sanitize_model_output(raw) == ""
 
 
+def test_sanitize_model_output_recovers_from_loose_to_final_marker() -> None:
+    raw = (
+        "We have a conversation. The user asks what RAG is. "
+        "We need to respond in Korean. "
+        "assistantanalysis to=final code네, RAG는 검색과 생성을 결합한 방식입니다."
+    )
+    assert sanitize_model_output(raw) == "네, RAG는 검색과 생성을 결합한 방식입니다."
+
+
+def test_sanitize_model_output_recovers_from_markdown_final_marker() -> None:
+    raw = (
+        "The user says hello. We need to analyze first. "
+        "assistant ko번역**final**\n"
+        "RAG는 외부 문서를 검색해 답변 정확도를 높이는 기법입니다."
+    )
+    assert sanitize_model_output(raw) == "RAG는 외부 문서를 검색해 답변 정확도를 높이는 기법입니다."
+
+
 def test_detect_output_anomalies_flags_repeated_assignment_pattern() -> None:
     text = "user=user=user=user=user=user=user=user=user="
     reasons = detect_output_anomalies(text, text)
@@ -47,6 +65,12 @@ def test_detect_output_anomalies_flags_repeated_assignment_pattern() -> None:
 
 def test_detect_output_anomalies_flags_internal_reasoning_phrase() -> None:
     text = "We need to respond in Korean. The user says hello."
+    reasons = detect_output_anomalies(text, text)
+    assert "internal_reasoning_phrase" in reasons
+
+
+def test_detect_output_anomalies_flags_internal_reasoning_phrase_variant() -> None:
+    text = "We have a conversation. The user asks for a summary."
     reasons = detect_output_anomalies(text, text)
     assert "internal_reasoning_phrase" in reasons
 

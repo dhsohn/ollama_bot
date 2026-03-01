@@ -27,7 +27,11 @@ _ENGLISH_STOPWORDS = frozenset({
 })
 
 _TOKEN_RE = re.compile(r"[가-힣]{2,}|[a-zA-Z]{2,}")
-_THINK_BLOCK_RE = re.compile(r"<think>.*?(?:</think>|$)", re.IGNORECASE | re.DOTALL)
+_THINK_BLOCK_RE = re.compile(
+    r"<(?P<tag>think|thinking|analysis|reasoning|scratchpad|thoughts?)\b[^>]*>"
+    r".*?(?:</(?P=tag)\s*>|$)",
+    re.IGNORECASE | re.DOTALL,
+)
 _ASSISTANT_CHANNEL_BLOCK_RE = re.compile(
     r"(?:<\|start\|>)?(?:assistant)?\s*"
     r"<\|channel\|>(?P<channel>[a-zA-Z0-9_]+)\s*"
@@ -40,6 +44,14 @@ _ASSISTANT_MARKER_RE = re.compile(
     r"assistant\s*(?:_|-)?\s*(?P<channel>analysis|commentary|final)\s*[:}\]\)]*",
     re.IGNORECASE,
 )
+_LOOSE_FINAL_MARKER_RE = re.compile(
+    r"(?:\bto\s*=\s*final\b|(?:assistant\s*(?:_|-)?\s*)?final(?:\s+answer)?\b|최종\s*답변\b)",
+    re.IGNORECASE,
+)
+_LEADING_FINAL_ARTIFACT_RE = re.compile(
+    r"^(?:\s|[*`#>|:._-]|assistant|analysis|commentary|code|output|text|ko번역|번역)+",
+    re.IGNORECASE,
+)
 _REPEATED_WORD_RUN_RE = re.compile(
     r"\b(?P<word>[a-zA-Z가-힣_]{2,})\b(?:[\s,.:;!?]+\b(?P=word)\b){6,}",
     re.IGNORECASE,
@@ -49,10 +61,33 @@ _REPEATED_ASSIGNMENT_RE = re.compile(
     re.IGNORECASE,
 )
 _INTERNAL_REASONING_PHRASE_RE = re.compile(
-    r"(?:\bwe need to respond\b|\bthe user says\b|\blet me think\b|\banalysis:\b)",
+    r"(?:\bwe need to respond\b|\bwe need to analyze\b|\bwe have a conversation\b|"
+    r"\bthe user says\b|\bthe user asks\b|\blet me think\b|\banalysis:\b|"
+    r"\bas per policy\b|\binternal instructions?\b|\bmust not mention policies?\b)",
     re.IGNORECASE,
 )
 _QUALITY_TOKEN_RE = re.compile(r"[a-zA-Z가-힣_]{2,}")
+
+
+def _extract_after_loose_final_marker(text: str) -> str | None:
+    """엄격한 채널 토큰이 없을 때 final 마커 뒤 텍스트를 보수적으로 추출한다."""
+    matches = list(_LOOSE_FINAL_MARKER_RE.finditer(text))
+    if not matches:
+        return None
+
+    candidate = text[matches[-1].end():].strip()
+    if not candidate:
+        return None
+
+    # final 마커 직후에 붙는 잔여 토큰(code/analysis/markdown 장식 등)을 제거한다.
+    for _ in range(3):
+        updated = _LEADING_FINAL_ARTIFACT_RE.sub("", candidate, count=1).lstrip()
+        if updated == candidate:
+            break
+        candidate = updated
+        if not candidate:
+            return None
+    return candidate
 
 
 def extract_keywords(text: str, max_keywords: int = 5) -> list[str]:
@@ -94,7 +129,8 @@ def sanitize_model_output(text: str) -> str:
             cleaned = non_analysis_blocks[-1]
         else:
             # analysis/commentary-only 출력은 내부 사고 가능성이 높아 노출하지 않는다.
-            cleaned = ""
+            # 다만 to=final/final 같은 느슨한 마커가 있으면 마지막 후보를 복구한다.
+            cleaned = _extract_after_loose_final_marker(cleaned) or ""
     else:
         markers = list(_ASSISTANT_MARKER_RE.finditer(cleaned))
         if markers:
@@ -102,7 +138,11 @@ def sanitize_model_output(text: str) -> str:
             if final_markers:
                 cleaned = cleaned[final_markers[-1].end():]
             else:
-                cleaned = ""
+                cleaned = _extract_after_loose_final_marker(cleaned) or ""
+        elif _INTERNAL_REASONING_PHRASE_RE.search(cleaned):
+            recovered = _extract_after_loose_final_marker(cleaned)
+            if recovered is not None:
+                cleaned = recovered
 
     cleaned = _SPECIAL_TOKEN_RE.sub("", cleaned).strip()
     return cleaned

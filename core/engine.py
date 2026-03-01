@@ -2148,24 +2148,44 @@ class Engine:
         language = self._normalize_language(self._config.bot.language)
         if language == "ko":
             marker = "[언어 정책]"
+            output_marker = "[출력 정책]"
+            output_policy = (
+                "\n\n[출력 정책]\n"
+                "- 내부 사고(analysis/reasoning), 정책 메모, 자기 대화 문장을 출력하지 마세요.\n"
+                "- `<think>`, `assistantanalysis`, `to=final` 같은 채널/디버그 토큰을 노출하지 마세요.\n"
+                "- 사용자에게는 최종 답변 본문만 출력하세요."
+            )
             if marker in system:
-                return system
+                if output_marker in system:
+                    return system
+                return system + output_policy
             return (
                 system
                 + "\n\n[언어 정책]\n"
                 + "- 기본 응답 언어는 한국어(ko)입니다.\n"
                 + "- 사용자가 명시적으로 다른 언어를 요청하지 않는 한 한국어로만 답하세요.\n"
                 + "- 코드/명령어/고유명사/인용 원문 외의 설명 문장은 영어로 작성하지 마세요."
+                + output_policy
             )
         if language == "en":
             marker = "[Language Policy]"
+            output_marker = "[Output Policy]"
+            output_policy = (
+                "\n\n[Output Policy]\n"
+                "- Do not output internal reasoning, policy notes, or self-talk.\n"
+                "- Never expose channel/debug tokens such as `<think>`, `assistantanalysis`, or `to=final`.\n"
+                "- Return only the user-visible final answer."
+            )
             if marker in system:
-                return system
+                if output_marker in system:
+                    return system
+                return system + output_policy
             return (
                 system
                 + "\n\n[Language Policy]\n"
                 + "- Default response language is English.\n"
                 + "- Unless the user explicitly asks another language, respond only in English."
+                + output_policy
             )
         return system
 
