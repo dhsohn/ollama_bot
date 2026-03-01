@@ -61,6 +61,10 @@ class OllamaClient:
     def system_prompt(self) -> str:
         return self._system_prompt
 
+    @property
+    def host(self) -> str:
+        return self._host
+
     async def initialize(self) -> None:
         """클라이언트를 생성하고 연결을 확인한다."""
         client = AsyncClient(host=self._host)
