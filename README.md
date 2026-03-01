@@ -1,11 +1,14 @@
 # ollama_bot
 
-로컬/자체 호스팅 LLM(Ollama 또는 Lemonade OpenAI-compatible) 기반 텔레그램 private-chat 봇입니다.
+**Dual-Provider 아키텍처** 기반 텔레그램 private-chat 봇입니다.
+
+- **Lemonade Server (8000)**: LLM 응답 전담 — `gpt-oss-20b-NPU` 단일 모델 상주
+- **Ollama Server (11434)**: 쿼리 최적화 전담 — 임베딩(`Qwen3-Embedding-0.6B-GGUF`) + 리랭킹(`bge-reranker-v2-m3-GGUF`)
 
 현재 코드베이스는 **단일 앱 구조**입니다.
 - 엔트리포인트: `apps/ollama_bot/main.py` (`main.py`는 레거시 호환용 래퍼)
 - 코어 로직: `core/`
-- LLM provider 선택: `config/config.yaml`의 `llm_provider`
+- 설정: `config/config.yaml`
 - 컨테이너 실행 기본: `docker compose -f docker-compose.yml up -d`
 
 ## 핵심 기능
@@ -19,7 +22,7 @@
   - Tier 1: 규칙 기반 즉시 응답(InstantResponder)
   - Tier 2: 인텐트 라우팅(IntentRouter)
   - Tier 3: 시맨틱 캐시(SemanticCache)
-  - Tier 4: Full LLM + 컨텍스트 압축(ContextCompressor)
+  - Tier 4: Full LLM — Ollama(임베딩/리랭킹) → Lemonade(gpt-oss-20b-NPU 응답)
 - 장기 메모리/대화 보관(SQLite)
 - 보안 기본값
   - 화이트리스트 사용자 인증(`ALLOWED_TELEGRAM_USERS`)
@@ -43,8 +46,12 @@ flowchart TD
     T2 --> T3{Tier 3 Semantic Cache Hit?}
     T3 -->|Yes| CACHED[캐시 응답 반환]
     T3 -->|No| T4[Tier 4 Full LLM]
-    T4 --> MR[Model Routing/RAG/Context Build]
-    MR --> LLM[LLM 추론]
+    T4 --> OPT["쿼리 최적화 — Ollama:11434"]
+    OPT --> EMB[임베딩 Qwen3-Embedding]
+    EMB --> RAG[RAG 벡터 검색]
+    RAG --> RR[리랭킹 bge-reranker]
+    RR --> CTX[컨텍스트 빌드]
+    CTX --> LLM["LLM 응답 — Lemonade:8000\ngpt-oss-20b-NPU"]
     SK --> OUT[응답 전송 + 메모리 저장]
     IR --> OUT
     CACHED --> OUT
@@ -60,11 +67,9 @@ flowchart TD
     ACT -->|prompt| P[Engine.process_prompt]
     ACT -->|skill| K[Engine.execute_skill]
     ACT -->|callable| C[등록 callable 실행]
-    P --> AM[action.model, action.model_role]
-    K --> AM
-    C --> CK[선택 kwargs 주입: model, model_role 등]
-    AM --> LLM[LLM 호출]
-    CK --> LLM
+    P --> LLM["Lemonade gpt-oss-20b-NPU"]
+    K --> LLM
+    C --> LLM
     LLM --> AO[텔레그램 전송/파일 저장]
 ```
 
@@ -74,9 +79,9 @@ flowchart TD
 - Docker / Docker Compose
 - 임베딩 런타임은 `fastembed`(ONNX Runtime CPU) 기반
 - 텔레그램 봇 토큰 (`@BotFather`)
-- LLM 백엔드 중 하나
-  - Ollama (`ollama serve`)
-  - Lemonade(OpenAI-compatible API)
+- Dual-Provider 백엔드 (Windows 호스트에서 실행)
+  - **Lemonade Server** (포트 8000) — LLM 응답 (`gpt-oss-20b-NPU`)
+  - **Ollama Server** (포트 11434) — 임베딩/리랭킹 (`Qwen3-Embedding-0.6B-GGUF`, `bge-reranker-v2-m3-GGUF`)
 
 ## 빠른 시작
 
@@ -94,7 +99,7 @@ git clone <repo-url> && cd ollama_bot && bash scripts/bootstrap.sh
 bash scripts/bootstrap.sh
 ```
 
-- `llm_provider: "lemonade"` 인 경우:
+- Dual-Provider 환경(Lemonade + Ollama):
   - Windows 방화벽/portproxy를 자동 설정합니다.
   - 관리자 권한이 필요하면 UAC 팝업이 1회 표시됩니다.
   - WSL 재부팅 없이 바로 적용됩니다.
@@ -133,25 +138,27 @@ ALLOWED_TELEGRAM_USERS=123456789
 - placeholder(`your_telegram_chat_id_here`) 상태면 시작 시 fail-fast로 종료됩니다.
 - 런타임 일반 설정(provider/model/host/log/data_dir 등)은 `config/config.yaml`에서 관리합니다.
 
-### 3) LLM 백엔드 준비
+### 3) LLM 백엔드 준비 (Dual-Provider)
 
-#### Ollama 사용 시
+두 서버 모두 Windows 호스트에서 실행되어야 합니다.
+
+#### Lemonade Server (LLM 응답)
+
+- 포트 8000에서 OpenAI-compatible API 제공
+- `gpt-oss-20b-NPU` 모델을 상주 로드
+- 시작 시 `prepare_model`로 모델 선로드를 보장
+
+#### Ollama Server (쿼리 최적화)
 
 ```bash
-ollama pull gpt-oss:20b
+ollama pull Qwen3-Embedding-0.6B-GGUF
+ollama pull bge-reranker-v2-m3-GGUF
 ollama serve
 ```
 
-- `config/config.yaml`의 `ollama.model`에 지정된 기본 모델이 서버에 없으면 앱이 시작되지 않습니다.
-
-#### Lemonade 사용 시
-
-`config/config.yaml`에서 `llm_provider: "lemonade"`로 변경합니다.
-
-- Lemonade는 기본 응답 모델을 고정하지 않습니다.
-- 응답 모델은 `model_routing` + `model_registry` 역할 매핑으로 결정됩니다.
-- 멀티 인스턴스 라우팅: `lemonade.instances`에 추가 endpoint를 등록하면 모델명/역할 기준으로 endpoint를 분기할 수 있습니다.
-  - 예: `low_cost(GLM)`는 `glm` 인스턴스, `coding(Qwen3-Coder)`는 `coder` 인스턴스로 분리
+- 포트 11434에서 임베딩/리랭킹 전담
+- 두 모델을 `keep_alive` 설정으로 상주 유지 권장
+- RAG 파이프라인에서 벡터 검색 + 리랭킹에 사용
 
 ### 4) 실행
 
@@ -185,8 +192,7 @@ python -m apps.cli dry-run "테스트 질문"
 python -m apps.cli test
 ```
 
-- CLI는 `llm_provider` 설정(`ollama` 또는 `lemonade`)을 그대로 사용합니다.
-- `model_routing`/`rag`는 Lemonade(OpenAI-compatible) provider일 때만 활성화됩니다.
+- CLI는 Dual-Provider 설정을 그대로 사용합니다 (Lemonade 응답 + Ollama 임베딩/리랭킹).
 
 ## 텔레그램 명령어
 
@@ -200,7 +206,7 @@ python -m apps.cli test
 | `/auto disable <name>` | 자동화 비활성화 |
 | `/auto run <name>` | 자동화 1회 수동 실행 |
 | `/auto reload` | 자동화 strict 리로드 |
-| `/model` | 현재/역할별 모델 확인 |
+| `/model` | Dual-Provider 모델 현황 확인 |
 | `/model <name>` | 기본 모델 전환 |
 | `/memory` | 메모리 통계 |
 | `/memory clear` | 현재 채팅 대화 기록 삭제 |
@@ -254,7 +260,7 @@ parameters:
     required: true
     description: "입력"
 timeout: 30
-model_role: "skill"  # optional: skill|low_cost|reasoning|coding|vision
+model_role: "default"  # optional: default
 temperature: 0.7     # optional
 max_tokens: 1024     # optional
 streaming: true      # optional
@@ -278,7 +284,7 @@ schedule: "0 8 * * *"
 action:
   type: "prompt"   # skill | prompt | callable | command
   target: "오늘의 핵심 이슈를 요약해줘"
-  model_role: "low_cost"  # 권장: low_cost | reasoning | coding | vision
+  model_role: "default"
   parameters: {}
 output:
   send_to_telegram: true
@@ -293,7 +299,7 @@ timeout: 120
 - `name` 중복 불가
 - `schedule`은 유효한 cron이어야 함
 - `/auto reload`는 strict 모드
-- 자동화 LLM 호출 모델은 `action.model` 또는 `action.model_role`로 설정하세요.
+- 자동화 LLM 호출은 기본 모델(`gpt-oss-20b-NPU`)을 사용합니다.
 - `command` 액션 타입은 현재 버전(v0.1)에서 보안상 비활성화되어 실제 시스템 명령을 실행하지 않습니다.
 - `save_to_file` 경로는 `DATA_DIR` 기준으로 검증됩니다(`{date}` 플레이스홀더 지원).
 
@@ -306,7 +312,7 @@ timeout: 120
 - `bot`, `ollama`, `lemonade`, `telegram`, `security`, `memory`, `scheduler`
 - `feedback`, `auto_evaluation`
 - `instant_responder`, `semantic_cache`, `intent_router`, `context_compressor`
-- `model_registry`, `model_routing`, `rag`
+- `retrieval_provider`, `model_registry`, `rag`
 
 `rag` 다중 코퍼스 디렉토리 예시:
 
@@ -326,22 +332,24 @@ rag:
     - ".ts"
 ```
 
-`lemonade.instances` 예시:
+Dual-Provider 설정 예시:
 
 ```yaml
+# LLM 응답 — Lemonade Server
 lemonade:
-  host: "http://windows-host:11434"   # primary (NPU reasoning)
-  instances:
-    - name: "glm"
-      host: "http://windows-host:21434"
-      model: "GLM-4.7-Flash-GGUF"
-      route_roles: ["low_cost"]
-      route_models: ["GLM-4.7-Flash-GGUF"]
-    - name: "coder"
-      host: "http://windows-host:31434"
-      model: "Qwen3-Coder-Next-GGUF"
-      route_roles: ["coding"]
-      route_models: ["Qwen3-Coder-Next-GGUF"]
+  host: "http://windows-host:8000"
+
+# 쿼리 최적화 — Ollama Server (임베딩 + 리랭킹)
+retrieval_provider:
+  host: "http://host.docker.internal:11434"
+  embedding_model: "Qwen3-Embedding-0.6B-GGUF"
+  reranker_model: "bge-reranker-v2-m3-GGUF"
+
+# 단일 기본 모델 — 모든 LLM 응답에 사용
+model_registry:
+  default_model: "gpt-oss-20b-NPU"
+  embedding_model: "Qwen3-Embedding-0.6B-GGUF"
+  reranker_model: "bge-reranker-v2-m3-GGUF"
 ```
 
 `.env` 우선순위 관련:
@@ -359,22 +367,8 @@ lemonade:
 | `scripts/install_boot_service.sh` | systemd 부팅 서비스 설치 |
 | `scripts/healthcheck.sh` | 컨테이너 헬스체크 |
 | `scripts/soak_monitor.sh` | 장시간 안정성 모니터링 |
-| `scripts/unload_non_primary_embeddings.py` | 비-primary Lemonade 인스턴스의 임베딩 모델 자동 언로드 |
 | `scripts/finetune_unsloth.py` | KTO 파인튜닝(선택) |
 | `scripts/deploy_finetuned.sh` | 파인튜닝 모델 Ollama 배포(선택) |
-
-비-primary 임베딩 자동 정리 예시:
-
-```bash
-# 1회 실행
-./.venv/bin/python scripts/unload_non_primary_embeddings.py
-
-# 60초마다 반복 실행
-./.venv/bin/python scripts/unload_non_primary_embeddings.py --interval 60
-
-# 실제 언로드 없이 점검
-./.venv/bin/python scripts/unload_non_primary_embeddings.py --dry-run
-```
 
 ## 품질 검증
 
