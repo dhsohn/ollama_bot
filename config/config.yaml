@@ -21,7 +21,7 @@ ollama:
     한국어로 답변하며, 간결하고 정확한 정보를 제공합니다.
 
 lemonade:
-  host: "http://windows-host:8000"
+  host: "http://homelab:8000"
   api_key: ""
   base_path: "/api/v1"
   timeout_seconds: 120
@@ -115,14 +115,14 @@ context_compressor:
 # ── Dual-Provider: Ollama(retrieval) + Lemonade(chat) ──
 
 retrieval_provider:
-  host: "http://host.docker.internal:11434"
-  embedding_model: "Qwen3-Embedding-0.6B-GGUF"
-  reranker_model: "bge-reranker-v2-m3-GGUF"
+  host: "http://homelab:11434"
+  embedding_model: "dengcao/Qwen3-Embedding-0.6B:Q8_0"
+  reranker_model: "dengcao/bge-reranker-v2-m3:latest"
 
 model_registry:
   default_model: "gpt-oss-20b-NPU"
-  embedding_model: "Qwen3-Embedding-0.6B-GGUF"
-  reranker_model: "bge-reranker-v2-m3-GGUF"
+  embedding_model: "dengcao/Qwen3-Embedding-0.6B:Q8_0"
+  reranker_model: "dengcao/bge-reranker-v2-m3:latest"
 
 rag:
   enabled: true
