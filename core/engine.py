@@ -192,7 +192,7 @@ class Engine:
         self._intent_router = intent_router
         self._context_compressor = context_compressor
         self._rag_pipeline = rag_pipeline
-        self._system_prompt = getattr(llm_client, "system_prompt", config.ollama.system_prompt)
+        self._system_prompt = getattr(llm_client, "system_prompt", config.lemonade.system_prompt)
         self._max_conversation_length = config.bot.max_conversation_length
         self._start_time = time.monotonic()
         self._logger = get_logger("engine")
@@ -1194,7 +1194,7 @@ class Engine:
         scope = "global" if intent in {"chitchat", "simple_qa"} else "user"
         return CacheContext(
             model=model_override or self._llm_client.default_model,
-            prompt_ver=self._config.ollama.prompt_version,
+            prompt_ver=self._config.lemonade.prompt_version,
             intent=intent,
             scope=scope,
             chat_id=chat_id if scope == "user" else None,
@@ -1506,7 +1506,7 @@ class Engine:
         RAG 파이프라인으로 쿼리 최적화(임베딩+리랭킹)를 수행한다.
         """
         # 단일 모델: model_override가 없으면 기본 모델 사용
-        target_model = model_override or self._config.model_registry.default_model
+        target_model = model_override or self._config.lemonade.default_model
         rag_result = None
 
         # RAG 파이프라인: ollama의 임베딩/리랭커로 쿼리 최적화
@@ -1729,9 +1729,9 @@ class Engine:
             reduce_model_candidate = model_override
             reduce_role = "skill"
         else:
-            map_model_candidate = self._config.model_registry.default_model
+            map_model_candidate = self._config.lemonade.default_model
             map_role = "default"
-            reduce_model_candidate = self._config.model_registry.default_model
+            reduce_model_candidate = self._config.lemonade.default_model
             reduce_role = "default"
 
         map_model, _ = await self._prepare_target_model(
@@ -1877,15 +1877,14 @@ class Engine:
         return target_model, target_role
 
     def _resolve_model_for_role(self, role: str | None) -> str | None:
-        """role 이름을 model_registry 모델명으로 해석한다."""
+        """role 이름을 설정 모델명으로 해석한다."""
         role_key = (role or "").strip().lower()
         if not role_key:
             return None
-        registry = self._config.model_registry
         role_model_map = {
-            "default": registry.default_model,
-            "embedding": registry.embedding_model,
-            "reranker": registry.reranker_model,
+            "default": self._config.lemonade.default_model,
+            "embedding": self._config.ollama.embedding_model,
+            "reranker": self._config.ollama.reranker_model,
         }
         mapped = role_model_map.get(role_key)
         if not mapped:

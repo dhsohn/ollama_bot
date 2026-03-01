@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Literal, Sequence
+from typing import Any, Sequence
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
@@ -24,7 +24,7 @@ class BotConfig(BaseModel):
 
 class OllamaConfig(BaseModel):
     host: str = "http://host.docker.internal:11434"
-    model: str = "gpt-oss:20b"
+    model: str = ""
     temperature: float = 0.7
     max_tokens: int = 2048
     num_ctx: int = 8192
@@ -35,49 +35,22 @@ class OllamaConfig(BaseModel):
     )
 
 
-class LemonadeInstanceConfig(BaseModel):
-    """추가 Lemonade 인스턴스 설정(엔드포인트 라우팅용)."""
-
-    name: str
-    host: str
-    api_key: str = ""
-    model: str = ""
-    base_path: str = "/api/v1"
-    timeout_seconds: int = 60
-    model_load_timeout_seconds: int = 120
-    heavy_model_load_timeout_seconds: int = 420
-    route_roles: list[str] = Field(default_factory=list)
-    route_models: list[str] = Field(default_factory=list)
-
-    @field_validator(
-        "timeout_seconds",
-        "model_load_timeout_seconds",
-        "heavy_model_load_timeout_seconds",
-    )
-    @classmethod
-    def validate_timeout_positive(cls, value: int) -> int:
-        if value < 1:
-            raise ValueError("lemonade instance timeout settings must be >= 1")
-        return value
-
-    @field_validator("name")
-    @classmethod
-    def validate_name_not_empty(cls, value: str) -> str:
-        name = value.strip()
-        if not name:
-            raise ValueError("lemonade instance name must not be empty")
-        return name
-
-
 class LemonadeConfig(BaseModel):
     host: str = "http://host.docker.internal:8000"
     api_key: str = ""
+    default_model: str = "gpt-oss-20b-NPU"
     base_path: str = "/api/v1"
+    temperature: float = 0.7
+    max_tokens: int = 2048
+    prompt_version: str = "v1"
+    system_prompt: str = (
+        "당신은 유용한 AI 어시스턴트입니다.\n"
+        "한국어로 답변하며, 간결하고 정확한 정보를 제공합니다.\n"
+    )
     timeout_seconds: int = 60
     model_load_timeout_seconds: int = 120
     heavy_model_load_timeout_seconds: int = 420
     reconnect_cooldown_seconds: float = 15.0
-    instances: list[LemonadeInstanceConfig] = Field(default_factory=list)
 
     @field_validator(
         "timeout_seconds",
@@ -89,24 +62,6 @@ class LemonadeConfig(BaseModel):
         if value < 1:
             raise ValueError("lemonade timeout settings must be >= 1")
         return value
-
-    @field_validator("instances")
-    @classmethod
-    def validate_instance_names_unique(
-        cls,
-        instances: list[LemonadeInstanceConfig],
-    ) -> list[LemonadeInstanceConfig]:
-        seen: set[str] = set()
-        duplicates: set[str] = set()
-        for item in instances:
-            key = item.name.strip().lower()
-            if key in seen:
-                duplicates.add(item.name)
-            seen.add(key)
-        if duplicates:
-            joined = ", ".join(sorted(duplicates))
-            raise ValueError(f"lemonade instance names must be unique: {joined}")
-        return instances
 
 
 class TelegramConfig(BaseModel):
@@ -338,12 +293,10 @@ class AppSettings(BaseModel):
 
     telegram_bot_token: str = ""
     allowed_telegram_users: str = ""
-    llm_provider: Literal["ollama", "lemonade"] = "ollama"
     log_level: str = "INFO"
     data_dir: str = "/app/data"
 
     bot: BotConfig = Field(default_factory=BotConfig)
-    ollama: OllamaConfig = Field(default_factory=OllamaConfig)
     lemonade: LemonadeConfig = Field(default_factory=LemonadeConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
     security: SecurityConfig = Field(default_factory=SecurityConfig)
@@ -356,8 +309,7 @@ class AppSettings(BaseModel):
     semantic_cache: SemanticCacheConfig = Field(default_factory=SemanticCacheConfig)
     intent_router: IntentRouterConfig = Field(default_factory=IntentRouterConfig)
     context_compressor: ContextCompressorConfig = Field(default_factory=ContextCompressorConfig)
-    retrieval_provider: RetrievalProviderConfig = Field(default_factory=RetrievalProviderConfig)
-    model_registry: ModelRegistryConfig = Field(default_factory=ModelRegistryConfig)
+    ollama: RetrievalProviderConfig = Field(default_factory=RetrievalProviderConfig)
     rag: RAGConfig = Field(default_factory=RAGConfig)
 
 

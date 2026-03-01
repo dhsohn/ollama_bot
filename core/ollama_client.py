@@ -18,7 +18,6 @@ from core.config import OllamaConfig
 from core.llm_types import ChatResponse, ChatStreamState, ChatUsage
 from core.logging_setup import get_logger
 
-# 하위 호환: 기존 `from core.ollama_client import ChatResponse` 유지
 __all__ = ["ChatResponse", "ChatStreamState", "ChatUsage", "OllamaClient",
            "OllamaClientError", "ModelNotFoundError"]
 

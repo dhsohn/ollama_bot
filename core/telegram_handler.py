@@ -469,8 +469,7 @@ class TelegramHandler:
 
     async def _show_current_model(self, update: Update) -> None:
         current = self._engine.get_current_model()
-        registry = self._config.model_registry
-        retrieval = self._config.retrieval_provider
+        retrieval = self._config.ollama
         await update.effective_message.reply_text(  # type: ignore[union-attr]
             "🤖 <b>모델 설정</b>\n\n"
             f"기본 응답 모델: <code>{self._escape_html(current)}</code>\n\n"

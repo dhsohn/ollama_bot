@@ -17,8 +17,8 @@ if ! docker info >/dev/null 2>&1; then
 fi
 
 # WSL 환경에서는 Windows 호스트 IP(기본 게이트웨이)가 재부팅마다 바뀔 수 있다.
-# lemonade provider 사용 시 Docker extra_hosts에 현재 IP를 주입한다.
-if [[ -f "${CONFIG_FILE}" ]] && grep -Eq '^llm_provider:[[:space:]]*"lemonade"' "${CONFIG_FILE}"; then
+# Docker extra_hosts에 현재 IP를 주입한다.
+if [[ -f "${CONFIG_FILE}" ]]; then
   WINDOWS_HOST_IP="${WINDOWS_HOST_IP:-$(awk '/^nameserver / {print $2; exit}' /etc/resolv.conf)}"
   if [[ -n "${WINDOWS_HOST_IP}" ]]; then
     export WINDOWS_HOST_IP
@@ -29,7 +29,7 @@ if [[ -f "${CONFIG_FILE}" ]] && grep -Eq '^llm_provider:[[:space:]]*"lemonade"' 
 
   # lemonade 포트 연결 프리체크
   if [[ -n "${WINDOWS_HOST_IP:-}" ]]; then
-    LEMONADE_PORT=$(grep -A5 '^lemonade:' "${CONFIG_FILE}" | grep 'host:' | grep -oP ':\K[0-9]+' || echo "11434")
+    LEMONADE_PORT=$(grep -A8 '^lemonade:' "${CONFIG_FILE}" | grep 'host:' | grep -oP ':\K[0-9]+' || echo "8000")
     echo "[up.sh] lemonade 연결 확인 중: ${WINDOWS_HOST_IP}:${LEMONADE_PORT} ..."
     if timeout 5 bash -c "echo >/dev/tcp/${WINDOWS_HOST_IP}/${LEMONADE_PORT}" 2>/dev/null; then
       echo "[up.sh] OK: lemonade-server 응답 확인"

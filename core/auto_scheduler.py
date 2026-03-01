@@ -472,7 +472,7 @@ class AutoScheduler:
         model_role = action.model_role
         if model_override is not None or model_role is not None:
             return model_override, model_role
-        fallback_model = self._config.model_registry.default_model.strip() or None
+        fallback_model = self._config.lemonade.default_model.strip() or None
         return fallback_model, "default"
 
     @staticmethod

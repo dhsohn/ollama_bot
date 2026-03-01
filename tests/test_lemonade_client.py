@@ -8,7 +8,7 @@ from unittest.mock import patch
 import httpx
 import pytest
 
-from core.config import LemonadeConfig, OllamaConfig
+from core.config import LemonadeConfig
 from core.lemonade_client import LemonadeClient, LemonadeClientError
 from core.llm_types import ChatStreamState
 
@@ -17,19 +17,10 @@ from core.llm_types import ChatStreamState
 def lemonade_config() -> LemonadeConfig:
     return LemonadeConfig(
         host="http://localhost:8000",
+        default_model="test-model",
+        system_prompt="test prompt",
         base_path="/api/v1",
         timeout_seconds=10,
-    )
-
-
-@pytest.fixture
-def ollama_fallback() -> OllamaConfig:
-    return OllamaConfig(
-        host="http://localhost:11434",
-        model="test-model",
-        temperature=0.7,
-        max_tokens=512,
-        system_prompt="fallback prompt",
     )
 
 
@@ -38,7 +29,6 @@ class TestInitialize:
     async def test_initialize_success(
         self,
         lemonade_config: LemonadeConfig,
-        ollama_fallback: OllamaConfig,
     ) -> None:
         def _handler(request: httpx.Request) -> httpx.Response:
             assert request.url.path == "/api/v1/models"
@@ -52,13 +42,13 @@ class TestInitialize:
             base_url=lemonade_config.host,
             transport=transport,
         )
-        client = LemonadeClient(lemonade_config, fallback_ollama=ollama_fallback)
+        client = LemonadeClient(lemonade_config)
 
         with patch("core.lemonade_client.httpx.AsyncClient", return_value=mock_client):
             await client.initialize()
         try:
-            assert client.default_model == ""
-            assert client.system_prompt == "fallback prompt"
+            assert client.default_model == "test-model"
+            assert client.system_prompt == "test prompt"
         finally:
             await client.close()
 
@@ -68,7 +58,6 @@ class TestChat:
     async def test_chat_returns_content_and_usage(
         self,
         lemonade_config: LemonadeConfig,
-        ollama_fallback: OllamaConfig,
     ) -> None:
         captured_payload: dict | None = None
 
@@ -89,7 +78,7 @@ class TestChat:
                 )
             return httpx.Response(404, json={"error": "not found"})
 
-        client = LemonadeClient(lemonade_config, fallback_ollama=ollama_fallback)
+        client = LemonadeClient(lemonade_config)
         client._client = httpx.AsyncClient(
             base_url=lemonade_config.host,
             transport=httpx.MockTransport(_handler),
@@ -114,7 +103,6 @@ class TestChat:
     async def test_chat_schema_response_format_is_downgraded(
         self,
         lemonade_config: LemonadeConfig,
-        ollama_fallback: OllamaConfig,
     ) -> None:
         captured_payload: dict | None = None
 
@@ -128,7 +116,7 @@ class TestChat:
                 )
             return httpx.Response(404, json={"error": "not found"})
 
-        client = LemonadeClient(lemonade_config, fallback_ollama=ollama_fallback)
+        client = LemonadeClient(lemonade_config)
         client._client = httpx.AsyncClient(
             base_url=lemonade_config.host,
             transport=httpx.MockTransport(_handler),
@@ -153,7 +141,6 @@ class TestChat:
     async def test_chat_does_not_fallback_to_reasoning_content(
         self,
         lemonade_config: LemonadeConfig,
-        ollama_fallback: OllamaConfig,
     ) -> None:
         def _handler(request: httpx.Request) -> httpx.Response:
             if request.url.path == "/api/v1/chat/completions":
@@ -167,7 +154,7 @@ class TestChat:
                 )
             return httpx.Response(404, json={"error": "not found"})
 
-        client = LemonadeClient(lemonade_config, fallback_ollama=ollama_fallback)
+        client = LemonadeClient(lemonade_config)
         client._client = httpx.AsyncClient(
             base_url=lemonade_config.host,
             transport=httpx.MockTransport(_handler),
@@ -183,7 +170,6 @@ class TestChat:
     async def test_chat_stream_parses_sse(
         self,
         lemonade_config: LemonadeConfig,
-        ollama_fallback: OllamaConfig,
     ) -> None:
         stream_body = "\n\n".join(
             [
@@ -203,7 +189,7 @@ class TestChat:
                 )
             return httpx.Response(404, json={"error": "not found"})
 
-        client = LemonadeClient(lemonade_config, fallback_ollama=ollama_fallback)
+        client = LemonadeClient(lemonade_config)
         client._client = httpx.AsyncClient(
             base_url=lemonade_config.host,
             transport=httpx.MockTransport(_handler),
@@ -229,7 +215,6 @@ class TestChat:
     async def test_chat_stream_stops_on_finish_reason_without_done(
         self,
         lemonade_config: LemonadeConfig,
-        ollama_fallback: OllamaConfig,
     ) -> None:
         stream_body = "\n\n".join(
             [
@@ -248,7 +233,7 @@ class TestChat:
                 )
             return httpx.Response(404, json={"error": "not found"})
 
-        client = LemonadeClient(lemonade_config, fallback_ollama=ollama_fallback)
+        client = LemonadeClient(lemonade_config)
         client._client = httpx.AsyncClient(
             base_url=lemonade_config.host,
             transport=httpx.MockTransport(_handler),
@@ -269,7 +254,6 @@ class TestChat:
     async def test_chat_stream_does_not_emit_reasoning_content_only(
         self,
         lemonade_config: LemonadeConfig,
-        ollama_fallback: OllamaConfig,
     ) -> None:
         stream_body = "\n\n".join(
             [
@@ -288,7 +272,7 @@ class TestChat:
                 )
             return httpx.Response(404, json={"error": "not found"})
 
-        client = LemonadeClient(lemonade_config, fallback_ollama=ollama_fallback)
+        client = LemonadeClient(lemonade_config)
         client._client = httpx.AsyncClient(
             base_url=lemonade_config.host,
             transport=httpx.MockTransport(_handler),
@@ -309,7 +293,6 @@ class TestChat:
     async def test_chat_stream_raises_when_repeating_content_stalls(
         self,
         lemonade_config: LemonadeConfig,
-        ollama_fallback: OllamaConfig,
     ) -> None:
         repeating_lines = ['data: {"choices":[{"delta":{"content":"가"}}]}'] * 205
         stream_body = "\n\n".join(repeating_lines + [""])
@@ -323,7 +306,7 @@ class TestChat:
                 )
             return httpx.Response(404, json={"error": "not found"})
 
-        client = LemonadeClient(lemonade_config, fallback_ollama=ollama_fallback)
+        client = LemonadeClient(lemonade_config)
         client._client = httpx.AsyncClient(
             base_url=lemonade_config.host,
             transport=httpx.MockTransport(_handler),
@@ -343,7 +326,6 @@ class TestChat:
     async def test_chat_stream_normalizes_cumulative_message_content(
         self,
         lemonade_config: LemonadeConfig,
-        ollama_fallback: OllamaConfig,
     ) -> None:
         stream_body = "\n\n".join(
             [
@@ -363,7 +345,7 @@ class TestChat:
                 )
             return httpx.Response(404, json={"error": "not found"})
 
-        client = LemonadeClient(lemonade_config, fallback_ollama=ollama_fallback)
+        client = LemonadeClient(lemonade_config)
         client._client = httpx.AsyncClient(
             base_url=lemonade_config.host,
             transport=httpx.MockTransport(_handler),
@@ -384,7 +366,6 @@ class TestChat:
     async def test_chat_stream_raises_when_fallback_content_stalls(
         self,
         lemonade_config: LemonadeConfig,
-        ollama_fallback: OllamaConfig,
     ) -> None:
         repeating_lines = ['data: {"choices":[{"message":{"content":"가"}}]}'] * 205
         stream_body = "\n\n".join(repeating_lines + [""])
@@ -398,7 +379,7 @@ class TestChat:
                 )
             return httpx.Response(404, json={"error": "not found"})
 
-        client = LemonadeClient(lemonade_config, fallback_ollama=ollama_fallback)
+        client = LemonadeClient(lemonade_config)
         client._client = httpx.AsyncClient(
             base_url=lemonade_config.host,
             transport=httpx.MockTransport(_handler),

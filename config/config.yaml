@@ -1,5 +1,4 @@
 # ollama_bot 전역 설정
-llm_provider: "lemonade"
 log_level: "INFO"
 data_dir: "/app/data"
 
@@ -9,21 +8,17 @@ bot:
   max_conversation_length: 30
   response_timeout: 300
 
-ollama:
-  host: "http://host.docker.internal:11434"
-  model: "gpt-oss:20b"
+lemonade:
+  host: "http://homelab:8000"
+  api_key: ""
+  default_model: "gpt-oss-20b-NPU"
+  base_path: "/api/v1"
   temperature: 0.7
-  max_tokens: 1536
-  num_ctx: 4096
+  max_tokens: 2048
   prompt_version: "v1"
   system_prompt: |
     당신은 유용한 AI 어시스턴트입니다.
     한국어로 답변하며, 간결하고 정확한 정보를 제공합니다.
-
-lemonade:
-  host: "http://homelab:8000"
-  api_key: ""
-  base_path: "/api/v1"
   timeout_seconds: 120
   model_load_timeout_seconds: 120
   heavy_model_load_timeout_seconds: 420
@@ -114,13 +109,8 @@ context_compressor:
 
 # ── Dual-Provider: Ollama(retrieval) + Lemonade(chat) ──
 
-retrieval_provider:
+ollama:
   host: "http://homelab:11434"
-  embedding_model: "dengcao/Qwen3-Embedding-0.6B:Q8_0"
-  reranker_model: "dengcao/bge-reranker-v2-m3:latest"
-
-model_registry:
-  default_model: "gpt-oss-20b-NPU"
   embedding_model: "dengcao/Qwen3-Embedding-0.6B:Q8_0"
   reranker_model: "dengcao/bge-reranker-v2-m3:latest"
 

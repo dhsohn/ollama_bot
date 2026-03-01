@@ -6,7 +6,7 @@
 - **Ollama Server (11434)**: 쿼리 최적화 전담 — 임베딩(`Qwen3-Embedding-0.6B-GGUF`) + 리랭킹(`bge-reranker-v2-m3-GGUF`)
 
 현재 코드베이스는 **단일 앱 구조**입니다.
-- 엔트리포인트: `apps/ollama_bot/main.py` (`main.py`는 레거시 호환용 래퍼)
+- 엔트리포인트: `apps/ollama_bot/main.py` (`main.py`는 단순 래퍼)
 - 코어 로직: `core/`
 - 설정: `config/config.yaml`
 - 컨테이너 실행 기본: `docker compose -f docker-compose.yml up -d`
@@ -136,7 +136,7 @@ ALLOWED_TELEGRAM_USERS=123456789
 
 - `ALLOWED_TELEGRAM_USERS`는 **숫자 Chat ID CSV**만 허용됩니다.
 - placeholder(`your_telegram_chat_id_here`) 상태면 시작 시 fail-fast로 종료됩니다.
-- 런타임 일반 설정(provider/model/host/log/data_dir 등)은 `config/config.yaml`에서 관리합니다.
+- 런타임 일반 설정(model/host/log/data_dir 등)은 `config/config.yaml`에서 관리합니다.
 
 ### 3) LLM 백엔드 준비 (Dual-Provider)
 
@@ -309,10 +309,10 @@ timeout: 120
 - `.env`: 텔레그램 시크릿(`TELEGRAM_BOT_TOKEN`, `ALLOWED_TELEGRAM_USERS`)
 
 주요 섹션:
-- `bot`, `ollama`, `lemonade`, `telegram`, `security`, `memory`, `scheduler`
+- `bot`, `lemonade`, `telegram`, `security`, `memory`, `scheduler`
 - `feedback`, `auto_evaluation`
 - `instant_responder`, `semantic_cache`, `intent_router`, `context_compressor`
-- `retrieval_provider`, `model_registry`, `rag`
+- `ollama`(retrieval), `rag`
 
 `rag` 다중 코퍼스 디렉토리 예시:
 
@@ -338,16 +338,11 @@ Dual-Provider 설정 예시:
 # LLM 응답 — Lemonade Server
 lemonade:
   host: "http://windows-host:8000"
+  default_model: "gpt-oss-20b-NPU"
 
 # 쿼리 최적화 — Ollama Server (임베딩 + 리랭킹)
-retrieval_provider:
+ollama:
   host: "http://host.docker.internal:11434"
-  embedding_model: "Qwen3-Embedding-0.6B-GGUF"
-  reranker_model: "bge-reranker-v2-m3-GGUF"
-
-# 단일 기본 모델 — 모든 LLM 응답에 사용
-model_registry:
-  default_model: "gpt-oss-20b-NPU"
   embedding_model: "Qwen3-Embedding-0.6B-GGUF"
   reranker_model: "bge-reranker-v2-m3-GGUF"
 ```

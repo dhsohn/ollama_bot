@@ -18,7 +18,7 @@ from core.config import (
     AppSettings,
     BotConfig,
     MemoryConfig,
-    OllamaConfig,
+    LemonadeConfig,
     SecurityConfig,
     TelegramConfig,
 )
@@ -35,7 +35,7 @@ def app_settings(tmp_path: Path) -> AppSettings:
         telegram_bot_token="test_token",
         data_dir=str(tmp_path),
         bot=BotConfig(),
-        ollama=OllamaConfig(),
+        lemonade=LemonadeConfig(),
         security=SecurityConfig(allowed_users=[111]),
         memory=MemoryConfig(),
         telegram=TelegramConfig(),

@@ -124,9 +124,9 @@ def test_yaml_values_preserved_when_env_not_set(tmp_path: Path) -> None:
     config_path.write_text(
         "\n".join(
             [
-                "ollama:",
-                "  host: \"http://yaml-host:11434\"",
-                "  model: \"yaml-model\"",
+                "lemonade:",
+                "  host: \"http://yaml-host:8000\"",
+                "  default_model: \"yaml-model\"",
                 "scheduler:",
                 "  timezone: \"UTC\"",
             ]
@@ -144,8 +144,8 @@ def test_yaml_values_preserved_when_env_not_set(tmp_path: Path) -> None:
     )
 
     settings = load_config(config_path=str(config_path), env_file=str(env_path))
-    assert settings.ollama.host == "http://yaml-host:11434"
-    assert settings.ollama.model == "yaml-model"
+    assert settings.lemonade.host == "http://yaml-host:8000"
+    assert settings.lemonade.default_model == "yaml-model"
     assert settings.scheduler.timezone == "UTC"
 
 
@@ -155,9 +155,9 @@ def test_env_values_do_not_override_yaml(tmp_path: Path) -> None:
     config_path.write_text(
         "\n".join(
             [
-                "ollama:",
-                "  host: \"http://yaml-host:11434\"",
-                "  model: \"yaml-model\"",
+                "lemonade:",
+                "  host: \"http://yaml-host:8000\"",
+                "  default_model: \"yaml-model\"",
                 "scheduler:",
                 "  timezone: \"UTC\"",
             ]
@@ -169,8 +169,8 @@ def test_env_values_do_not_override_yaml(tmp_path: Path) -> None:
             [
                 "TELEGRAM_BOT_TOKEN=test_token",
                 "ALLOWED_TELEGRAM_USERS=123456789",
-                "OLLAMA_HOST=http://env-host:11434",
-                "OLLAMA_MODEL=env-model",
+                "LEMONADE_HOST=http://env-host:8000",
+                "LEMONADE_DEFAULT_MODEL=env-model",
                 "SCHEDULER_TIMEZONE=Asia/Seoul",
             ]
         ),
@@ -178,8 +178,8 @@ def test_env_values_do_not_override_yaml(tmp_path: Path) -> None:
     )
 
     settings = load_config(config_path=str(config_path), env_file=str(env_path))
-    assert settings.ollama.host == "http://yaml-host:11434"
-    assert settings.ollama.model == "yaml-model"
+    assert settings.lemonade.host == "http://yaml-host:8000"
+    assert settings.lemonade.default_model == "yaml-model"
     assert settings.scheduler.timezone == "UTC"
 
 
@@ -306,14 +306,14 @@ def test_feedback_invalid_numeric_value_raises(tmp_path: Path) -> None:
         load_config(config_path=str(config_path), env_file=str(env_path))
 
 
-def test_partial_ollama_section_preserves_defaults(tmp_path: Path) -> None:
-    """ollama 섹션 일부만 지정해도 누락 필드는 기본값을 유지한다."""
+def test_partial_lemonade_section_preserves_defaults(tmp_path: Path) -> None:
+    """lemonade 섹션 일부만 지정해도 누락 필드는 기본값을 유지한다."""
     config_path = tmp_path / "config.yaml"
     env_path = tmp_path / ".env"
     config_path.write_text(
         "\n".join([
-            "ollama:",
-            "  model: \"custom-model\"",
+            "lemonade:",
+            "  default_model: \"custom-model\"",
         ]),
         encoding="utf-8",
     )
@@ -323,10 +323,10 @@ def test_partial_ollama_section_preserves_defaults(tmp_path: Path) -> None:
     )
 
     settings = load_config(config_path=str(config_path), env_file=str(env_path))
-    assert settings.ollama.model == "custom-model"
-    assert settings.ollama.host == "http://host.docker.internal:11434"
-    assert settings.ollama.temperature == 0.7
-    assert settings.ollama.max_tokens == 2048
+    assert settings.lemonade.default_model == "custom-model"
+    assert settings.lemonade.host == "http://host.docker.internal:8000"
+    assert settings.lemonade.temperature == 0.7
+    assert settings.lemonade.max_tokens == 2048
 
 
 def test_partial_feedback_section_preserves_defaults(tmp_path: Path) -> None:
@@ -354,8 +354,8 @@ def test_partial_feedback_section_preserves_defaults(tmp_path: Path) -> None:
     assert settings.feedback.preview_cache_ttl_hours == 24
 
 
-def test_llm_provider_and_lemonade_env_values_ignored(tmp_path: Path) -> None:
-    """provider/lemonade 관련 .env 값은 반영되지 않는다."""
+def test_lemonade_env_values_ignored(tmp_path: Path) -> None:
+    """lemonade 관련 .env 값은 반영되지 않는다."""
     config_path = tmp_path / "config.yaml"
     env_path = tmp_path / ".env"
     _write_minimal_yaml(config_path)
@@ -364,9 +364,8 @@ def test_llm_provider_and_lemonade_env_values_ignored(tmp_path: Path) -> None:
             [
                 "TELEGRAM_BOT_TOKEN=test_token",
                 "ALLOWED_TELEGRAM_USERS=111",
-                "LLM_PROVIDER=lemonade",
                 "LEMONADE_HOST=http://localhost:8000",
-                "LEMONADE_MODEL=llama-3.1-8b",
+                "LEMONADE_DEFAULT_MODEL=llama-3.1-8b",
                 "LEMONADE_API_KEY=secret",
                 "LEMONADE_BASE_PATH=/api/v1",
                 "LEMONADE_TIMEOUT_SECONDS=45",
@@ -376,19 +375,19 @@ def test_llm_provider_and_lemonade_env_values_ignored(tmp_path: Path) -> None:
     )
 
     settings = load_config(config_path=str(config_path), env_file=str(env_path))
-    assert settings.llm_provider == "ollama"
     assert settings.lemonade.host == "http://host.docker.internal:8000"
+    assert settings.lemonade.default_model == "gpt-oss-20b-NPU"
     assert settings.lemonade.api_key == ""
     assert settings.lemonade.base_path == "/api/v1"
     assert settings.lemonade.timeout_seconds == 60
 
 
-def test_invalid_llm_provider_raises(tmp_path: Path) -> None:
-    """지원하지 않는 provider는 config.yaml 로드 시 실패한다."""
+def test_unknown_top_level_key_ignored(tmp_path: Path) -> None:
+    """알 수 없는 최상위 키는 무시되고 lemonade 기본값이 유지된다."""
     config_path = tmp_path / "config.yaml"
     env_path = tmp_path / ".env"
     config_path.write_text(
-        "llm_provider: unsupported",
+        "unknown_key: unsupported",
         encoding="utf-8",
     )
     env_path.write_text(
@@ -401,8 +400,8 @@ def test_invalid_llm_provider_raises(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="llm_provider"):
-        load_config(config_path=str(config_path), env_file=str(env_path))
+    settings = load_config(config_path=str(config_path), env_file=str(env_path))
+    assert settings.lemonade.default_model == "gpt-oss-20b-NPU"
 
 
 def test_rag_kb_dirs_loaded_from_yaml(tmp_path: Path) -> None:

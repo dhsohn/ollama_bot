@@ -1,7 +1,6 @@
-"""레거시 호환 진입점.
+"""앱 진입점 래퍼.
 
-현재 기본 실행 경로는 `apps/ollama_bot/main.py` 이다.
-기존 `python main.py` 사용자를 위해 유지한다.
+기본 실행 경로는 `apps/ollama_bot/main.py` 이다.
 """
 
 from apps.ollama_bot.main import main

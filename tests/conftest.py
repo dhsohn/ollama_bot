@@ -11,8 +11,8 @@ import pytest_asyncio
 from core.config import (
     AppSettings,
     BotConfig,
+    LemonadeConfig,
     MemoryConfig,
-    OllamaConfig,
     SecurityConfig,
     TelegramConfig,
 )
@@ -39,9 +39,9 @@ def app_settings(security_config: SecurityConfig) -> AppSettings:
         log_level="DEBUG",
         data_dir="/tmp/test_data",
         bot=BotConfig(max_conversation_length=10),
-        ollama=OllamaConfig(
-            host="http://localhost:11434",
-            model="test-model",
+        lemonade=LemonadeConfig(
+            host="http://localhost:8000",
+            default_model="test-model",
             system_prompt="You are a test assistant.",
         ),
         telegram=TelegramConfig(),

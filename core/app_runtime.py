@@ -28,7 +28,7 @@ from core.context_compressor import ContextCompressor
 from core.engine import Engine
 from core.feedback_manager import FeedbackManager
 from core.instant_responder import InstantResponder
-from core.lemonade_multi_client import build_lemonade_client
+from core.lemonade_client import LemonadeClient
 from core.llm_protocol import LLMClientProtocol, RetrievalClientProtocol
 from core.logging_setup import get_logger, setup_logging
 from core.memory import MemoryManager
@@ -39,7 +39,6 @@ from core.telegram_handler import TelegramHandler
 from packages.hw_amd_npu import apply_npu_profile
 
 _ALLOW_LOCAL_RUN_ENV = "ALLOW_LOCAL_RUN"
-_SUPPORTED_PROVIDERS = {"ollama", "lemonade"}
 
 
 class StartupError(RuntimeError):
@@ -115,61 +114,39 @@ def _runtime_env_files() -> str | tuple[str, ...] | None:
 
 
 def _resolve_provider(
-    config: AppSettings,
     logger: Any,
     forced_provider: str | None,
 ) -> str:
-    """실행 대상 provider를 결정한다."""
-    configured = _normalize_provider(config.llm_provider)
-    if configured not in _SUPPORTED_PROVIDERS:
-        raise StartupError(
-            f"오류: 지원하지 않는 llm_provider='{configured}' "
-            f"(지원: {', '.join(sorted(_SUPPORTED_PROVIDERS))})"
-        )
-
+    """실행 대상 provider를 결정한다. 현재 chat provider는 lemonade 고정이다."""
+    configured = "lemonade"
     if forced_provider is None:
         return configured
 
     chosen = _normalize_provider(forced_provider)
-    if chosen not in _SUPPORTED_PROVIDERS:
-        raise StartupError(
-            f"오류: 지원하지 않는 provider='{chosen}' "
-            f"(지원: {', '.join(sorted(_SUPPORTED_PROVIDERS))})"
-        )
     if chosen != configured:
-        logger.warning(
-            "llm_provider_overridden_by_app",
-            configured=configured,
-            forced=chosen,
-        )
+        if chosen:
+            raise StartupError(
+                f"오류: provider='{chosen}' 는 더 이상 지원되지 않습니다. "
+                "chat provider는 lemonade로 고정입니다."
+            )
+        return configured
     return chosen
 
 
 def _model_for_provider(config: AppSettings, provider: str) -> str:
-    if provider == "lemonade":
-        return config.model_registry.default_model
-    return config.ollama.model
+    _ = provider
+    return config.lemonade.default_model
 
 
-def _create_llm_client(config: AppSettings, provider: str) -> LLMClientProtocol:
-    if provider == "ollama":
-        return OllamaClient(config.ollama)
-    if provider == "lemonade":
-        return build_lemonade_client(
-            config.lemonade,
-            fallback_ollama=config.ollama,
-        )
-    raise StartupError(
-        f"오류: 지원하지 않는 provider='{provider}' "
-        f"(지원: {', '.join(sorted(_SUPPORTED_PROVIDERS))})"
-    )
+def _create_llm_client(config: AppSettings) -> LLMClientProtocol:
+    return LemonadeClient(config.lemonade)
 
 
 def _create_retrieval_client(config: AppSettings) -> OllamaClient:
     """Ollama 기반 retrieval 전용 클라이언트를 생성한다."""
     retrieval_config = OllamaConfig(
-        host=config.retrieval_provider.host,
-        model=config.retrieval_provider.embedding_model,
+        host=config.ollama.host,
+        model=config.ollama.embedding_model,
     )
     return OllamaClient(retrieval_config)
 
@@ -275,8 +252,6 @@ def _validate_required_settings(config: AppSettings, logger: Any) -> None:
 async def _build_runtime(
     config: AppSettings,
     logger: Any,
-    *,
-    llm_provider: str,
 ) -> RuntimeState:
     """의존성 순서대로 모듈을 초기화하고 런타임 상태를 반환한다."""
     cleanup_stack = AsyncExitStack()
@@ -315,25 +290,18 @@ async def _build_runtime(
             except Exception as exc:
                 logger.error("feedback_prune_failed", error=str(exc))
 
-        llm = _create_llm_client(config, llm_provider)
-        # 기본 모델명 설정 (lemonade 클라이언트는 빈 문자열로 시작)
-        if llm_provider == "lemonade":
-            llm.default_model = config.model_registry.default_model
-        llm_host = config.ollama.host if llm_provider == "ollama" else getattr(
-            llm,
-            "host",
-            config.lemonade.host,
-        )
+        llm_provider = "lemonade"
+        llm = _create_llm_client(config)
+        llm.default_model = config.lemonade.default_model
+        llm_host = getattr(llm, "host", config.lemonade.host)
         try:
             await llm.initialize()
         except Exception as exc:
             logger.error("llm_init_failed", provider=llm_provider, error=str(exc))
-            hint = ""
-            if llm_provider == "lemonade":
-                hint = (
-                    "\n힌트: WSL 환경에서는 lemonade-server가 0.0.0.0에 바인딩되어야 합니다."
-                    "\n      Windows 방화벽에서 해당 포트의 인바운드를 허용했는지 확인하세요."
-                )
+            hint = (
+                "\n힌트: WSL 환경에서는 lemonade-server가 0.0.0.0에 바인딩되어야 합니다."
+                "\n      Windows 방화벽에서 해당 포트의 인바운드를 허용했는지 확인하세요."
+            )
             raise StartupError(
                 f"오류: {llm_provider} 초기화 실패 ({llm_host})\n"
                 f"{exc}{hint}\n"
@@ -445,14 +413,14 @@ async def _build_runtime(
                 cleanup_stack.push_async_callback(retrieval_client.close)
                 logger.info(
                     "retrieval_client_initialized",
-                    host=config.retrieval_provider.host,
-                    embedding_model=config.retrieval_provider.embedding_model,
-                    reranker_model=config.retrieval_provider.reranker_model,
+                    host=config.ollama.host,
+                    embedding_model=config.ollama.embedding_model,
+                    reranker_model=config.ollama.reranker_model,
                 )
             except Exception as exc:
                 logger.warning(
                     "retrieval_client_init_failed",
-                    host=config.retrieval_provider.host,
+                    host=config.ollama.host,
                     error=str(exc),
                 )
                 retrieval_client = None
@@ -460,11 +428,17 @@ async def _build_runtime(
         # Model Registry 초기화 (retrieval 모델 가용성 관리)
         if retrieval_client is not None:
             try:
+                from core.config import ModelRegistryConfig
                 from core.model_registry import ModelRegistry
 
                 retrieval_proto = cast(RetrievalClientProtocol, retrieval_client)
                 model_registry = ModelRegistry(
-                    config.model_registry, retrieval_proto,
+                    ModelRegistryConfig(
+                        default_model=config.lemonade.default_model,
+                        embedding_model=config.ollama.embedding_model,
+                        reranker_model=config.ollama.reranker_model,
+                    ),
+                    retrieval_proto,
                 )
                 await model_registry.initialize()
             except Exception as exc:
@@ -472,24 +446,23 @@ async def _build_runtime(
                 model_registry = None
 
         # 기본 모델(gpt-oss-20b-NPU) 선로드 — 상주 보장
-        if llm_provider == "lemonade":
-            default_model = config.model_registry.default_model
-            prepare_model = getattr(llm, "prepare_model", None)
-            if callable(prepare_model):
-                try:
-                    maybe_result = prepare_model(
-                        model=default_model,
-                        role="default",
-                    )
-                    if inspect.isawaitable(maybe_result):
-                        await maybe_result
-                    logger.info("default_model_preloaded", model=default_model)
-                except Exception as exc:
-                    logger.warning(
-                        "default_model_preload_failed",
-                        model=default_model,
-                        error=str(exc),
-                    )
+        default_model = config.lemonade.default_model
+        prepare_model = getattr(llm, "prepare_model", None)
+        if callable(prepare_model):
+            try:
+                maybe_result = prepare_model(
+                    model=default_model,
+                    role="default",
+                )
+                if inspect.isawaitable(maybe_result):
+                    await maybe_result
+                logger.info("default_model_preloaded", model=default_model)
+            except Exception as exc:
+                logger.warning(
+                    "default_model_preload_failed",
+                    model=default_model,
+                    error=str(exc),
+                )
 
         # RAG 파이프라인 초기화 (Ollama retrieval 클라이언트 사용)
         if config.rag.enabled and retrieval_client is not None:
@@ -509,7 +482,7 @@ async def _build_runtime(
                 indexer = RAGIndexer(
                     config.rag,
                     retrieval_proto,
-                    config.retrieval_provider.embedding_model,
+                    config.ollama.embedding_model,
                 )
                 await indexer.initialize(str(rag_db_path))
                 cleanup_stack.push_async_callback(indexer.close)
@@ -576,7 +549,7 @@ async def _build_runtime(
                 retriever = RAGRetriever(
                     indexer,
                     retrieval_proto,
-                    config.retrieval_provider.embedding_model,
+                    config.ollama.embedding_model,
                 )
 
                 reranker = None
@@ -590,7 +563,7 @@ async def _build_runtime(
                     if reranker_available:
                         reranker = RAGReranker(
                             retrieval_proto,
-                            config.retrieval_provider.reranker_model,
+                            config.ollama.reranker_model,
                             config.rag,
                         )
 
@@ -811,8 +784,8 @@ async def async_main(
 
     try:
         _validate_required_settings(config, logger)
-        llm_provider = _resolve_provider(config, logger, forced_provider)
-        runtime = await _build_runtime(config, logger, llm_provider=llm_provider)
+        _resolve_provider(logger, forced_provider)
+        runtime = await _build_runtime(config, logger)
     except StartupError as exc:
         print(exc.message, file=sys.stderr)
         sys.exit(1)

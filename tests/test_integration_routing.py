@@ -13,7 +13,7 @@ import pytest_asyncio
 np = pytest.importorskip("numpy")
 
 import core.semantic_cache as semantic_cache_module
-from core.config import AppSettings, BotConfig, MemoryConfig, OllamaConfig, SecurityConfig, TelegramConfig
+from core.config import AppSettings, BotConfig, MemoryConfig, LemonadeConfig, SecurityConfig, TelegramConfig
 from core.engine import Engine
 from core.instant_responder import InstantResponder
 from core.intent_router import ContextStrategy, RouteResult
@@ -101,7 +101,7 @@ async def integration_runtime(tmp_path: Path, monkeypatch):
         telegram_bot_token="test-token",
         data_dir=str(tmp_path),
         bot=BotConfig(max_conversation_length=10, response_timeout=60),
-        ollama=OllamaConfig(model="test-model", system_prompt="integration prompt"),
+        lemonade=LemonadeConfig(default_model="test-model", system_prompt="integration prompt"),
         security=SecurityConfig(allowed_users=[111]),
         memory=MemoryConfig(),
         telegram=TelegramConfig(),
@@ -152,7 +152,7 @@ async def integration_runtime(tmp_path: Path, monkeypatch):
     runtime = SimpleNamespace(
         engine=engine,
         memory=memory,
-        ollama=ollama,
+        lemonade=ollama,
         semantic_cache=semantic_cache,
         cache_db=cache_db,
     )
@@ -168,20 +168,20 @@ class TestRoutingIntegration:
     @pytest.mark.asyncio
     async def test_full_then_cache_then_instant(self, integration_runtime) -> None:
         engine = integration_runtime.engine
-        ollama = integration_runtime.ollama
+        llm = integration_runtime.lemonade
         memory = integration_runtime.memory
 
         first = await engine.process_message(111, "간단 질문")
         assert first == "LLM:간단 질문"
-        assert len(ollama.calls) == 1
+        assert len(llm.calls) == 1
 
         second = await engine.process_message(111, "간단 질문")
         assert second == first
-        assert len(ollama.calls) == 1  # 캐시 히트
+        assert len(llm.calls) == 1  # 캐시 히트
 
         instant = await engine.process_message(111, "ping")
         assert instant == "pong"
-        assert len(ollama.calls) == 1  # 즉시 응답은 LLM 미호출
+        assert len(llm.calls) == 1  # 즉시 응답은 LLM 미호출
 
         history = await memory.get_conversation(111)
         assert len(history) == 6  # 3턴(user+assistant)
@@ -189,9 +189,9 @@ class TestRoutingIntegration:
     @pytest.mark.asyncio
     async def test_intent_strategy_max_tokens_applied(self, integration_runtime) -> None:
         engine = integration_runtime.engine
-        ollama = integration_runtime.ollama
+        llm = integration_runtime.lemonade
 
         await engine.process_message(111, "간단 토큰 테스트")
 
-        assert ollama.calls
-        assert ollama.calls[-1]["max_tokens"] == 128
+        assert llm.calls
+        assert llm.calls[-1]["max_tokens"] == 128

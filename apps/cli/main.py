@@ -30,60 +30,67 @@ async def _init_components():
     os.environ.setdefault("TELEGRAM_BOT_TOKEN", "cli-mode")
     os.environ.setdefault("ALLOWED_TELEGRAM_USERS", "0")
 
-    from core.config import load_config
-    from core.lemonade_multi_client import build_lemonade_client
+    from core.config import OllamaConfig, load_config
+    from core.lemonade_client import LemonadeClient
     from core.ollama_client import OllamaClient
 
     config = load_config()
-    provider = config.llm_provider.strip().lower()
-    llm: Any
-
-    if provider == "lemonade":
-        llm = build_lemonade_client(
-            config.lemonade,
-            fallback_ollama=config.ollama,
-        )
-    elif provider == "ollama":
-        llm = OllamaClient(config.ollama)
-    else:
-        raise ValueError(f"Unsupported llm_provider: {provider}")
+    llm: Any = LemonadeClient(config.lemonade)
+    llm.default_model = config.lemonade.default_model
     await llm.initialize()
 
+    retrieval_client = None
     rag_pipeline = None
 
-    if provider == "lemonade" and config.rag.enabled:
+    if config.rag.enabled:
         from core.rag.context_builder import RAGContextBuilder
         from core.rag.indexer import RAGIndexer
         from core.rag.pipeline import RAGPipeline
         from core.rag.reranker import RAGReranker
         from core.rag.retriever import RAGRetriever
 
-        index_dir = config.rag.index_dir or str(
-            Path(config.data_dir) / "rag_index"
+        retrieval_client = OllamaClient(
+            OllamaConfig(
+                host=config.ollama.host,
+                model=config.ollama.embedding_model,
+            )
         )
-        indexer = RAGIndexer(config.rag, llm, config.model_registry.embedding_model)
+        await retrieval_client.initialize()
+
+        index_dir = config.rag.index_dir or str(Path(config.data_dir) / "rag_index")
+        indexer = RAGIndexer(
+            config.rag,
+            retrieval_client,
+            config.ollama.embedding_model,
+        )
         await indexer.initialize(str(Path(index_dir) / "rag.db"))
 
         kb_dirs = [path for path in config.rag.kb_dirs if Path(path).exists()]
         if kb_dirs:
             await indexer.index_corpus(kb_dirs)
 
-        retriever = RAGRetriever(indexer, llm, config.model_registry.embedding_model)
-        reranker = RAGReranker(llm, config.model_registry.reranker_model, config.rag)
+        retriever = RAGRetriever(
+            indexer,
+            retrieval_client,
+            config.ollama.embedding_model,
+        )
+        reranker = RAGReranker(
+            retrieval_client,
+            config.ollama.reranker_model,
+            config.rag,
+        )
         rag_pipeline = RAGPipeline(retriever, reranker, RAGContextBuilder(), config.rag)
 
-    return llm, rag_pipeline, config, provider
+    return llm, retrieval_client, rag_pipeline, config
 
 
 async def cmd_chat(args: argparse.Namespace) -> None:
     """대화형 채팅."""
-    llm, rag_pipeline, config, provider = await _init_components()
+    llm, retrieval_client, rag_pipeline, config = await _init_components()
     from core.text_utils import sanitize_model_output
 
     print("=== ollama_bot CLI Chat ===")
-    print(f"provider: {provider}")
-    if provider != "lemonade" and config.rag.enabled:
-        print("  [notice] rag는 lemonade provider에서만 활성화됩니다.")
+    print("provider: lemonade")
     print("종료: Ctrl+C 또는 'exit'\n")
 
     try:
@@ -107,7 +114,7 @@ async def cmd_chat(args: argparse.Namespace) -> None:
                           f"{result.trace.context_tokens_estimate} tokens")
 
             # 생성
-            messages = [{"role": "system", "content": config.ollama.system_prompt}]
+            messages = [{"role": "system", "content": config.lemonade.system_prompt}]
             if rag_context:
                 from core.rag.context_builder import RAGContextBuilder
                 messages[0]["content"] += RAGContextBuilder.build_rag_system_suffix(rag_context)
@@ -118,15 +125,17 @@ async def cmd_chat(args: argparse.Namespace) -> None:
     except KeyboardInterrupt:
         print("\n종료.")
     finally:
+        if retrieval_client is not None:
+            await retrieval_client.close()
         await llm.close()
 
 
 async def cmd_dry_run(args: argparse.Namespace) -> None:
     """모델 + RAG 결과만 JSON 출력."""
-    llm, rag_pipeline, _config, provider = await _init_components()
+    llm, retrieval_client, rag_pipeline, _config = await _init_components()
 
     query = args.query
-    result: dict = {"query": query, "provider": provider}
+    result: dict = {"query": query, "provider": "lemonade"}
     result["routing"] = {
         "selected_model": llm.default_model,
         "selected_role": "default",
@@ -146,6 +155,8 @@ async def cmd_dry_run(args: argparse.Namespace) -> None:
         result["rag_trace"] = None
 
     print(json.dumps(result, ensure_ascii=False, indent=2))
+    if retrieval_client is not None:
+        await retrieval_client.close()
     await llm.close()
 
 
@@ -165,10 +176,8 @@ _RAG_TEST_CASES: list[dict[str, Any]] = [
 
 async def cmd_test(args: argparse.Namespace) -> None:
     """테스트 케이스 실행."""
-    llm, rag_pipeline, _config, provider = await _init_components()
-    print(f"provider: {provider}")
-    if provider != "lemonade":
-        print("  [notice] rag 테스트는 lemonade provider에서만 실행됩니다.\n")
+    llm, retrieval_client, rag_pipeline, _config = await _init_components()
+    print("provider: lemonade")
 
     print("=== Single Model Check ===\n")
     print(f"  [PASS] selected_model={llm.default_model}\n")
@@ -191,6 +200,8 @@ async def cmd_test(args: argparse.Namespace) -> None:
 
     print(f"\nRAG Trigger: {rag_correct}/{rag_total} ({rag_correct/rag_total*100:.0f}%)\n")
 
+    if retrieval_client is not None:
+        await retrieval_client.close()
     await llm.close()
 
 

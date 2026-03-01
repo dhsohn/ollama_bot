@@ -13,9 +13,8 @@ usage() {
   cat <<'EOF'
 Usage: bash scripts/configure_windows_lemonade.sh [--no-port-proxy]
 
-Lemonade provider 사용 시 Windows 방화벽/portproxy를 자동 설정한다.
+Windows 방화벽/portproxy를 자동 설정한다.
 - 관리자 권한이 아니면 UAC를 통해 자동 상승을 요청한다.
-- llm_provider가 lemonade가 아니면 아무 작업 없이 종료한다.
 EOF
 }
 
@@ -47,22 +46,6 @@ if ! command -v powershell.exe >/dev/null 2>&1; then
   exit 0
 fi
 
-provider="$(
-  awk -F: '
-    /^llm_provider:[[:space:]]*/ {
-      value=$2
-      gsub(/[ "]/, "", value)
-      print tolower(value)
-      exit
-    }
-  ' "${CONFIG_FILE}"
-)"
-
-if [[ "${provider}" != "lemonade" ]]; then
-  echo "[configure_windows_lemonade.sh] llm_provider=${provider:-unknown} (skip)"
-  exit 0
-fi
-
 lemonade_host="$(
   awk '
     /^lemonade:[[:space:]]*$/ {in_block=1; next}
@@ -79,10 +62,10 @@ lemonade_host="$(
 )"
 
 if [[ -z "${lemonade_host}" ]]; then
-  lemonade_host="http://windows-host:11434"
+  lemonade_host="http://windows-host:8000"
 fi
 
-lemonade_port="11434"
+lemonade_port="8000"
 if [[ "${lemonade_host}" =~ :([0-9]+)$ ]]; then
   lemonade_port="${BASH_REMATCH[1]}"
 elif [[ "${lemonade_host}" =~ :([0-9]+)/ ]]; then

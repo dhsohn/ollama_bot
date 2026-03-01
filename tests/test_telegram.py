@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, call, patch
 import pytest
 from telegram.constants import ParseMode
 
-from core.config import AppSettings, BotConfig, FeedbackConfig, OllamaConfig, SecurityConfig, MemoryConfig, TelegramConfig
+from core.config import AppSettings, BotConfig, FeedbackConfig, LemonadeConfig, SecurityConfig, MemoryConfig, TelegramConfig
 from core.security import SecurityManager, AuthenticationError, RateLimitError
 from core.telegram_handler import TelegramHandler
 
@@ -20,7 +20,7 @@ def app_config() -> AppSettings:
         telegram_bot_token="test_token",
         data_dir="/tmp/test",
         bot=BotConfig(),
-        ollama=OllamaConfig(),
+        lemonade=LemonadeConfig(),
         security=SecurityConfig(allowed_users=[111, 222]),
         memory=MemoryConfig(),
         telegram=TelegramConfig(),
@@ -193,8 +193,8 @@ class TestModelCommand:
         sent_text = message.reply_text.await_args.args[0]
         assert "기본 응답 모델" in sent_text
         assert "Retrieval 모델" in sent_text
-        assert app_config.retrieval_provider.embedding_model in sent_text
-        assert app_config.retrieval_provider.reranker_model in sent_text
+        assert app_config.ollama.embedding_model in sent_text
+        assert app_config.ollama.reranker_model in sent_text
         assert "/model list" not in sent_text
         assert message.reply_text.await_args.kwargs["parse_mode"] == ParseMode.HTML
 
@@ -821,7 +821,7 @@ class TestFeedbackButtons:
             telegram_bot_token="test_token",
             data_dir="/tmp/test",
             bot=BotConfig(),
-            ollama=OllamaConfig(),
+            lemonade=LemonadeConfig(),
             security=SecurityConfig(allowed_users=[111, 222]),
             memory=MemoryConfig(),
             telegram=TelegramConfig(),
@@ -1291,7 +1291,7 @@ class TestFeedbackButtons:
             telegram_bot_token="test_token",
             data_dir="/tmp/test",
             bot=BotConfig(),
-            ollama=OllamaConfig(),
+            lemonade=LemonadeConfig(),
             security=SecurityConfig(allowed_users=[111], rate_limit=1),
             memory=MemoryConfig(),
             telegram=TelegramConfig(),

@@ -14,7 +14,7 @@ from typing import Any
 
 import httpx
 
-from core.config import LemonadeConfig, OllamaConfig
+from core.config import LemonadeConfig
 from core.logging_setup import get_logger
 from core.llm_types import ChatResponse, ChatStreamState, ChatUsage
 
@@ -33,8 +33,6 @@ class LemonadeClient:
     def __init__(
         self,
         config: LemonadeConfig,
-        *,
-        fallback_ollama: OllamaConfig | None = None,
     ) -> None:
         self._host = config.host.rstrip("/")
         base_path = config.base_path.strip()
@@ -43,19 +41,10 @@ class LemonadeClient:
         else:
             self._base_path = ""
         self._api_key = config.api_key
-        # Lemonade는 config 기본 모델 고정을 사용하지 않는다.
-        self._default_model = ""
-        self._temperature = (
-            fallback_ollama.temperature if fallback_ollama is not None else 0.7
-        )
-        self._max_tokens = (
-            fallback_ollama.max_tokens if fallback_ollama is not None else 1024
-        )
-        self._system_prompt = (
-            fallback_ollama.system_prompt
-            if fallback_ollama is not None
-            else "You are a helpful assistant."
-        )
+        self._default_model = config.default_model.strip()
+        self._temperature = config.temperature
+        self._max_tokens = config.max_tokens
+        self._system_prompt = config.system_prompt
         self._timeout_default = config.timeout_seconds
         self._model_load_timeout_default = max(
             config.model_load_timeout_seconds,

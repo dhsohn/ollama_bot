@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from core.auto_scheduler import AutoAction, AutoDefinition, AutoScheduler
-from core.config import AppSettings, BotConfig, MemoryConfig, OllamaConfig, SecurityConfig, TelegramConfig
+from core.config import AppSettings, BotConfig, MemoryConfig, LemonadeConfig, SecurityConfig, TelegramConfig
 from core.security import SecurityManager
 
 
@@ -24,7 +24,7 @@ def app_settings(tmp_path: Path) -> AppSettings:
         telegram_bot_token="test_token",
         data_dir=str(tmp_path),
         bot=BotConfig(),
-        ollama=OllamaConfig(),
+        lemonade=LemonadeConfig(),
         security=SecurityConfig(allowed_users=[111]),
         memory=MemoryConfig(),
         telegram=TelegramConfig(),
