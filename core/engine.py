@@ -42,7 +42,6 @@ if TYPE_CHECKING:
     from core.feedback_manager import FeedbackManager
     from core.instant_responder import InstantResponder
     from core.intent_router import ContextStrategy, IntentRouter, RouteResult
-    from core.model_router import ModelRouter, RoutingDecision as ModelRoutingDecision
     from core.rag.pipeline import RAGPipeline
     from core.rag.types import RAGTrace
     from core.semantic_cache import CacheContext, SemanticCache
@@ -66,7 +65,6 @@ class _PreparedFullRequest:
     timeout: int
     max_tokens: int | None
     target_model: str | None
-    model_decision: ModelRoutingDecision | None = None
     rag_result: Any = None  # RAGResult | None
 
 
@@ -92,7 +90,6 @@ class _RoutingDecision:
     instant: Any = None
     route: RouteResult | None = None
     cached: Any = None
-    model_routing: ModelRoutingDecision | None = None
     rag_result: Any = None  # RAGResult | None
 
     @property
@@ -183,7 +180,6 @@ class Engine:
         semantic_cache: SemanticCache | None = None,
         intent_router: IntentRouter | None = None,
         context_compressor: ContextCompressor | None = None,
-        model_router: ModelRouter | None = None,
         rag_pipeline: RAGPipeline | None = None,
     ) -> None:
         self._config = config
@@ -195,7 +191,6 @@ class Engine:
         self._semantic_cache = semantic_cache
         self._intent_router = intent_router
         self._context_compressor = context_compressor
-        self._model_router = model_router
         self._rag_pipeline = rag_pipeline
         self._system_prompt = getattr(llm_client, "system_prompt", config.ollama.system_prompt)
         self._max_conversation_length = config.bot.max_conversation_length
@@ -291,49 +286,14 @@ class Engine:
                 )
                 content = sanitize_model_output(chat_response.content).strip()
                 usage = chat_response.usage
-                response_role = (
-                    prepared_full.model_decision.selected_role
-                    if prepared_full.model_decision is not None
-                    else None
-                )
                 anomaly_reasons = detect_output_anomalies(chat_response.content, content)
                 if anomaly_reasons:
                     self._logger.warning(
                         "response_anomaly_detected",
                         chat_id=chat_id,
                         model=prepared_full.target_model,
-                        role=response_role,
                         reasons=anomaly_reasons,
                     )
-                    (
-                        recovered_content,
-                        recovered_usage,
-                        recovered_model,
-                        recovered_role,
-                    ) = await self._recover_anomalous_response(
-                        chat_id=chat_id,
-                        messages=prepared_full.messages,
-                        timeout=prepared_full.timeout,
-                        max_tokens=prepared_full.max_tokens,
-                        current_model=prepared_full.target_model,
-                        current_role=response_role,
-                        current_reasons=anomaly_reasons,
-                    )
-                    if recovered_content is not None:
-                        content = recovered_content
-                        usage = recovered_usage or usage
-                        if (
-                            prepared_full.model_decision is not None
-                            and recovered_model is not None
-                            and recovered_role is not None
-                        ):
-                            if prepared_full.model_decision.selected_role != recovered_role:
-                                prepared_full.model_decision.original_role = (
-                                    prepared_full.model_decision.selected_role
-                                )
-                                prepared_full.model_decision.fallback_used = True
-                            prepared_full.model_decision.selected_role = recovered_role
-                            prepared_full.model_decision.selected_model = recovered_model
                 if not content:
                     raise RuntimeError("empty_response_from_llm")
                 await self._persist_turn(chat_id, text, content)
@@ -350,7 +310,6 @@ class Engine:
                 self._log_request(
                     t0, chat_id, "full", usage, len(prepared_full.messages),
                     intent=routing.intent,
-                    model_routing=prepared_full.model_decision,
                     rag_trace=prepared_full.rag_result.trace if prepared_full.rag_result else None,
                 )
 
@@ -651,10 +610,6 @@ class Engine:
 
                 self._set_stream_meta(
                     chat_id, tier="full", intent=routing.intent, cache_id=cache_id, usage=usage,
-                    model_role=(
-                        prepared_full.model_decision.selected_role
-                        if prepared_full.model_decision else None
-                    ),
                     rag_trace=(
                         prepared_full.rag_result.trace.to_dict()
                         if prepared_full.rag_result else None
@@ -662,7 +617,6 @@ class Engine:
                 )
                 self._log_request(
                     t0, chat_id, "full", usage, len(prepared_full.messages), intent=routing.intent,
-                    model_routing=prepared_full.model_decision,
                     rag_trace=prepared_full.rag_result.trace if prepared_full.rag_result else None,
                 )
 
@@ -693,23 +647,21 @@ class Engine:
         images: list[bytes] | None = None,
         metadata: dict | None = None,
     ) -> dict[str, Any]:
-        """PLAN 인터페이스: 입력 기반 라우팅 결정을 반환한다."""
-        if self._model_router is None:
-            return {
-                "selected_model": self._llm_client.default_model,
-                "selected_role": "default",
-                "trigger": "router_disabled",
-                "confidence": 0.0,
-                "anchor_scores": {},
-                "fallback_used": False,
-                "original_role": None,
-                "classifier_used": False,
-                "latency_ms": 0.0,
-                "degraded": False,
-                "degradation_reasons": [],
-            }
-        decision = await self._model_router.route(text, images=images, metadata=metadata)
-        return decision.to_dict()
+        """PLAN 인터페이스: 단일 모델 고정 라우팅 결과를 반환한다."""
+        _ = (text, images, metadata)
+        return {
+            "selected_model": self._llm_client.default_model,
+            "selected_role": "default",
+            "trigger": "single_model",
+            "confidence": 1.0,
+            "anchor_scores": {},
+            "fallback_used": False,
+            "original_role": None,
+            "classifier_used": False,
+            "latency_ms": 0.0,
+            "degraded": False,
+            "degradation_reasons": [],
+        }
 
     async def retrieve(
         self,
@@ -1256,79 +1208,6 @@ class Engine:
             return False
         return not detect_output_anomalies(response, cleaned)
 
-    async def _recover_anomalous_response(
-        self,
-        *,
-        chat_id: int,
-        messages: list[dict[str, str]],
-        timeout: int,
-        max_tokens: int | None,
-        current_model: str | None,
-        current_role: str | None,
-        current_reasons: list[str],
-    ) -> tuple[str | None, Any, str | None, str | None]:
-        """비정상 출력 감지 시 fallback 모델로 1회 재시도한다."""
-        if not current_role:
-            return None, None, None, None
-
-        fallback_model, fallback_role = self._resolve_prepare_fallback(current_role)
-        if fallback_model is None or fallback_role is None:
-            return None, None, None, None
-        if fallback_model == current_model:
-            return None, None, None, None
-
-        try:
-            chat_response = await self._llm_client.chat(
-                messages=messages,
-                model=fallback_model,
-                timeout=timeout,
-                max_tokens=max_tokens,
-            )
-        except Exception as exc:
-            self._logger.warning(
-                "response_anomaly_recovery_failed",
-                chat_id=chat_id,
-                current_model=current_model,
-                fallback_model=fallback_model,
-                error=str(exc),
-            )
-            return None, None, None, None
-
-        recovered = sanitize_model_output(chat_response.content).strip()
-        recovered_reasons = detect_output_anomalies(chat_response.content, recovered)
-        # 개선되었거나 최소한 내부 마커가 제거된 경우 fallback 결과를 사용한다.
-        is_improved = (
-            bool(recovered)
-            and (
-                not recovered_reasons
-                or len(recovered_reasons) < len(current_reasons)
-                or (
-                    "internal_channel_marker" in current_reasons
-                    and "internal_channel_marker" not in recovered_reasons
-                )
-            )
-        )
-        if not is_improved:
-            self._logger.warning(
-                "response_anomaly_recovery_rejected",
-                chat_id=chat_id,
-                current_model=current_model,
-                fallback_model=fallback_model,
-                current_reasons=current_reasons,
-                recovered_reasons=recovered_reasons,
-            )
-            return None, None, None, None
-
-        self._logger.warning(
-            "response_anomaly_recovery_applied",
-            chat_id=chat_id,
-            current_model=current_model,
-            fallback_model=fallback_model,
-            current_reasons=current_reasons,
-            recovered_reasons=recovered_reasons,
-        )
-        return recovered, chat_response.usage, fallback_model, fallback_role
-
     def _log_request(
         self,
         t0: float,
@@ -1340,22 +1219,10 @@ class Engine:
         intent: str | None = None,
         cache_hit: bool = False,
         rule: str | None = None,
-        model_routing: ModelRoutingDecision | None = None,
         rag_trace: RAGTrace | None = None,
     ) -> None:
         elapsed_ms = (time.monotonic() - t0) * 1000
         extra: dict[str, Any] = {}
-        if model_routing is not None:
-            extra["model_routing"] = {
-                "selected_model": model_routing.selected_model,
-                "selected_role": model_routing.selected_role,
-                "trigger": model_routing.trigger,
-                "confidence": round(model_routing.confidence, 4),
-                "fallback_used": model_routing.fallback_used,
-                "classifier_used": model_routing.classifier_used,
-                "degraded": bool(getattr(model_routing, "degraded", False)),
-                "degradation_reasons": list(getattr(model_routing, "degradation_reasons", [])),
-            }
         if rag_trace is not None:
             extra["rag_trace"] = {
                 "rag_used": rag_trace.rag_used,
@@ -1655,11 +1522,12 @@ class Engine:
             model_role="default",
             has_images=bool(images),
         )
-        target_model, _ = await self._prepare_target_model(
+        prepared_model, _ = await self._prepare_target_model(
             model=target_model,
             role="default",
             timeout=effective_timeout,
         )
+        target_model = prepared_model or target_model
 
         messages = prepared.messages
         if rag_result and rag_result.contexts:
@@ -1670,7 +1538,6 @@ class Engine:
             timeout=effective_timeout,
             max_tokens=prepared.max_tokens,
             target_model=target_model,
-            model_decision=None,
             rag_result=rag_result,
         )
 
@@ -2007,41 +1874,7 @@ class Engine:
                 role=target_role,
                 error=str(exc),
             )
-        if target_role is None:
-            return target_model, target_role
-
-        fallback_model, fallback_role = self._resolve_prepare_fallback(target_role)
-        if fallback_model is None or fallback_role is None:
-            return target_model, target_role
-        if fallback_model == target_model:
-            return target_model, target_role
-
-        try:
-            maybe_result = prepare_model(
-                model=fallback_model,
-                role=fallback_role,
-                timeout_seconds=timeout,
-            )
-            if inspect.isawaitable(maybe_result):
-                await maybe_result
-            self._logger.warning(
-                "model_prepare_fallback_applied",
-                failed_model=target_model,
-                failed_role=target_role,
-                fallback_model=fallback_model,
-                fallback_role=fallback_role,
-            )
-            return fallback_model, fallback_role
-        except Exception as fallback_exc:
-            self._logger.warning(
-                "model_prepare_fallback_failed",
-                failed_model=target_model,
-                failed_role=target_role,
-                fallback_model=fallback_model,
-                fallback_role=fallback_role,
-                error=str(fallback_exc),
-            )
-            return target_model, target_role
+        return target_model, target_role
 
     def _resolve_model_for_role(self, role: str | None) -> str | None:
         """role 이름을 model_registry 모델명으로 해석한다."""
@@ -2059,30 +1892,6 @@ class Engine:
             return None
         normalized = mapped.strip()
         return normalized or None
-
-    def _resolve_prepare_fallback(self, role: str) -> tuple[str | None, str | None]:
-        """모델 사전 로드 실패 시 대체 모델을 조회한다."""
-        if self._model_router is None:
-            return None, None
-        resolver = getattr(self._model_router, "resolve_fallback_model", None)
-        if not callable(resolver):
-            return None, None
-        try:
-            fallback = resolver(role)
-        except Exception:
-            return None, None
-        if (
-            fallback is None
-            or not isinstance(fallback, tuple)
-            or len(fallback) != 2
-        ):
-            return None, None
-        model_name, fallback_role = fallback
-        if not isinstance(model_name, str) or not model_name.strip():
-            return None, None
-        if not isinstance(fallback_role, str) or not fallback_role.strip():
-            return None, None
-        return model_name, fallback_role
 
     async def _persist_turn(
         self,
@@ -2594,43 +2403,8 @@ class Engine:
                 instance=self._context_compressor,
                 unavailable_reason="init_failed",
             ),
-            "model_router": self._build_model_router_tier_detail(),
             "rag_pipeline": self._build_rag_tier_detail(),
         }
-
-    def _build_model_router_tier_detail(self) -> dict[str, Any]:
-        """모델 라우터의 저하 상태를 계산한다."""
-        name = "model_router"
-        if not self._config.model_routing.enabled:
-            return self._manual_tier_detail(name=name, configured=False, enabled=False, degraded=False)
-        if self._model_router is None:
-            return self._manual_tier_detail(
-                name=name,
-                configured=True,
-                enabled=False,
-                degraded=True,
-                reason="init_failed",
-            )
-        status_getter = getattr(self._model_router, "get_status", None)
-        if not callable(status_getter):
-            return self._manual_tier_detail(name=name, configured=True, enabled=True, degraded=False)
-
-        router_status = status_getter()
-        reasons: list[str] = []
-        if not bool(router_status.get("embedding_available", True)):
-            reasons.append("embedding_unavailable_classifier_only")
-        if not bool(router_status.get("classifier_available", True)):
-            reasons.append("low_cost_classifier_unavailable")
-        if bool(router_status.get("initialized")) is False and bool(router_status.get("embedding_available", True)):
-            reasons.append("semantic_router_not_initialized")
-
-        return self._manual_tier_detail(
-            name=name,
-            configured=True,
-            enabled=True,
-            degraded=bool(reasons),
-            reason=", ".join(reasons) if reasons else None,
-        )
 
     def _build_rag_tier_detail(self) -> dict[str, Any]:
         """RAG 파이프라인의 저하 상태를 계산한다."""

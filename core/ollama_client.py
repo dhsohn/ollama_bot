@@ -380,7 +380,7 @@ class OllamaClient:
                 timeout=effective_timeout,
             )
             self._mark_healthy()
-            return response.embeddings
+            return [list(item) for item in response.embeddings]
         except (ResponseError, asyncio.TimeoutError, OSError) as exc:
             self._mark_unhealthy(exc)
             raise OllamaClientError(

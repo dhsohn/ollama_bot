@@ -616,7 +616,6 @@ async def _build_runtime(
             semantic_cache=semantic_cache,
             intent_router=intent_router,
             context_compressor=context_compressor,
-            model_router=None,
             rag_pipeline=rag_pipeline,
         )
 

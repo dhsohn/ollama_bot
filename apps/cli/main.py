@@ -1,10 +1,10 @@
 """CLI 인터페이스 — chat, dry-run, test.
 
-모델 라우팅과 RAG 파이프라인을 텔레그램 없이 직접 테스트할 수 있다.
+단일 모델 응답 경로와 RAG 파이프라인을 텔레그램 없이 직접 테스트할 수 있다.
 
 사용법:
   python -m apps.cli chat              대화형 채팅
-  python -m apps.cli dry-run "쿼리"    라우팅+RAG 결과만 출력
+  python -m apps.cli dry-run "쿼리"    모델+RAG 결과만 출력
   python -m apps.cli test              테스트 케이스 실행
 """
 
@@ -25,7 +25,7 @@ if _project_root not in sys.path:
 
 
 async def _init_components():
-    """설정 기반 LLM 클라이언트와 선택적 ModelRouter/RAGPipeline을 초기화한다."""
+    """설정 기반 LLM 클라이언트와 선택적 RAGPipeline을 초기화한다."""
     os.environ.setdefault("ALLOW_LOCAL_RUN", "1")
     os.environ.setdefault("TELEGRAM_BOT_TOKEN", "cli-mode")
     os.environ.setdefault("ALLOWED_TELEGRAM_USERS", "0")
@@ -49,22 +49,7 @@ async def _init_components():
         raise ValueError(f"Unsupported llm_provider: {provider}")
     await llm.initialize()
 
-    model_router = None
     rag_pipeline = None
-
-    if provider == "lemonade" and config.model_routing.enabled:
-        from core.model_registry import ModelRegistry
-        from core.model_router import ModelRouter
-
-        registry = ModelRegistry(config.model_registry, llm)
-        await registry.initialize()
-        model_router = ModelRouter(
-            config=config.model_routing,
-            registry=registry,
-            client=llm,
-            embedding_model=config.model_registry.embedding_model,
-        )
-        await model_router.initialize()
 
     if provider == "lemonade" and config.rag.enabled:
         from core.rag.context_builder import RAGContextBuilder
@@ -87,18 +72,18 @@ async def _init_components():
         reranker = RAGReranker(llm, config.model_registry.reranker_model, config.rag)
         rag_pipeline = RAGPipeline(retriever, reranker, RAGContextBuilder(), config.rag)
 
-    return llm, model_router, rag_pipeline, config, provider
+    return llm, rag_pipeline, config, provider
 
 
 async def cmd_chat(args: argparse.Namespace) -> None:
     """대화형 채팅."""
-    llm, model_router, rag_pipeline, config, provider = await _init_components()
+    llm, rag_pipeline, config, provider = await _init_components()
     from core.text_utils import sanitize_model_output
 
     print("=== ollama_bot CLI Chat ===")
     print(f"provider: {provider}")
-    if provider != "lemonade" and (config.model_routing.enabled or config.rag.enabled):
-        print("  [notice] model_routing/rag는 lemonade provider에서만 활성화됩니다.")
+    if provider != "lemonade" and config.rag.enabled:
+        print("  [notice] rag는 lemonade provider에서만 활성화됩니다.")
     print("종료: Ctrl+C 또는 'exit'\n")
 
     try:
@@ -110,12 +95,7 @@ async def cmd_chat(args: argparse.Namespace) -> None:
             if not query or query.lower() in ("exit", "quit"):
                 break
 
-            # 라우팅
             model_name = llm.default_model
-            if model_router:
-                decision = await model_router.route(query)
-                model_name = decision.selected_model
-                print(f"  [routing] {decision.selected_role} ({decision.trigger})")
 
             # RAG
             rag_context = ""
@@ -142,17 +122,16 @@ async def cmd_chat(args: argparse.Namespace) -> None:
 
 
 async def cmd_dry_run(args: argparse.Namespace) -> None:
-    """라우팅 + RAG 결과만 JSON 출력."""
-    llm, model_router, rag_pipeline, _config, provider = await _init_components()
+    """모델 + RAG 결과만 JSON 출력."""
+    llm, rag_pipeline, _config, provider = await _init_components()
 
     query = args.query
     result: dict = {"query": query, "provider": provider}
-
-    if model_router:
-        decision = await model_router.route(query)
-        result["routing"] = decision.to_dict()
-    else:
-        result["routing"] = None
+    result["routing"] = {
+        "selected_model": llm.default_model,
+        "selected_role": "default",
+        "trigger": "single_model",
+    }
 
     if rag_pipeline:
         triggered = rag_pipeline.should_trigger_rag(query)
@@ -170,44 +149,6 @@ async def cmd_dry_run(args: argparse.Namespace) -> None:
     await llm.close()
 
 
-# 테스트 케이스
-_ROUTING_TEST_CASES: list[dict[str, Any]] = [
-    # Vision (5)
-    {"input": "이 사진에서 뭐가 보여?", "images": [b"fake"], "expected_role": "vision"},
-    {"input": "이미지를 분석해줘", "images": [b"fake"], "expected_role": "vision"},
-    {"input": "이 그래프 설명해줘", "images": [b"fake"], "expected_role": "vision"},
-    {"input": "사진 속 텍스트를 읽어줘", "images": [b"fake"], "expected_role": "vision"},
-    {"input": "이 스크린샷에서 에러 찾아줘", "images": [b"fake"], "expected_role": "vision"},
-    # Coding (10)
-    {"input": "```python\ndef hello():\n    print('hi')\n```\n이 코드 설명해줘", "expected_role": "coding"},
-    {"input": "TypeError: unsupported operand type(s) 이 에러 해결해줘", "expected_role": "coding"},
-    {"input": "파이썬으로 퀵소트 구현해줘", "expected_role": "coding"},
-    {"input": "이 함수를 리팩토링해줘", "expected_role": "coding"},
-    {"input": "Traceback (most recent call last):\n  File \"main.py\", line 10", "expected_role": "coding"},
-    {"input": "자바스크립트로 REST API 만들어줘", "expected_role": "coding"},
-    {"input": "async def process()에서 디버깅 도와줘", "expected_role": "coding"},
-    {"input": "이 코드의 테스트 케이스를 작성해줘", "expected_role": "coding"},
-    {"input": "Docker 빌드가 실패해요", "expected_role": "coding"},
-    {"input": "main.py에서 import 에러가 나요", "expected_role": "coding"},
-    # Cheap/Low-cost (10)
-    {"input": "안녕!", "expected_role": "low_cost"},
-    {"input": "오늘 점심 뭐 먹을까?", "expected_role": "low_cost"},
-    {"input": "고마워", "expected_role": "low_cost"},
-    {"input": "좋은 아침이야", "expected_role": "low_cost"},
-    {"input": "오늘 날씨 어때?", "expected_role": "low_cost"},
-    {"input": "번역해줘: good morning", "expected_role": "low_cost"},
-    {"input": "맞춤법 검사해줘: 안녕하새요", "expected_role": "low_cost"},
-    {"input": "'resilience'의 뜻이 뭐야?", "expected_role": "low_cost"},
-    {"input": "짧게 요약해줘", "expected_role": "low_cost"},
-    {"input": "네", "expected_role": "low_cost"},
-    # Reasoning (5)
-    {"input": "이 시스템의 병목 지점을 찾아서 개선 전략을 세워줘", "expected_role": "reasoning"},
-    {"input": "GPT-4와 Claude의 아키텍처 차이를 심층 분석해줘", "expected_role": "reasoning"},
-    {"input": "이 논문의 방법론에 대해 비판적으로 평가하고 반론을 제시해줘", "expected_role": "reasoning"},
-    {"input": "마이크로서비스 vs 모놀리스 아키텍처의 트레이드오프를 다각도로 분석해줘", "expected_role": "reasoning"},
-    {"input": "인과관계를 규명하고 단계별로 논리를 전개해줘", "expected_role": "reasoning"},
-]
-
 _RAG_TEST_CASES: list[dict[str, Any]] = [
     {"input": "내 프로젝트의 README에 뭐라고 적혀있어?", "expected_rag": True},
     {"input": "kb 폴더에 있는 문서 검색해줘", "expected_rag": True},
@@ -224,30 +165,13 @@ _RAG_TEST_CASES: list[dict[str, Any]] = [
 
 async def cmd_test(args: argparse.Namespace) -> None:
     """테스트 케이스 실행."""
-    llm, model_router, rag_pipeline, _config, provider = await _init_components()
+    llm, rag_pipeline, _config, provider = await _init_components()
     print(f"provider: {provider}")
     if provider != "lemonade":
-        print("  [notice] model_routing/rag 테스트는 lemonade provider에서만 실행됩니다.\n")
+        print("  [notice] rag 테스트는 lemonade provider에서만 실행됩니다.\n")
 
-    print("=== Routing Test Cases ===\n")
-    correct = 0
-    total = len(_ROUTING_TEST_CASES)
-
-    for i, tc in enumerate(_ROUTING_TEST_CASES, 1):
-        images = tc.get("images")
-        if model_router:
-            decision = await model_router.route(tc["input"], images=images)
-            actual = decision.selected_role
-            match = actual == tc["expected_role"]
-            status = "PASS" if match else "FAIL"
-            if match:
-                correct += 1
-            print(f"  [{status}] #{i}: expected={tc['expected_role']}, "
-                  f"actual={actual} ({decision.trigger})")
-        else:
-            print(f"  [SKIP] #{i}: model_router not available")
-
-    print(f"\nRouting: {correct}/{total} ({correct/total*100:.0f}%)\n")
+    print("=== Single Model Check ===\n")
+    print(f"  [PASS] selected_model={llm.default_model}\n")
 
     print("=== RAG Trigger Test Cases ===\n")
     rag_correct = 0
@@ -272,13 +196,13 @@ async def cmd_test(args: argparse.Namespace) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="ollama_bot CLI — 모델 라우팅/RAG 테스트",
+        description="ollama_bot CLI — 단일 모델/RAG 테스트",
     )
     sub = parser.add_subparsers(dest="command")
 
     sub.add_parser("chat", help="대화형 채팅")
 
-    dry_p = sub.add_parser("dry-run", help="라우팅+RAG 결과만 출력")
+    dry_p = sub.add_parser("dry-run", help="모델+RAG 결과만 출력")
     dry_p.add_argument("query", type=str, help="테스트 쿼리")
 
     sub.add_parser("test", help="테스트 케이스 실행")

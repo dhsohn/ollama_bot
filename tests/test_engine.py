@@ -302,16 +302,6 @@ class TestProcessMessage:
         )
         semantic_cache.put = AsyncMock()
 
-        model_router = AsyncMock()
-        model_router.route = AsyncMock(return_value=SimpleNamespace(
-            selected_model="vision-model",
-            selected_role="vision",
-            trigger="image",
-            confidence=1.0,
-            fallback_used=False,
-            classifier_used=False,
-        ))
-
         mock_ollama.chat = AsyncMock(return_value=ChatResponse(content="비전 응답"))
 
         engine = Engine(
@@ -320,7 +310,6 @@ class TestProcessMessage:
             memory=memory,
             skills=mock_skills,
             semantic_cache=semantic_cache,
-            model_router=model_router,
         )
 
         result = await engine.process_message(111, "이미지 분석", images=[b"fake-image"])
@@ -328,9 +317,8 @@ class TestProcessMessage:
         assert result == "비전 응답"
         semantic_cache.get.assert_not_awaited()
         semantic_cache.put.assert_not_awaited()
-        model_router.route.assert_awaited_once()
         call_args = mock_ollama.chat.call_args
-        assert call_args.kwargs.get("model") == "vision-model"
+        assert call_args.kwargs.get("model") == app_settings.model_registry.default_model
 
     @pytest.mark.asyncio
     async def test_rag_context_uses_default_model(
@@ -354,7 +342,6 @@ class TestProcessMessage:
             llm_client=mock_ollama,
             memory=memory,
             skills=mock_skills,
-            model_router=None,
             rag_pipeline=rag_pipeline,
         )
 
@@ -450,7 +437,7 @@ class TestProcessMessage:
         assert call_args.kwargs.get("timeout") == app_settings.bot.response_timeout
 
     @pytest.mark.asyncio
-    async def test_stream_uses_reasoning_timeout_for_reasoning_role(
+    async def test_stream_uses_default_timeout_without_model_routing(
         self,
         app_settings: AppSettings,
         mock_ollama,
@@ -464,24 +451,11 @@ class TestProcessMessage:
         mock_ollama.chat = AsyncMock(return_value=ChatResponse(
             content='{"pass": true, "issues": [], "revised_answer": ""}'
         ))
-        model_router = AsyncMock()
-        model_router.route = AsyncMock(return_value=SimpleNamespace(
-            selected_model="reason-model",
-            selected_role="reasoning",
-            trigger="semantic",
-            confidence=0.9,
-            fallback_used=False,
-            classifier_used=True,
-            degraded=False,
-            degradation_reasons=[],
-        ))
-
         engine = Engine(
             config=app_settings,
             llm_client=mock_ollama,
             memory=memory,
             skills=mock_skills,
-            model_router=model_router,
         )
 
         chunks = []
@@ -490,7 +464,7 @@ class TestProcessMessage:
 
         assert chunks == ["충분한 한국어 응답입니다."]
         call_args = mock_ollama.chat_stream.call_args
-        assert call_args.kwargs.get("timeout") == 3600
+        assert call_args.kwargs.get("timeout") == app_settings.bot.response_timeout
 
     @pytest.mark.asyncio
     async def test_stream_uses_skill_timeout(self, engine: Engine, mock_skills, mock_ollama) -> None:
@@ -1207,7 +1181,7 @@ class TestPlanInterfaces:
         decision = await engine.route_request("안녕하세요")
         assert decision["selected_model"] == "test-model"
         assert decision["selected_role"] == "default"
-        assert decision["trigger"] == "router_disabled"
+        assert decision["trigger"] == "single_model"
 
     @pytest.mark.asyncio
     async def test_retrieve_without_rag_pipeline(self, engine: Engine) -> None:

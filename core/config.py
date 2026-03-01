@@ -292,38 +292,6 @@ class ModelRegistryConfig(BaseModel):
     reranker_model: str = "bge-reranker-v2-m3-GGUF"
 
 
-class ModelRoutingConfig(BaseModel):
-    """모델 라우팅 설정."""
-
-    enabled: bool = True
-    anchors_path: str = "config/routing_anchors.yaml"
-    threshold: float = 0.45
-    margin: float = 0.05
-    embedding_cache_size: int = 5000
-    classifier_timeout_seconds: int = 60
-    code_keywords: list[str] = Field(default_factory=lambda: [
-        "코드", "함수", "클래스", "디버그", "디버깅", "에러", "버그",
-        "리팩토링", "테스트", "빌드", "배포", "컴파일", "런타임",
-        "스택트레이스", "traceback", "exception", "TypeError",
-        "SyntaxError", "ValueError", "import ", "def ", "class ",
-        "return ", "async def", "await ", ".py", ".js", ".ts",
-    ])
-
-    @field_validator("threshold", "margin")
-    @classmethod
-    def validate_score_range(cls, value: float) -> float:
-        if not 0.0 <= value <= 1.0:
-            raise ValueError("threshold/margin must be between 0.0 and 1.0")
-        return value
-
-    @field_validator("classifier_timeout_seconds")
-    @classmethod
-    def validate_classifier_timeout_positive(cls, value: int) -> int:
-        if value < 1:
-            raise ValueError("classifier_timeout_seconds must be >= 1")
-        return value
-
-
 class RAGConfig(BaseModel):
     """RAG 파이프라인 설정."""
 
@@ -390,7 +358,6 @@ class AppSettings(BaseModel):
     context_compressor: ContextCompressorConfig = Field(default_factory=ContextCompressorConfig)
     retrieval_provider: RetrievalProviderConfig = Field(default_factory=RetrievalProviderConfig)
     model_registry: ModelRegistryConfig = Field(default_factory=ModelRegistryConfig)
-    model_routing: ModelRoutingConfig = Field(default_factory=ModelRoutingConfig)
     rag: RAGConfig = Field(default_factory=RAGConfig)
 
 

@@ -124,9 +124,6 @@ model_registry:
   embedding_model: "Qwen3-Embedding-0.6B-GGUF"
   reranker_model: "bge-reranker-v2-m3-GGUF"
 
-model_routing:
-  enabled: false
-
 rag:
   enabled: true
   startup_index_enabled: false

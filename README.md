@@ -373,9 +373,9 @@ model_registry:
 ## 품질 검증
 
 ```bash
-ruff check .
-mypy
-pytest -q
+.venv/bin/ruff check .
+.venv/bin/mypy
+.venv/bin/pytest -q
 ```
 
 장시간 모니터링 예시:

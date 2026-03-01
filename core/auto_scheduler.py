@@ -466,7 +466,7 @@ class AutoScheduler:
     def _resolve_action_model(self, action: AutoAction) -> tuple[str | None, str | None]:
         """자동화 액션에서 사용할 모델/역할을 결정한다.
 
-        기본값은 global default model이 아니라 low_cost role이다.
+        기본값은 global default model + default role이다.
         """
         model_override = action.model
         model_role = action.model_role
