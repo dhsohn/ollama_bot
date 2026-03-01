@@ -9,7 +9,9 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import AsyncGenerator
+from typing import Any
 
+import numpy as np
 from ollama import AsyncClient, ResponseError
 
 from core.config import OllamaConfig
@@ -358,6 +360,87 @@ class OllamaClient:
         """Ollama는 별도 사전 로드 단계가 없어 no-op 처리한다."""
         _ = (model, role, timeout_seconds)
         return None
+
+    # ── RetrievalClientProtocol 구현 ──
+
+    async def embed(
+        self,
+        texts: list[str],
+        model: str | None = None,
+        timeout: int | None = None,
+    ) -> list[list[float]]:
+        """ollama embed API를 사용하여 텍스트 임베딩을 생성한다."""
+        client = self._require_client()
+        target_model = model or self._default_model
+        effective_timeout = timeout or 60
+
+        try:
+            response = await asyncio.wait_for(
+                client.embed(model=target_model, input=texts),
+                timeout=effective_timeout,
+            )
+            self._mark_healthy()
+            return response.embeddings
+        except (ResponseError, asyncio.TimeoutError, OSError) as exc:
+            self._mark_unhealthy(exc)
+            raise OllamaClientError(
+                f"Ollama embed failed for model '{target_model}': {exc}"
+            ) from exc
+
+    async def rerank(
+        self,
+        query: str,
+        documents: list[str],
+        model: str | None = None,
+        top_n: int | None = None,
+        timeout: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """리랭커 모델의 임베딩 + 코사인 유사도로 문서를 재순위한다."""
+        if not documents:
+            return []
+
+        target_model = model or self._default_model
+        effective_timeout = timeout or 30
+
+        all_texts = [query] + documents
+        embeddings = await self.embed(
+            all_texts, model=target_model, timeout=effective_timeout,
+        )
+        query_vec = np.array(embeddings[0], dtype=np.float32)
+        query_norm = query_vec / (np.linalg.norm(query_vec) + 1e-10)
+
+        scores: list[tuple[int, float]] = []
+        for i, doc_emb in enumerate(embeddings[1:]):
+            doc_vec = np.array(doc_emb, dtype=np.float32)
+            doc_norm = doc_vec / (np.linalg.norm(doc_vec) + 1e-10)
+            similarity = float(np.dot(query_norm, doc_norm))
+            scores.append((i, similarity))
+
+        scores.sort(key=lambda x: x[1], reverse=True)
+        limit = top_n if top_n and top_n > 0 else len(documents)
+
+        return [
+            {"index": idx, "relevance_score": score}
+            for idx, score in scores[:limit]
+        ]
+
+    async def check_model_availability(
+        self, model_names: list[str],
+    ) -> dict[str, bool]:
+        """ollama에 로드된 모델 가용성을 확인한다."""
+        availability = {name: False for name in model_names}
+        try:
+            client = self._require_client()
+            response = await client.list()
+            loaded = {m.model for m in response.models if m.model is not None}
+            for name in model_names:
+                availability[name] = name in loaded
+            self._mark_healthy()
+        except Exception as exc:
+            self._logger.warning(
+                "ollama_model_availability_check_failed", error=str(exc),
+            )
+        return availability
 
     async def _retry_with_backoff(
         self,

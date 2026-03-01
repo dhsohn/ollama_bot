@@ -470,16 +470,13 @@ class TelegramHandler:
     async def _show_current_model(self, update: Update) -> None:
         current = self._engine.get_current_model()
         registry = self._config.model_registry
+        retrieval = self._config.retrieval_provider
         await update.effective_message.reply_text(  # type: ignore[union-attr]
             "🤖 <b>모델 설정</b>\n\n"
-            f"현재 기본 응답 모델: <code>{self._escape_html(current)}</code>\n\n"
-            "<b>역할별 모델</b>\n"
-            f"- embedding: <code>{self._escape_html(registry.embedding_model)}</code>\n"
-            f"- reranker: <code>{self._escape_html(registry.reranker_model)}</code>\n"
-            f"- vision: <code>{self._escape_html(registry.vision_model)}</code>\n"
-            f"- low_cost: <code>{self._escape_html(registry.low_cost_model)}</code>\n"
-            f"- reasoning: <code>{self._escape_html(registry.reasoning_model)}</code>\n"
-            f"- coding: <code>{self._escape_html(registry.coding_model)}</code>\n\n"
+            f"기본 응답 모델: <code>{self._escape_html(current)}</code>\n\n"
+            "<b>Retrieval 모델 (Ollama)</b>\n"
+            f"- embedding: <code>{self._escape_html(retrieval.embedding_model)}</code>\n"
+            f"- reranker: <code>{self._escape_html(retrieval.reranker_model)}</code>\n\n"
             "모델 변경: <code>/model &lt;모델명&gt;</code>",
             parse_mode=ParseMode.HTML,
         )

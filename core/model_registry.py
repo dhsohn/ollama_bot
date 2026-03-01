@@ -1,13 +1,13 @@
-"""모델 가용성 관리 및 폴백 체인.
+"""모델 가용성 관리.
 
-Lemonade Server에 등록된 모델 목록을 확인하고,
-역할별 모델의 가용성/폴백을 관리한다.
+Dual-Provider 구조에서 기본 모델(chat)과 retrieval 모델(임베딩/리랭커)의
+가용성을 관리한다.
 """
 
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from core.config import ModelRegistryConfig
@@ -17,12 +17,9 @@ if TYPE_CHECKING:
     from core.llm_protocol import RetrievalClientProtocol
 
 _ROLE_TO_CONFIG_ATTR = {
+    "default": "default_model",
     "embedding": "embedding_model",
     "reranker": "reranker_model",
-    "vision": "vision_model",
-    "low_cost": "low_cost_model",
-    "reasoning": "reasoning_model",
-    "coding": "coding_model",
 }
 
 
@@ -37,15 +34,15 @@ class ModelInfo:
 
 
 class ModelRegistry:
-    """모델 가용성 관리 및 폴백 체인."""
+    """모델 가용성 관리 (단일 기본 모델 + retrieval 모델)."""
 
     def __init__(
         self,
         config: ModelRegistryConfig,
-        client: RetrievalClientProtocol,
+        retrieval_client: RetrievalClientProtocol,
     ) -> None:
         self._config = config
-        self._client = client
+        self._retrieval_client = retrieval_client
         self._models: dict[str, ModelInfo] = {}
         self._logger = get_logger("model_registry")
 
@@ -54,13 +51,22 @@ class ModelRegistry:
             self._models[role] = ModelInfo(role=role, name=name)
 
     async def initialize(self) -> None:
-        """시작 시 모든 모델 가용성을 확인한다."""
-        model_names = [m.name for m in self._models.values()]
-        availability = await self._client.check_model_availability(model_names)
+        """시작 시 retrieval 모델 가용성을 확인한다."""
+        retrieval_models = [
+            info.name for role, info in self._models.items()
+            if role in ("embedding", "reranker")
+        ]
+        availability = await self._retrieval_client.check_model_availability(
+            retrieval_models,
+        )
         now = time.monotonic()
 
         for role, info in self._models.items():
-            info.available = availability.get(info.name, False)
+            if role == "default":
+                # 기본 모델(lemonade)은 별도 체크 — 항상 가용 가정
+                info.available = True
+            else:
+                info.available = availability.get(info.name, False)
             info.last_checked = now
 
         available_roles = [r for r, m in self._models.items() if m.available]
@@ -76,7 +82,7 @@ class ModelRegistry:
             self._logger.warning(
                 "embedding_model_unavailable",
                 model=self._models["embedding"].name,
-                impact="semantic_routing_and_rag_disabled",
+                impact="rag_disabled",
             )
 
     def get_model(self, role: str) -> str | None:
@@ -98,25 +104,8 @@ class ModelRegistry:
         info = self._models.get(role)
         return info is not None and info.available
 
-    def get_fallback(self, role: str) -> str | None:
-        """폴백 모델명을 반환한다. 폴백도 불가하면 None."""
-        chain = self._config.fallback_chain.get(role, [])
-        for fallback_role in chain:
-            model = self.get_model(fallback_role)
-            if model is not None:
-                return model
-        return None
-
-    def get_fallback_role(self, role: str) -> str | None:
-        """폴백 역할명을 반환한다."""
-        chain = self._config.fallback_chain.get(role, [])
-        for fallback_role in chain:
-            if self.is_available(fallback_role):
-                return fallback_role
-        return None
-
     def resolve_model(self, role: str) -> tuple[str, str, bool]:
-        """역할에 맞는 모델을 해결한다. 폴백 포함.
+        """역할에 맞는 모델을 해결한다. 단일 모델이므로 폴백 없음.
 
         Returns:
             (model_name, actual_role, fallback_used)
@@ -124,31 +113,23 @@ class ModelRegistry:
         model = self.get_model(role)
         if model is not None:
             return model, role, False
-
-        fallback_role = self.get_fallback_role(role)
-        if fallback_role is not None:
-            fallback_model = self.get_model(fallback_role)
-            if fallback_model is not None:
-                self._logger.warning(
-                    "model_fallback_used",
-                    original_role=role,
-                    fallback_role=fallback_role,
-                    fallback_model=fallback_model,
-                )
-                return fallback_model, fallback_role, True
-
-        raise ValueError(
-            f"No available model for role '{role}' and no fallback available"
-        )
+        raise ValueError(f"No available model for role '{role}'")
 
     async def refresh_availability(self) -> None:
         """가용성을 재확인한다."""
-        model_names = [m.name for m in self._models.values()]
-        availability = await self._client.check_model_availability(model_names)
+        retrieval_models = [
+            info.name for role, info in self._models.items()
+            if role in ("embedding", "reranker")
+        ]
+        availability = await self._retrieval_client.check_model_availability(
+            retrieval_models,
+        )
         now = time.monotonic()
 
         changes: list[str] = []
         for role, info in self._models.items():
+            if role == "default":
+                continue
             new_status = availability.get(info.name, False)
             if new_status != info.available:
                 changes.append(f"{role}: {info.available} -> {new_status}")

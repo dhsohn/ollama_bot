@@ -276,33 +276,20 @@ class ContextCompressorConfig(BaseModel):
     run_only_when_idle: bool = True
 
 
-class ModelRegistryConfig(BaseModel):
-    """Lemonade Server 모델 레지스트리 설정."""
+class RetrievalProviderConfig(BaseModel):
+    """Ollama 기반 retrieval(임베딩/리랭킹) 전용 프로바이더 설정."""
 
+    host: str = "http://host.docker.internal:11434"
     embedding_model: str = "Qwen3-Embedding-0.6B-GGUF"
     reranker_model: str = "bge-reranker-v2-m3-GGUF"
-    vision_model: str = "Qwen3-VL-8B-Instruct-GGUF"
-    low_cost_model: str = "GLM-4.7-Flash-GGUF"
-    reasoning_model: str = "Qwen3-14B-Hybrid"
-    coding_model: str = "Qwen3-Coder-Next-GGUF"
-    fallback_chain: dict[str, list[str]] = Field(default_factory=lambda: {
-        "low_cost": ["reasoning"],
-        "reasoning": ["low_cost"],
-        "coding": ["reasoning", "low_cost"],
-        "vision": [],
-    })
 
-    @field_validator("fallback_chain")
-    @classmethod
-    def validate_no_self_reference(
-        cls, chain: dict[str, list[str]],
-    ) -> dict[str, list[str]]:
-        for role, fallbacks in chain.items():
-            if role in fallbacks:
-                raise ValueError(
-                    f"fallback_chain: role '{role}' cannot fall back to itself"
-                )
-        return chain
+
+class ModelRegistryConfig(BaseModel):
+    """모델 레지스트리 설정 (단일 기본 모델 + retrieval 모델)."""
+
+    default_model: str = "gpt-oss-20b-NPU"
+    embedding_model: str = "Qwen3-Embedding-0.6B-GGUF"
+    reranker_model: str = "bge-reranker-v2-m3-GGUF"
 
 
 class ModelRoutingConfig(BaseModel):
@@ -401,6 +388,7 @@ class AppSettings(BaseModel):
     semantic_cache: SemanticCacheConfig = Field(default_factory=SemanticCacheConfig)
     intent_router: IntentRouterConfig = Field(default_factory=IntentRouterConfig)
     context_compressor: ContextCompressorConfig = Field(default_factory=ContextCompressorConfig)
+    retrieval_provider: RetrievalProviderConfig = Field(default_factory=RetrievalProviderConfig)
     model_registry: ModelRegistryConfig = Field(default_factory=ModelRegistryConfig)
     model_routing: ModelRoutingConfig = Field(default_factory=ModelRoutingConfig)
     rag: RAGConfig = Field(default_factory=RAGConfig)

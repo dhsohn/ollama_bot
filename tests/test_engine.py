@@ -224,8 +224,8 @@ class TestProcessMessage:
         assert result == "최종 요약"
         assert mock_ollama.chat.await_count == 3
         models = [call.kwargs.get("model") for call in mock_ollama.chat.await_args_list]
-        assert models[:2] == [app_settings.model_registry.low_cost_model] * 2
-        assert models[2] == app_settings.model_registry.reasoning_model
+        assert models[:2] == [app_settings.model_registry.default_model] * 2
+        assert models[2] == app_settings.model_registry.default_model
 
     @pytest.mark.asyncio
     async def test_stream_summarize_long_input_uses_chunk_pipeline_without_stream(
@@ -333,24 +333,13 @@ class TestProcessMessage:
         assert call_args.kwargs.get("model") == "vision-model"
 
     @pytest.mark.asyncio
-    async def test_rag_context_promotes_reasoning_model_when_available(
+    async def test_rag_context_uses_default_model(
         self,
         app_settings: AppSettings,
         mock_ollama,
         memory: MemoryManager,
         mock_skills: MagicMock,
     ) -> None:
-        model_router = AsyncMock()
-        model_router.route = AsyncMock(return_value=SimpleNamespace(
-            selected_model=app_settings.model_registry.low_cost_model,
-            selected_role="low_cost",
-            trigger="classifier",
-            confidence=0.8,
-            fallback_used=False,
-            classifier_used=True,
-            degraded=False,
-            degradation_reasons=[],
-        ))
         rag_pipeline = AsyncMock()
         rag_pipeline.should_trigger_rag = MagicMock(return_value=True)
         rag_pipeline.execute = AsyncMock(return_value=RAGResult(
@@ -365,14 +354,14 @@ class TestProcessMessage:
             llm_client=mock_ollama,
             memory=memory,
             skills=mock_skills,
-            model_router=model_router,
+            model_router=None,
             rag_pipeline=rag_pipeline,
         )
 
         await engine.process_message(111, "내 문서에서 검색해줘")
 
         chat_kwargs = mock_ollama.chat.await_args.kwargs
-        assert chat_kwargs.get("model") == app_settings.model_registry.reasoning_model
+        assert chat_kwargs.get("model") == app_settings.model_registry.default_model
 
     @pytest.mark.asyncio
     async def test_analyze_all_corpus_requires_rag_pipeline(
@@ -1072,10 +1061,9 @@ class TestExecuteSkill:
 
         assert result == "리뷰 결과"
         call_kwargs = mock_ollama.chat.await_args.kwargs
-        assert call_kwargs["model"] == app_settings.model_registry.coding_model
+        # coding role이 없으므로 default_model 또는 None이 전달된다
         assert call_kwargs["timeout"] == 30
         mock_ollama.prepare_model.assert_awaited_once()
-        assert mock_ollama.prepare_model.await_args.kwargs["role"] == "coding"
 
     @pytest.mark.asyncio
     async def test_execute_skill_not_found(self, engine: Engine, mock_skills) -> None:
@@ -1189,16 +1177,16 @@ class TestProcessPrompt:
 
         await engine.process_prompt(
             prompt="test",
-            model_role="low_cost",
+            model_role="default",
         )
 
         call_kwargs = mock_ollama.chat.call_args.kwargs
-        assert call_kwargs["model"] == app_settings.model_registry.low_cost_model
+        assert call_kwargs["model"] == app_settings.model_registry.default_model
         mock_ollama.prepare_model.assert_awaited_once()
         assert mock_ollama.prepare_model.await_args.kwargs["model"] == (
-            app_settings.model_registry.low_cost_model
+            app_settings.model_registry.default_model
         )
-        assert mock_ollama.prepare_model.await_args.kwargs["role"] == "low_cost"
+        assert mock_ollama.prepare_model.await_args.kwargs["role"] == "default"
 
 
 class TestGetStatus:

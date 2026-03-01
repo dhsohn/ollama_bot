@@ -21,26 +21,12 @@ ollama:
     한국어로 답변하며, 간결하고 정확한 정보를 제공합니다.
 
 lemonade:
-  host: "http://windows-host:11434"
+  host: "http://windows-host:8000"
   api_key: ""
-  # 응답 모델은 model_routing + model_registry로 결정한다.
   base_path: "/api/v1"
   timeout_seconds: 120
   model_load_timeout_seconds: 120
   heavy_model_load_timeout_seconds: 420
-  # primary(11434): 임베딩/리랭커 전용
-  # 21434: low_cost + vision, 31434: reasoning/coding
-  instances:
-    - name: "edge"
-      host: "http://windows-host:21434"
-      model: "GLM-4.7-Flash-GGUF"
-      route_roles: ["low_cost", "vision"]
-      route_models: ["GLM-4.7-Flash-GGUF", "Qwen3-VL-8B-Instruct-GGUF"]
-    - name: "reasoner"
-      host: "http://windows-host:31434"
-      model: "gpt-oss-20b-NPU"
-      route_roles: ["reasoning", "coding"]
-      route_models: ["gpt-oss-20b-NPU"]
 
 telegram:
   polling_interval: 1
@@ -126,28 +112,20 @@ context_compressor:
   background_summarize: false
   summarize_concurrency: 1
 
-# ── 모델 라우팅 + RAG (Lemonade 전용) ──
+# ── Dual-Provider: Ollama(retrieval) + Lemonade(chat) ──
 
-model_registry:
+retrieval_provider:
+  host: "http://host.docker.internal:11434"
   embedding_model: "Qwen3-Embedding-0.6B-GGUF"
   reranker_model: "bge-reranker-v2-m3-GGUF"
-  vision_model: "Qwen3-VL-8B-Instruct-GGUF"
-  low_cost_model: "GLM-4.7-Flash-GGUF"
-  reasoning_model: "gpt-oss-20b-NPU"
-  coding_model: "gpt-oss-20b-NPU"
-  fallback_chain:
-    low_cost: ["reasoning"]
-    reasoning: ["low_cost"]
-    coding: ["low_cost"]
-    vision: []
+
+model_registry:
+  default_model: "gpt-oss-20b-NPU"
+  embedding_model: "Qwen3-Embedding-0.6B-GGUF"
+  reranker_model: "bge-reranker-v2-m3-GGUF"
 
 model_routing:
-  enabled: true
-  anchors_path: "config/routing_anchors.yaml"
-  threshold: 0.45
-  margin: 0.05
-  classifier_timeout_seconds: 90
-  embedding_cache_size: 5000
+  enabled: false
 
 rag:
   enabled: true

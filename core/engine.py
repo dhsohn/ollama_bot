@@ -1633,74 +1633,34 @@ class Engine:
         strategy: ContextStrategy | None,
         stream: bool,
     ) -> _PreparedFullRequest:
-        """Tier 4(full LLM) 요청 준비를 공통 처리한다."""
-        target_model = model_override
-        model_decision = None
+        """Tier 4(full LLM) 요청 준비를 공통 처리한다.
+
+        Dual-Provider 구조: 항상 기본 모델(gpt-oss-20b-NPU)을 사용하고,
+        RAG 파이프라인으로 쿼리 최적화(임베딩+리랭킹)를 수행한다.
+        """
+        # 단일 모델: model_override가 없으면 기본 모델 사용
+        target_model = model_override or self._config.model_registry.default_model
         rag_result = None
 
-        if self._model_router and not model_override:
-            model_decision = await self._model_router.route(
-                text, images=images, metadata=metadata,
-            )
-            target_model = model_decision.selected_model
-        selected_role = model_decision.selected_role if model_decision else None
-
+        # RAG 파이프라인: ollama의 임베딩/리랭커로 쿼리 최적화
         if self._rag_pipeline and self._rag_pipeline.should_trigger_rag(text, metadata):
             rag_result = await self._rag_pipeline.execute(text, metadata)
-        if (
-            rag_result is not None
-            and getattr(rag_result, "contexts", None)
-            and not model_override
-        ):
-            reasoning_model = self._resolve_model_for_role("reasoning")
-            if reasoning_model:
-                original_role = selected_role
-                target_model = reasoning_model
-                selected_role = "reasoning"
-                if model_decision is not None:
-                    if model_decision.selected_role != "reasoning":
-                        model_decision.original_role = model_decision.selected_role
-                        model_decision.fallback_used = True
-                    model_decision.selected_role = "reasoning"
-                    model_decision.selected_model = reasoning_model
-                self._logger.info(
-                    "rag_context_promotes_reasoning_model",
-                    chat_id=chat_id,
-                    original_role=original_role,
-                    promoted_model=reasoning_model,
-                )
 
         prepared = await self._prepare_request(
             chat_id, text, stream=stream, strategy=strategy,
         )
-        prepare_timeout = self._resolve_inference_timeout(
-            base_timeout=prepared.timeout,
-            intent=intent,
-            model_role=selected_role,
-            has_images=bool(images),
-        )
-        target_model, prepared_role = await self._prepare_target_model(
-            model=target_model,
-            role=selected_role,
-            timeout=prepare_timeout,
-        )
-        if (
-            model_decision is not None
-            and prepared_role is not None
-            and prepared_role != model_decision.selected_role
-        ):
-            original_role = model_decision.selected_role
-            model_decision.selected_role = prepared_role
-            model_decision.selected_model = target_model or model_decision.selected_model
-            model_decision.fallback_used = True
-            model_decision.original_role = original_role
-
         effective_timeout = self._resolve_inference_timeout(
             base_timeout=prepared.timeout,
             intent=intent,
-            model_role=prepared_role,
+            model_role="default",
             has_images=bool(images),
         )
+        target_model, _ = await self._prepare_target_model(
+            model=target_model,
+            role="default",
+            timeout=effective_timeout,
+        )
+
         messages = prepared.messages
         if rag_result and rag_result.contexts:
             messages = self._inject_rag_context(messages, rag_result)
@@ -1710,7 +1670,7 @@ class Engine:
             timeout=effective_timeout,
             max_tokens=prepared.max_tokens,
             target_model=target_model,
-            model_decision=model_decision,
+            model_decision=None,
             rag_result=rag_result,
         )
 
@@ -1902,10 +1862,10 @@ class Engine:
             reduce_model_candidate = model_override
             reduce_role = "skill"
         else:
-            map_model_candidate = self._config.model_registry.low_cost_model
-            map_role = "low_cost"
-            reduce_model_candidate = self._config.model_registry.reasoning_model
-            reduce_role = "reasoning"
+            map_model_candidate = self._config.model_registry.default_model
+            map_role = "default"
+            reduce_model_candidate = self._config.model_registry.default_model
+            reduce_role = "default"
 
         map_model, _ = await self._prepare_target_model(
             model=map_model_candidate or None,
@@ -2090,10 +2050,7 @@ class Engine:
             return None
         registry = self._config.model_registry
         role_model_map = {
-            "low_cost": registry.low_cost_model,
-            "reasoning": registry.reasoning_model,
-            "coding": registry.coding_model,
-            "vision": registry.vision_model,
+            "default": registry.default_model,
             "embedding": registry.embedding_model,
             "reranker": registry.reranker_model,
         }
@@ -2104,7 +2061,7 @@ class Engine:
         return normalized or None
 
     def _resolve_prepare_fallback(self, role: str) -> tuple[str | None, str | None]:
-        """모델 사전 로드 실패 시 fallback_chain을 조회한다."""
+        """모델 사전 로드 실패 시 대체 모델을 조회한다."""
         if self._model_router is None:
             return None, None
         resolver = getattr(self._model_router, "resolve_fallback_model", None)

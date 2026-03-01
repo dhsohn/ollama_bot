@@ -472,8 +472,8 @@ class AutoScheduler:
         model_role = action.model_role
         if model_override is not None or model_role is not None:
             return model_override, model_role
-        fallback_model = self._config.model_registry.low_cost_model.strip() or None
-        return fallback_model, "low_cost"
+        fallback_model = self._config.model_registry.default_model.strip() or None
+        return fallback_model, "default"
 
     @staticmethod
     def _inject_callable_kwargs(

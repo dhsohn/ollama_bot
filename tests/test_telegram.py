@@ -191,14 +191,10 @@ class TestModelCommand:
 
         message.reply_text.assert_awaited_once()
         sent_text = message.reply_text.await_args.args[0]
-        assert "현재 기본 응답 모델" in sent_text
-        assert "역할별 모델" in sent_text
-        assert app_config.model_registry.embedding_model in sent_text
-        assert app_config.model_registry.reranker_model in sent_text
-        assert app_config.model_registry.vision_model in sent_text
-        assert app_config.model_registry.low_cost_model in sent_text
-        assert app_config.model_registry.reasoning_model in sent_text
-        assert app_config.model_registry.coding_model in sent_text
+        assert "기본 응답 모델" in sent_text
+        assert "Retrieval 모델" in sent_text
+        assert app_config.retrieval_provider.embedding_model in sent_text
+        assert app_config.retrieval_provider.reranker_model in sent_text
         assert "/model list" not in sent_text
         assert message.reply_text.await_args.kwargs["parse_mode"] == ParseMode.HTML
 

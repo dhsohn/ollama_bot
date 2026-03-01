@@ -23,7 +23,7 @@ from core.async_utils import run_in_thread
 from core.auto_evaluator import AutoEvaluator
 from core.automation_callables import register_builtin_callables
 from core.auto_scheduler import AutoScheduler
-from core.config import AppSettings, load_config
+from core.config import AppSettings, OllamaConfig, load_config
 from core.context_compressor import ContextCompressor
 from core.engine import Engine
 from core.feedback_manager import FeedbackManager
@@ -147,7 +147,7 @@ def _resolve_provider(
 
 def _model_for_provider(config: AppSettings, provider: str) -> str:
     if provider == "lemonade":
-        return config.model_registry.low_cost_model
+        return config.model_registry.default_model
     return config.ollama.model
 
 
@@ -163,6 +163,15 @@ def _create_llm_client(config: AppSettings, provider: str) -> LLMClientProtocol:
         f"오류: 지원하지 않는 provider='{provider}' "
         f"(지원: {', '.join(sorted(_SUPPORTED_PROVIDERS))})"
     )
+
+
+def _create_retrieval_client(config: AppSettings) -> OllamaClient:
+    """Ollama 기반 retrieval 전용 클라이언트를 생성한다."""
+    retrieval_config = OllamaConfig(
+        host=config.retrieval_provider.host,
+        model=config.retrieval_provider.embedding_model,
+    )
+    return OllamaClient(retrieval_config)
 
 
 async def _open_sqlite_db(path: Path) -> aiosqlite.Connection:
@@ -307,6 +316,9 @@ async def _build_runtime(
                 logger.error("feedback_prune_failed", error=str(exc))
 
         llm = _create_llm_client(config, llm_provider)
+        # 기본 모델명 설정 (lemonade 클라이언트는 빈 문자열로 시작)
+        if llm_provider == "lemonade":
+            llm.default_model = config.model_registry.default_model
         llm_host = config.ollama.host if llm_provider == "ollama" else getattr(
             llm,
             "host",
@@ -419,53 +431,68 @@ async def _build_runtime(
             )
             logger.info("context_compressor_initialized")
 
-        # ── 모델 라우팅 + RAG (Lemonade 전용) ──
-        model_router = None
+        # ── Dual-Provider: Ollama(retrieval) + Lemonade(chat) ──
         rag_pipeline = None
         model_registry = None
+        retrieval_client: OllamaClient | None = None
         rag_startup_index_task: asyncio.Task[Any] | None = None
 
-        if llm_provider == "lemonade" and config.model_routing.enabled:
+        # Retrieval 클라이언트 초기화 (Ollama — 임베딩/리랭킹 전용)
+        if config.rag.enabled:
+            try:
+                retrieval_client = _create_retrieval_client(config)
+                await retrieval_client.initialize()
+                cleanup_stack.push_async_callback(retrieval_client.close)
+                logger.info(
+                    "retrieval_client_initialized",
+                    host=config.retrieval_provider.host,
+                    embedding_model=config.retrieval_provider.embedding_model,
+                    reranker_model=config.retrieval_provider.reranker_model,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "retrieval_client_init_failed",
+                    host=config.retrieval_provider.host,
+                    error=str(exc),
+                )
+                retrieval_client = None
+
+        # Model Registry 초기화 (retrieval 모델 가용성 관리)
+        if retrieval_client is not None:
             try:
                 from core.model_registry import ModelRegistry
-                from core.model_router import ModelRouter
 
-                retrieval_llm = cast(RetrievalClientProtocol, llm)
-                model_registry = ModelRegistry(config.model_registry, retrieval_llm)
-                await model_registry.initialize()
-                # low_cost 모델은 시작 시 선로드해 첫 요청 지연을 줄인다.
-                low_cost_model = model_registry.get_model("low_cost")
-                if low_cost_model:
-                    prepare_model = getattr(retrieval_llm, "prepare_model", None)
-                    if callable(prepare_model):
-                        try:
-                            maybe_result = prepare_model(
-                                model=low_cost_model,
-                                role="low_cost",
-                            )
-                            if inspect.isawaitable(maybe_result):
-                                await maybe_result
-                            logger.info("low_cost_model_preloaded", model=low_cost_model)
-                        except Exception as exc:
-                            logger.warning(
-                                "low_cost_model_preload_failed",
-                                model=low_cost_model,
-                                error=str(exc),
-                            )
-
-                model_router = ModelRouter(
-                    config=config.model_routing,
-                    registry=model_registry,
-                    client=retrieval_llm,
-                    embedding_model=config.model_registry.embedding_model,
+                retrieval_proto = cast(RetrievalClientProtocol, retrieval_client)
+                model_registry = ModelRegistry(
+                    config.model_registry, retrieval_proto,
                 )
-                await model_router.initialize()
-                logger.info("model_router_initialized")
+                await model_registry.initialize()
             except Exception as exc:
-                logger.warning("model_router_init_failed", error=str(exc))
-                model_router = None
+                logger.warning("model_registry_init_failed", error=str(exc))
+                model_registry = None
 
-        if llm_provider == "lemonade" and config.rag.enabled:
+        # 기본 모델(gpt-oss-20b-NPU) 선로드 — 상주 보장
+        if llm_provider == "lemonade":
+            default_model = config.model_registry.default_model
+            prepare_model = getattr(llm, "prepare_model", None)
+            if callable(prepare_model):
+                try:
+                    maybe_result = prepare_model(
+                        model=default_model,
+                        role="default",
+                    )
+                    if inspect.isawaitable(maybe_result):
+                        await maybe_result
+                    logger.info("default_model_preloaded", model=default_model)
+                except Exception as exc:
+                    logger.warning(
+                        "default_model_preload_failed",
+                        model=default_model,
+                        error=str(exc),
+                    )
+
+        # RAG 파이프라인 초기화 (Ollama retrieval 클라이언트 사용)
+        if config.rag.enabled and retrieval_client is not None:
             try:
                 from core.rag.context_builder import RAGContextBuilder
                 from core.rag.indexer import RAGIndexer
@@ -473,21 +500,22 @@ async def _build_runtime(
                 from core.rag.reranker import RAGReranker
                 from core.rag.retriever import RAGRetriever
 
-                retrieval_llm = cast(RetrievalClientProtocol, llm)
+                retrieval_proto = cast(RetrievalClientProtocol, retrieval_client)
                 index_dir = config.rag.index_dir or str(
                     Path(config.data_dir) / "rag_index"
                 )
                 rag_db_path = Path(index_dir) / "rag.db"
 
                 indexer = RAGIndexer(
-                    config.rag, retrieval_llm, config.model_registry.embedding_model,
+                    config.rag,
+                    retrieval_proto,
+                    config.retrieval_provider.embedding_model,
                 )
                 await indexer.initialize(str(rag_db_path))
                 cleanup_stack.push_async_callback(indexer.close)
 
                 # 시작 시 인덱싱
                 configured_kb_dirs = list(config.rag.kb_dirs)
-                # 중복/빈 경로 제거 (순서 유지)
                 seen_dirs: set[str] = set()
                 corpus_roots: list[str] = []
                 for root_dir in configured_kb_dirs:
@@ -546,12 +574,13 @@ async def _build_runtime(
                     logger.warning("rag_kb_dirs_empty_or_missing")
 
                 retriever = RAGRetriever(
-                    indexer, retrieval_llm, config.model_registry.embedding_model,
+                    indexer,
+                    retrieval_proto,
+                    config.retrieval_provider.embedding_model,
                 )
 
                 reranker = None
                 if config.rag.rerank_enabled:
-                    # model_registry가 있으면 가용성 확인
                     reranker_available = True
                     if model_registry is not None:
                         try:
@@ -560,7 +589,9 @@ async def _build_runtime(
                             reranker_available = False
                     if reranker_available:
                         reranker = RAGReranker(
-                            retrieval_llm, config.model_registry.reranker_model, config.rag,
+                            retrieval_proto,
+                            config.retrieval_provider.reranker_model,
+                            config.rag,
                         )
 
                 rag_pipeline = RAGPipeline(
@@ -585,7 +616,7 @@ async def _build_runtime(
             semantic_cache=semantic_cache,
             intent_router=intent_router,
             context_compressor=context_compressor,
-            model_router=model_router,
+            model_router=None,
             rag_pipeline=rag_pipeline,
         )
 
