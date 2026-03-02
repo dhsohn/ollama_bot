@@ -197,7 +197,10 @@ async def stream_and_render(
     elif stop_reason == "stream_timeout":
         notice = "⚠️ 응답 생성 시간이 초과되어 중단되었습니다. 질문 범위를 줄여 다시 시도해주세요."
     elif stop_reason == "max_total_chars":
-        notice = "⚠️ 응답이 너무 길어 중단되었습니다. 더 구체적으로 질문해 주세요."
+        notice = (
+            "⚠️ 응답이 길어서 여기서 끊었습니다. "
+            "`/continue` 또는 `계속`이라고 입력하면 이어서 보여드릴게요."
+        )
     elif stop_reason == "repeated_chunks":
         notice = "⚠️ 반복 출력이 감지되어 스트리밍을 중단했습니다. 다시 시도해주세요."
     if stop_reason is not None:

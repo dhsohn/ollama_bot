@@ -326,7 +326,7 @@ def test_partial_lemonade_section_preserves_defaults(tmp_path: Path) -> None:
     assert settings.lemonade.default_model == "custom-model"
     assert settings.lemonade.host == "http://host.docker.internal:8000"
     assert settings.lemonade.temperature == 0.7
-    assert settings.lemonade.max_tokens == 2048
+    assert settings.lemonade.max_tokens == 4096
 
 
 def test_partial_feedback_section_preserves_defaults(tmp_path: Path) -> None:

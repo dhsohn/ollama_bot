@@ -505,6 +505,81 @@ class TestHandleMessage:
         message.reply_text.assert_has_awaits([call(expected_placeholder), call("SAME")])
 
     @pytest.mark.asyncio
+    async def test_handle_message_continue_without_pending_shows_notice(
+        self,
+        telegram_handler: TelegramHandler,
+    ) -> None:
+        chat = MagicMock()
+        chat.id = 111
+        chat.type = "private"
+        chat.send_action = AsyncMock()
+
+        message = MagicMock()
+        message.text = "계속"
+        message.reply_text = AsyncMock()
+
+        update = MagicMock()
+        update.effective_chat = chat
+        update.effective_message = message
+
+        await telegram_handler._handle_message(update, MagicMock())
+
+        message.reply_text.assert_awaited_once_with("이어볼 답변이 없습니다. 먼저 질문을 해주세요.")
+        telegram_handler._engine.process_message_stream.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_handle_message_stores_pending_continuation_when_truncated(
+        self,
+        app_config: AppSettings,
+        mock_engine: AsyncMock,
+        security: SecurityManager,
+    ) -> None:
+        handler = TelegramHandler(config=app_config, engine=mock_engine, security=security)
+
+        async def _stream():
+            yield "긴"
+
+        handler._engine.process_message_stream = MagicMock(return_value=_stream())
+
+        chat = MagicMock()
+        chat.id = 111
+        chat.type = "private"
+        chat.send_action = AsyncMock()
+
+        sent_message = MagicMock()
+        sent_message.edit_text = AsyncMock()
+        sent_message.message_id = 42
+        sent_message.edit_reply_markup = AsyncMock()
+
+        message = MagicMock()
+        message.text = "매우 긴 설명 부탁해"
+        message.reply_text = AsyncMock(return_value=sent_message)
+
+        update = MagicMock()
+        update.effective_chat = chat
+        update.effective_message = message
+
+        async def fake_stream_and_render(**kwargs):
+            return SimpleNamespace(
+                full_response="핵심 요점 1\n핵심 요점 2\n핵심 요점 3",
+                last_message=sent_message,
+                stop_reason="max_total_chars",
+                tier="full",
+                intent=None,
+                cache_id=None,
+                usage=None,
+            )
+
+        with patch("core.telegram_handler.stream_and_render", new=fake_stream_and_render):
+            await handler._handle_message(update, MagicMock())
+
+        assert 111 in handler._pending_continuation
+        assert handler._pending_continuation[111]["root_query"] == "매우 긴 설명 부탁해"
+        followup_text = message.reply_text.await_args_list[-1].args[0]
+        assert "지금까지 요약" in followup_text
+        assert "/continue" in followup_text
+
+    @pytest.mark.asyncio
     async def test_handle_message_passes_configured_max_edit_length(
         self,
         app_config: AppSettings,

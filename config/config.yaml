@@ -14,7 +14,7 @@ lemonade:
   default_model: "gpt-oss-20b-NPU"
   base_path: "/api/v1"
   temperature: 0.7
-  max_tokens: 2048
+  max_tokens: 4096
   prompt_version: "v1"
   system_prompt: |
     당신은 유용한 AI 어시스턴트입니다.
@@ -116,11 +116,11 @@ ollama:
 
 rag:
   enabled: true
-  startup_index_enabled: false
+  startup_index_enabled: true
   kb_dirs:
     - "/app/orca_runs"
     - "/app/orca_outputs"
-  max_file_size_mb: 2
+  max_file_size_mb: 5
   trigger_keywords:
     - "문서"
     - "프로젝트"
@@ -134,17 +134,35 @@ rag:
     - "지식베이스"
     - "kb"
     - "검색해"
-  chunk_min_tokens: 500
-  chunk_max_tokens: 1200
+    - "찾아"
+    - "파일"
+    - "어디"
+    - "뭐였"
+    - "알려줘"
+    - "내용"
+    - "코드"
+    - "함수"
+    - "클래스"
+    - "설정"
+  chunk_min_tokens: 400
+  chunk_max_tokens: 900
   chunk_overlap_ratio: 0.15
   retrieve_k0: 40
   rerank_enabled: true
-  rerank_topk: 8
+  rerank_topk: 6
   rerank_budget_ms: 1200
-  retrieval_score_floor: 0.3
+  retrieval_score_floor: 0.25
   supported_extensions:
     - ".md"
     - ".json"
     - ".py"
     - ".js"
     - ".ts"
+    - ".txt"
+    - ".yaml"
+    - ".yml"
+    - ".cfg"
+    - ".ini"
+    - ".toml"
+    - ".sh"
+    - ".pdf"

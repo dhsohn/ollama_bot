@@ -60,9 +60,15 @@ _STREAM_REASONING_FIRST_CHUNK_TIMEOUT_SECONDS = 600.0
 _STREAM_REASONING_CHUNK_TIMEOUT_SECONDS = 60.0
 _STREAM_REASONING_MAX_SECONDS_CAP = 3600.0
 _STREAM_LONG_TIMEOUT_INTENTS = {"complex", "code"}
-_STREAM_MAX_TOTAL_CHARS = 262_144
+_STREAM_MAX_TOTAL_CHARS = 8_192
 _STREAM_MAX_REPEATED_CHUNKS = 30
 _STREAM_RENDER_WAIT_GRACE_SECONDS = 5.0
+_CONTINUATION_TTL_SECONDS = 30 * 60
+_CONTINUE_REQUEST_RE = re.compile(
+    r"^\s*(continue|more|계속|이어서|이어줘|더\s*보여줘)\s*$",
+    re.IGNORECASE,
+)
+_LONG_RESPONSE_STOP_NOTICE_PREFIX = "⚠️ 응답이 길어서 여기서 끊었습니다."
 
 # 전체 문서 분석 자동 우회 트리거(일반 채팅용)
 _FULL_SCAN_AUTO_TRIGGER_RE = re.compile(
@@ -179,6 +185,8 @@ class TelegramHandler:
         self._preview_cache: dict[tuple[int, int], dict] = {}
         # 사유 수집 대기: {chat_id: {"bot_message_id": int, "expires": float}}
         self._pending_reason: dict[int, dict] = {}
+        # 긴 응답 이어보기 대기: {chat_id: {"root_query": str, "turn": int, "expires": float}}
+        self._pending_continuation: dict[int, dict[str, Any]] = {}
 
     def set_scheduler(self, scheduler) -> None:
         """auto_scheduler 참조를 설정한다 (순환 의존 방지)."""
@@ -207,6 +215,7 @@ class TelegramHandler:
             CommandHandler("memory", self._cmd_memory),
             CommandHandler("status", self._cmd_status),
             CommandHandler("analyze_all", self._cmd_analyze_all),
+            CommandHandler("continue", self._cmd_continue),
         ]
         if self._feedback_enabled:
             handlers.append(CommandHandler("feedback", self._cmd_feedback))
@@ -222,6 +231,7 @@ class TelegramHandler:
             BotCommand("memory", "메모리 관리"),
             BotCommand("status", "시스템 상태"),
             BotCommand("analyze_all", "전체 문서 분석"),
+            BotCommand("continue", "긴 답변 이어보기"),
         ]
         if self._feedback_enabled:
             commands.append(BotCommand("feedback", "피드백 통계"))
@@ -299,6 +309,7 @@ class TelegramHandler:
             "/memory — 메모리 관리",
             "/status — 시스템 상태",
             "/analyze_all — RAG 전체 문서 분석",
+            "/continue — 긴 답변 이어보기",
         ]
         if self._feedback_enabled:
             command_lines.insert(6, "/feedback — 피드백 통계")
@@ -354,6 +365,16 @@ class TelegramHandler:
 
         await update.effective_message.reply_text(  # type: ignore[union-attr]
             "\n".join(lines), parse_mode=ParseMode.HTML
+        )
+
+    @_auth_required
+    @_global_slot_required
+    async def _cmd_continue(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await self._handle_message_impl(
+            update,
+            context,
+            text_override="",
+            force_continuation=True,
         )
 
     @_auth_required
@@ -771,14 +792,21 @@ class TelegramHandler:
         """자유 텍스트 메시지를 처리한다. 스트리밍 UX를 제공한다."""
         await self._handle_message_impl(update, context)
 
-    async def _handle_message_impl(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    async def _handle_message_impl(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        *,
+        text_override: str | None = None,
+        force_continuation: bool = False,
+    ) -> None:
         """자유 텍스트 메시지를 처리한다. 스트리밍 UX를 제공한다."""
         chat = update.effective_chat
         message = update.effective_message
         if chat is None or message is None:
             return
         chat_id = chat.id
-        raw_text = message.text or message.caption or ""
+        raw_text = text_override if text_override is not None else (message.text or message.caption or "")
 
         # 이미지 처리
         images: list[bytes] | None = None
@@ -797,7 +825,7 @@ class TelegramHandler:
                     error=str(exc),
                 )
 
-        if not raw_text and not images:
+        if not raw_text and not images and not force_continuation:
             if image_download_failed:
                 await message.reply_text(
                     "이미지 다운로드에 실패했어요. 잠시 후 다시 시도해주세요."
@@ -806,11 +834,25 @@ class TelegramHandler:
 
         # 입력 정제
         text = self._security.sanitize_input(raw_text) if raw_text else ""
+        self._cleanup_pending_continuations()
+        continuation_state: dict[str, Any] | None = None
+        continuation_root_query: str | None = None
+        if force_continuation or (not images and self._is_continue_request(text)):
+            continuation_state = self._take_pending_continuation(chat_id)
+            if continuation_state is None:
+                await message.reply_text("이어볼 답변이 없습니다. 먼저 질문을 해주세요.")
+                return
+            continuation_root_query = str(continuation_state.get("root_query", "")).strip()
+            text = self._build_continuation_prompt(continuation_state)
+        else:
+            # 새 질문이 들어오면 이전 이어보기 상태는 정리한다.
+            self._pending_continuation.pop(chat_id, None)
+
         if not text.strip() and not images:
             return
 
         # 전체 문서 분석 의도가 명확하면 일반 RAG(top-k) 대신 full-scan 경로로 우회한다.
-        if not images and self._should_auto_trigger_analyze_all(text):
+        if continuation_state is None and not images and self._should_auto_trigger_analyze_all(text):
             self._logger.info("analyze_all_auto_triggered", chat_id=chat_id)
             await self._run_analyze_all_flow(
                 chat=chat,
@@ -993,6 +1035,23 @@ class TelegramHandler:
                     result.full_response,
                 )
 
+            stop_reason = getattr(result, "stop_reason", None)
+            if stop_reason == "max_total_chars":
+                next_turn = 1
+                if continuation_state is not None:
+                    next_turn = max(1, int(continuation_state.get("turn", 0)) + 1)
+                root_query = (continuation_root_query or "").strip() or text
+                self._set_pending_continuation(
+                    chat_id,
+                    root_query=root_query,
+                    turn=next_turn,
+                )
+                await message.reply_text(
+                    self._build_long_response_followup_message(result.full_response)
+                )
+            else:
+                self._pending_continuation.pop(chat_id, None)
+
         except asyncio.TimeoutError:
             self._logger.error(
                 "stream_render_timeout",
@@ -1020,6 +1079,106 @@ class TelegramHandler:
                 pass
 
     @staticmethod
+    def _is_continue_request(text: str) -> bool:
+        return bool(_CONTINUE_REQUEST_RE.match(text.strip()))
+
+    def _cleanup_pending_continuations(self) -> None:
+        if not self._pending_continuation:
+            return
+        now = time.monotonic()
+        expired_chat_ids = [
+            chat_id
+            for chat_id, pending in self._pending_continuation.items()
+            if now > float(pending.get("expires", 0.0))
+        ]
+        for chat_id in expired_chat_ids:
+            del self._pending_continuation[chat_id]
+
+    def _take_pending_continuation(self, chat_id: int) -> dict[str, Any] | None:
+        self._cleanup_pending_continuations()
+        pending = self._pending_continuation.get(chat_id)
+        if pending is None:
+            return None
+        del self._pending_continuation[chat_id]
+        return pending
+
+    def _set_pending_continuation(
+        self,
+        chat_id: int,
+        *,
+        root_query: str,
+        turn: int,
+    ) -> None:
+        self._cleanup_pending_continuations()
+        self._pending_continuation[chat_id] = {
+            "root_query": root_query,
+            "turn": max(1, turn),
+            "expires": time.monotonic() + _CONTINUATION_TTL_SECONDS,
+        }
+
+    @staticmethod
+    def _build_continuation_prompt(pending: dict[str, Any]) -> str:
+        root_query = str(pending.get("root_query", "")).strip()
+        turn = max(1, int(pending.get("turn", 1)))
+        return (
+            "직전 답변을 이어서 작성해줘.\n"
+            "- 이미 설명한 내용은 반복하지 말고 중단 지점부터 이어서 설명해줘.\n"
+            "- 먼저 3줄 이내로 지금까지 핵심을 요약해줘.\n"
+            "- 답변이 다시 길어지면 마지막 줄에 '계속하려면 계속이라고 입력해주세요.'를 적어줘.\n"
+            f"- 이어보기 턴: {turn}\n"
+            f"[원 질문]\n{root_query}"
+        ).strip()
+
+    @staticmethod
+    def _truncate_summary_line(text: str, *, max_chars: int) -> str:
+        if len(text) <= max_chars:
+            return text
+        return text[: max_chars - 3].rstrip() + "..."
+
+    @classmethod
+    def _extract_summary_points(cls, text: str, *, max_points: int = 3) -> list[str]:
+        content = text.strip()
+        marker = f"\n\n{_LONG_RESPONSE_STOP_NOTICE_PREFIX}"
+        if marker in content:
+            content = content.split(marker, 1)[0].strip()
+        elif content.startswith(_LONG_RESPONSE_STOP_NOTICE_PREFIX):
+            content = ""
+
+        points: list[str] = []
+        seen: set[str] = set()
+        for raw_line in content.splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("```"):
+                continue
+            line = re.sub(r"^(?:[-*•]|\d+[.)])\s*", "", line).strip()
+            if len(line) < 8:
+                continue
+            key = line.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            points.append(cls._truncate_summary_line(line, max_chars=140))
+            if len(points) >= max_points:
+                return points
+
+        collapsed = " ".join(part.strip() for part in content.splitlines() if part.strip())
+        if collapsed:
+            points.append(cls._truncate_summary_line(collapsed, max_chars=180))
+        return points
+
+    @classmethod
+    def _build_long_response_followup_message(cls, response_text: str) -> str:
+        points = cls._extract_summary_points(response_text, max_points=3)
+        if points:
+            summary = "\n".join(f"- {point}" for point in points)
+            return (
+                "📌 지금까지 요약\n"
+                f"{summary}\n\n"
+                "계속 보려면 /continue 또는 '계속'이라고 입력하세요."
+            )
+        return "응답이 길어서 여기서 끊었습니다. /continue 또는 '계속'이라고 입력하면 이어서 보여드릴게요."
+
+    @staticmethod
     async def _keep_typing(chat: Any, stop_event: asyncio.Event) -> None:
         """typing 인디케이터를 주기적으로 전송한다."""
         while not stop_event.is_set():
@@ -1038,6 +1197,7 @@ class TelegramHandler:
     def _cleanup_preview_cache(self) -> None:
         """프리뷰 캐시의 TTL 만료 항목을 정리하고 크기 제한을 유지한다."""
         self._cleanup_pending_reasons()
+        self._cleanup_pending_continuations()
         max_size = self._config.feedback.preview_cache_max_size
         ttl_hours = self._config.feedback.preview_cache_ttl_hours
         if max_size <= 0 or ttl_hours <= 0:

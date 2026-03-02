@@ -41,7 +41,7 @@ class LemonadeConfig(BaseModel):
     default_model: str = "gpt-oss-20b-NPU"
     base_path: str = "/api/v1"
     temperature: float = 0.7
-    max_tokens: int = 2048
+    max_tokens: int = 4096
     prompt_version: str = "v1"
     system_prompt: str = (
         "당신은 유용한 AI 어시스턴트입니다.\n"

@@ -31,7 +31,7 @@ routes:
     strategy:
       max_history: 5
       include_dicl: false
-      max_tokens: 1024
+      max_tokens: 1536
 
   # ── 코드 관련 ──
   - name: "code"
@@ -44,6 +44,7 @@ routes:
     strategy:
       max_history: 15
       include_dicl: true
+      max_tokens: 4096
       system_prompt_suffix: |
         코드 응답 시 간결한 코드와 핵심 설명만 제공하세요.
 
@@ -58,3 +59,4 @@ routes:
       max_history: 50
       include_dicl: true
       include_preferences: true
+      max_tokens: 4096
