@@ -569,7 +569,7 @@ class TelegramHandler:
     @_global_slot_required
     async def _cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         status = await self._engine.get_status()
-        llm = status.get("llm", status["ollama"])
+        llm = status["llm"]
         llm_status = "🟢 정상" if llm.get("status") == "ok" else "🔴 오류"
 
         text = (

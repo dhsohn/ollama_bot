@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Sequence
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml

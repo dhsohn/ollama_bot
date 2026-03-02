@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from core.config import OllamaConfig
-from core.llm_types import ChatResponse, ChatStreamState
+from core.llm_types import ChatStreamState
 from core.ollama_client import (
     OllamaClient,
     OllamaClientError,

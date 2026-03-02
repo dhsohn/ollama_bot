@@ -2364,7 +2364,6 @@ class Engine:
         status = {
             "uptime_seconds": int(uptime_seconds),
             "uptime_human": self._format_uptime(uptime_seconds),
-            "ollama": llm_health,
             "llm": llm_health,
             "skills_loaded": self._skills.skill_count,
             "current_model": self._llm_client.default_model,

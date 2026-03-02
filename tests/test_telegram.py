@@ -42,7 +42,7 @@ def mock_engine() -> AsyncMock:
     engine.get_status = AsyncMock(return_value={
         "uptime_seconds": 100,
         "uptime_human": "1분 40초",
-        "ollama": {"status": "ok"},
+        "llm": {"status": "ok"},
         "skills_loaded": 3,
         "current_model": "test-model",
     })
@@ -1326,7 +1326,7 @@ class TestFeedbackButtons:
         feedback_handler._engine.get_status = AsyncMock(return_value={
             "uptime_seconds": 100,
             "uptime_human": "1분 40초",
-            "ollama": {"status": "ok"},
+            "llm": {"status": "ok"},
             "skills_loaded": 3,
             "current_model": "test-model",
             "degraded_components": {

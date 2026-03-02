@@ -494,7 +494,6 @@ class LemonadeClient:
         )
         state = stream_state or ChatStreamState()
         state.usage = None
-        emitted_content = False
         stream_started = time.monotonic()
         last_content_chunk: str | None = None
         last_fallback_snapshot: str | None = None
@@ -555,7 +554,6 @@ class LemonadeClient:
                         else:
                             last_content_chunk = content
                             repeated_content_count = 0
-                        emitted_content = True
                         yield content
                         if finish_reason:
                             break
@@ -592,7 +590,6 @@ class LemonadeClient:
                         else:
                             last_content_chunk = fallback_content
                             repeated_content_count = 0
-                        emitted_content = True
                         yield fallback_content
                         if finish_reason:
                             break

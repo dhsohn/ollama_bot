@@ -76,7 +76,6 @@ class RAGRetriever:
 
         # 3) 청크 일괄 조회
         row_ids = [rid for rid, _ in search_results]
-        score_map = dict(search_results)
         chunks = await self._indexer.get_chunks_by_ids(row_ids)
 
         # row_id → chunk 매핑 (순서 보존)

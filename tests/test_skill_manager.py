@@ -8,7 +8,7 @@ import pytest
 
 from core.security import SecurityManager
 from core.config import SecurityConfig
-from core.skill_manager import SkillManager, SkillDefinition
+from core.skill_manager import SkillManager
 
 
 @pytest.fixture

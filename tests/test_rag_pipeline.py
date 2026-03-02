@@ -18,7 +18,7 @@ from core.rag.context_builder import RAGContextBuilder
 from core.rag.indexer import RAGIndexer
 from core.rag.pipeline import RAGPipeline
 from core.rag.retriever import RAGRetriever
-from core.rag.types import ChunkMetadata, RAGResult, RAGTrace, RetrievedItem, Chunk
+from core.rag.types import ChunkMetadata, RAGTrace, RetrievedItem, Chunk
 
 
 @pytest.fixture

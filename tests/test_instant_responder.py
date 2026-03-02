@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from core.instant_responder import InstantResponder, InstantMatch
+from core.instant_responder import InstantResponder
 
 
 @pytest.fixture

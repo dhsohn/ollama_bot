@@ -90,10 +90,6 @@ def _is_truthy(value: str | None) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _normalize_provider(value: str) -> str:
-    return value.strip().lower()
-
-
 def _runtime_env_files() -> str | tuple[str, ...] | None:
     """런타임에서 사용할 env 파일 목록을 결정한다."""
     env_files_csv = os.environ.get("APP_ENV_FILES", "").strip()
@@ -113,28 +109,7 @@ def _runtime_env_files() -> str | tuple[str, ...] | None:
     return ".env"
 
 
-def _resolve_provider(
-    logger: Any,
-    forced_provider: str | None,
-) -> str:
-    """실행 대상 provider를 결정한다. 현재 chat provider는 lemonade 고정이다."""
-    configured = "lemonade"
-    if forced_provider is None:
-        return configured
-
-    chosen = _normalize_provider(forced_provider)
-    if chosen != configured:
-        if chosen:
-            raise StartupError(
-                f"오류: provider='{chosen}' 는 더 이상 지원되지 않습니다. "
-                "chat provider는 lemonade로 고정입니다."
-            )
-        return configured
-    return chosen
-
-
-def _model_for_provider(config: AppSettings, provider: str) -> str:
-    _ = provider
+def _model_for_provider(config: AppSettings) -> str:
     return config.lemonade.default_model
 
 
@@ -741,7 +716,6 @@ async def _shutdown_runtime(
 async def async_main(
     *,
     app_name: str,
-    forced_provider: str | None = None,
 ) -> None:
     """비동기 메인 루프."""
     if not _is_running_in_container() and not _is_truthy(os.environ.get(_ALLOW_LOCAL_RUN_ENV)):
@@ -784,7 +758,6 @@ async def async_main(
 
     try:
         _validate_required_settings(config, logger)
-        _resolve_provider(logger, forced_provider)
         runtime = await _build_runtime(config, logger)
     except StartupError as exc:
         print(exc.message, file=sys.stderr)
@@ -842,7 +815,7 @@ async def async_main(
             logger.info(
                 "bot_running",
                 provider=runtime.llm_provider,
-                model=_model_for_provider(runtime.config, runtime.llm_provider),
+                model=_model_for_provider(runtime.config),
                 skills=runtime.skill_count,
                 automations=runtime.auto_count,
             )
@@ -867,10 +840,9 @@ async def async_main(
 def run_app(
     *,
     app_name: str,
-    forced_provider: str | None = None,
 ) -> None:
     """동기 진입점 래퍼."""
     try:
-        asyncio.run(async_main(app_name=app_name, forced_provider=forced_provider))
+        asyncio.run(async_main(app_name=app_name))
     except KeyboardInterrupt:
         pass

@@ -168,7 +168,7 @@ class AutoEvaluator:
                     timeout=30,
                 )
                 raw = chat_response.content
-            except Exception as exc:
+            except Exception:
                 self._consecutive_failures += 1
                 if self._consecutive_failures >= 3:
                     self._cooldown_until = time.monotonic() + self._config.cooldown_seconds

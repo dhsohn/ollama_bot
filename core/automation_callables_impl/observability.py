@@ -156,30 +156,30 @@ def build_health_check_callable(
 
         try:
             status = await engine.get_status()
-            ollama_info = status.get("ollama", {})
-            if ollama_info.get("status") == "ok":
-                models_count = ollama_info.get("models_count", 0)
-                default_available = ollama_info.get(
+            llm_info = status.get("llm", {})
+            if llm_info.get("status") == "ok":
+                models_count = llm_info.get("models_count", 0)
+                default_available = llm_info.get(
                     "default_model_available", False,
                 )
                 if not default_available:
                     has_issue = True
                     lines.append(
-                        f"⚠️ Ollama: 기본 모델 사용 불가 "
+                        f"⚠️ LLM: 기본 모델 사용 불가 "
                         f"(모델 {models_count}개)"
                     )
                 else:
                     lines.append(
-                        f"✅ Ollama: 정상 "
+                        f"✅ LLM: 정상 "
                         f"(모델 {models_count}개, 기본 모델 사용 가능)"
                     )
             else:
                 has_issue = True
-                error_msg = ollama_info.get("error", "알 수 없는 오류")
-                lines.append(f"🔴 Ollama: 오류 ({error_msg})")
+                error_msg = llm_info.get("error", "알 수 없는 오류")
+                lines.append(f"🔴 LLM: 오류 ({error_msg})")
         except Exception as exc:
             has_issue = True
-            lines.append(f"🔴 Ollama: 연결 실패 ({exc})")
+            lines.append(f"🔴 LLM: 연결 실패 ({exc})")
 
         try:
             ok = await memory.ping()

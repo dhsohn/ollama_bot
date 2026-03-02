@@ -16,7 +16,7 @@ from core.engine import Engine
 from core.memory import MemoryManager
 from core.llm_types import ChatResponse, ChatUsage
 from core.rag.types import Chunk, ChunkMetadata, RAGResult, RAGTrace
-from core.skill_manager import SkillDefinition, SecurityLevel, SkillManager
+from core.skill_manager import SkillDefinition, SkillManager
 
 
 @pytest.fixture
@@ -1168,8 +1168,8 @@ class TestGetStatus:
     async def test_get_status(self, engine: Engine) -> None:
         status = await engine.get_status()
         assert "uptime_seconds" in status
-        assert "ollama" in status
-        assert status["ollama"]["status"] == "ok"
+        assert "llm" in status
+        assert status["llm"]["status"] == "ok"
         assert status["skills_loaded"] == 3
         assert "optimization_tiers" in status
         assert "degraded_components" in status

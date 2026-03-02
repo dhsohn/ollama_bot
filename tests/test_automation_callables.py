@@ -13,10 +13,7 @@ import pytest_asyncio
 from core.auto_scheduler import AutoAction, AutoDefinition, AutoScheduler
 from core.automation_callables import (
     _DAILY_SUMMARY_SCHEMA,
-    _FEEDBACK_ANALYSIS_SCHEMA,
-    _MEMORY_HYGIENE_SCHEMA,
     _PREFERENCES_SCHEMA,
-    _STALE_EVALUATION_SCHEMA,
     _TRIAGE_SCHEMA,
     register_builtin_callables,
 )
@@ -969,7 +966,7 @@ def _ok_status() -> dict:
     return {
         "uptime_seconds": 3600,
         "uptime_human": "1시간 0분 0초",
-        "ollama": {
+        "llm": {
             "status": "ok",
             "host": "http://localhost:11434",
             "models_count": 3,
@@ -1006,16 +1003,16 @@ class TestHealthCheckCallable:
         app_settings: AppSettings,
         memory_manager: MemoryManager,
     ) -> None:
-        """Ollama 상태 error 시 보고서에 포함된다."""
+        """LLM 상태 error 시 보고서에 포함된다."""
         status = _ok_status()
-        status["ollama"] = {"status": "error", "error": "connection refused"}
+        status["llm"] = {"status": "error", "error": "connection refused"}
         engine = AsyncMock()
         engine.get_status = AsyncMock(return_value=status)
         _setup_callables(scheduler, engine, memory_manager, app_settings)
 
         result = await scheduler._run_action(_health_check_auto())
 
-        assert "Ollama" in result
+        assert "LLM" in result
         assert "오류" in result
         assert "connection refused" in result
 
@@ -1028,7 +1025,7 @@ class TestHealthCheckCallable:
     ) -> None:
         """기본 모델 사용 불가 시 경고가 포함된다."""
         status = _ok_status()
-        status["ollama"]["default_model_available"] = False
+        status["llm"]["default_model_available"] = False
         engine = AsyncMock()
         engine.get_status = AsyncMock(return_value=status)
         _setup_callables(scheduler, engine, memory_manager, app_settings)
@@ -1118,7 +1115,7 @@ class TestHealthCheckCallable:
     ) -> None:
         """복합 장애 시 모든 항목이 보고서에 포함된다."""
         status = _ok_status()
-        status["ollama"] = {"status": "error", "error": "timeout"}
+        status["llm"] = {"status": "error", "error": "timeout"}
         engine = AsyncMock()
         engine.get_status = AsyncMock(return_value=status)
         _setup_callables(scheduler, engine, memory_manager, app_settings)
@@ -1136,7 +1133,7 @@ class TestHealthCheckCallable:
 
         result = await scheduler._run_action(_health_check_auto())
 
-        assert "Ollama" in result
+        assert "LLM" in result
         assert "오류 로그" in result
         assert "시스템 상태 점검" in result
 
@@ -1762,7 +1759,7 @@ class TestFeedbackAnalysisCallable:
         engine.process_prompt = AsyncMock(return_value=json.dumps(payload, ensure_ascii=False))
         _setup_callables_with_feedback(scheduler, engine, memory_manager, app_settings, feedback_manager)
 
-        result = await scheduler._run_action(_feedback_analysis_auto(max_guidelines=3))
+        await scheduler._run_action(_feedback_analysis_auto(max_guidelines=3))
 
         guidelines = await memory_manager.recall_memory(111, category="feedback_guidelines")
         assert len(guidelines) == 3
