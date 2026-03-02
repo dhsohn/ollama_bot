@@ -211,7 +211,6 @@ class TelegramHandler:
             CommandHandler("help", self._cmd_help),
             CommandHandler("skills", self._cmd_skills),
             CommandHandler("auto", self._cmd_auto),
-            CommandHandler("model", self._cmd_model),
             CommandHandler("memory", self._cmd_memory),
             CommandHandler("status", self._cmd_status),
             CommandHandler("analyze_all", self._cmd_analyze_all),
@@ -227,7 +226,6 @@ class TelegramHandler:
             BotCommand("help", "도움말"),
             BotCommand("skills", "스킬 목록"),
             BotCommand("auto", "자동화 관리"),
-            BotCommand("model", "모델 관리"),
             BotCommand("memory", "메모리 관리"),
             BotCommand("status", "시스템 상태"),
             BotCommand("analyze_all", "전체 문서 분석"),
@@ -292,7 +290,7 @@ class TelegramHandler:
     async def _cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         welcome = (
             f"안녕하세요! {self._config.bot.name} 입니다.\n\n"
-            "로컬 LLM(Ollama) 기반 AI 어시스턴트입니다.\n"
+            "Dual-Provider(Lemonade + Ollama retrieval) 기반 AI 어시스턴트입니다.\n"
             "자유롭게 대화하거나, /help 명령으로 도움말을 확인하세요."
         )
         await update.effective_message.reply_text(welcome)  # type: ignore[union-attr]
@@ -305,7 +303,6 @@ class TelegramHandler:
             "/help — 이 도움말 표시",
             "/skills — 스킬 목록/리로드",
             "/auto — 자동화 관리/리로드",
-            "/model — 모델 확인/변경",
             "/memory — 메모리 관리",
             "/status — 시스템 상태",
             "/analyze_all — RAG 전체 문서 분석",
@@ -475,58 +472,6 @@ class TelegramHandler:
             return
         await update.effective_message.reply_text(
             f"'{name}' 자동화 실행에 실패했습니다. 로그를 확인하세요."
-        )
-
-    @_auth_required
-    @_global_slot_required
-    async def _cmd_model(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        chat_id = update.effective_chat.id  # type: ignore[union-attr]
-        args = context.args or []
-        if not args:
-            await self._show_current_model(update)
-            return
-
-        await self._change_model(update, chat_id, args[0])
-
-    async def _show_current_model(self, update: Update) -> None:
-        current = self._engine.get_current_model()
-        retrieval = self._config.ollama
-        await update.effective_message.reply_text(  # type: ignore[union-attr]
-            "🤖 <b>모델 설정</b>\n\n"
-            f"기본 응답 모델: <code>{self._escape_html(current)}</code>\n\n"
-            "<b>Retrieval 모델 (Ollama)</b>\n"
-            f"- embedding: <code>{self._escape_html(retrieval.embedding_model)}</code>\n"
-            f"- reranker: <code>{self._escape_html(retrieval.reranker_model)}</code>\n\n"
-            "모델 변경: <code>/model &lt;모델명&gt;</code>",
-            parse_mode=ParseMode.HTML,
-        )
-
-    async def _change_model(self, update: Update, chat_id: int, requested_model: str) -> None:
-        try:
-            result = await self._engine.change_model(requested_model)
-        except Exception as exc:
-            self._logger.error(
-                "model_change_failed",
-                chat_id=chat_id,
-                requested_model=requested_model,
-                error=str(exc),
-            )
-            await update.effective_message.reply_text(  # type: ignore[union-attr]
-                "모델 변경 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요."
-            )
-            return
-
-        if result["success"]:
-            await update.effective_message.reply_text(  # type: ignore[union-attr]
-                "모델 변경: "
-                f"<code>{self._escape_html(result['old_model'])}</code> → "
-                f"<code>{self._escape_html(result['new_model'])}</code>",
-                parse_mode=ParseMode.HTML,
-            )
-            return
-
-        await update.effective_message.reply_text(  # type: ignore[union-attr]
-            f"모델 변경 실패: {result['error']}"
         )
 
     @_auth_required

@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from core.auto_scheduler import AutoAction, AutoDefinition, AutoScheduler
+from core.auto_scheduler import AutoAction, AutoDefinition, AutoRetry, AutoScheduler
 from core.config import AppSettings, BotConfig, MemoryConfig, LemonadeConfig, SecurityConfig, TelegramConfig
 from core.security import SecurityManager
 
@@ -70,6 +70,24 @@ class TestAutoScheduler:
         app_settings: AppSettings,
     ) -> None:
         assert str(scheduler._scheduler.timezone) == app_settings.scheduler.timezone
+
+    def test_retry_validation_rejects_non_positive_attempts(self) -> None:
+        with pytest.raises(ValueError, match="max_attempts must be >= 1"):
+            AutoRetry(max_attempts=0, delay_seconds=1)
+
+    def test_retry_validation_rejects_negative_delay(self) -> None:
+        with pytest.raises(ValueError, match="delay_seconds must be >= 0"):
+            AutoRetry(max_attempts=1, delay_seconds=-1)
+
+    def test_definition_validation_rejects_non_positive_timeout(self) -> None:
+        with pytest.raises(ValueError, match="timeout must be >= 1"):
+            AutoDefinition(
+                name="bad_timeout",
+                description="invalid timeout",
+                schedule="* * * * *",
+                action=AutoAction(type="prompt", target="ping"),
+                timeout=0,
+            )
 
     @pytest.mark.asyncio
     async def test_load_and_list_automations(self, scheduler: AutoScheduler, auto_dir: Path) -> None:

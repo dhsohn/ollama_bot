@@ -78,6 +78,20 @@ class AutoRetry(BaseModel):
     max_attempts: int = 3
     delay_seconds: int = 60
 
+    @field_validator("max_attempts")
+    @classmethod
+    def validate_max_attempts(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("max_attempts must be >= 1")
+        return value
+
+    @field_validator("delay_seconds")
+    @classmethod
+    def validate_delay_seconds(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("delay_seconds must be >= 0")
+        return value
+
 
 class AutoDefinition(BaseModel):
     """자동화 YAML 정의를 검증하는 모델."""
@@ -102,6 +116,13 @@ class AutoDefinition(BaseModel):
         except ValueError as exc:
             raise ValueError(f"Invalid cron expression: {v}") from exc
         return v
+
+    @field_validator("timeout")
+    @classmethod
+    def validate_timeout(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("timeout must be >= 1")
+        return value
 
 
 class DuplicateAutomationError(ValueError):

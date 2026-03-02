@@ -3,7 +3,7 @@
 **Dual-Provider 아키텍처** 기반 텔레그램 private-chat 봇입니다.
 
 - **Lemonade Server (8000)**: LLM 응답 전담 — `gpt-oss-20b-NPU` 단일 모델 상주
-- **Ollama Server (11434)**: 쿼리 최적화 전담 — 임베딩(`Qwen3-Embedding-0.6B-GGUF`) + 리랭킹(`bge-reranker-v2-m3-GGUF`)
+- **Ollama Server (11434)**: 쿼리 최적화 전담 — 임베딩(`dengcao/Qwen3-Embedding-0.6B:Q8_0`) + 리랭킹(`dengcao/bge-reranker-v2-m3:latest`)
 
 현재 코드베이스는 **단일 앱 구조**입니다.
 - 엔트리포인트: `apps/ollama_bot/main.py` (`main.py`는 단순 래퍼)
@@ -81,7 +81,7 @@ flowchart TD
 - 텔레그램 봇 토큰 (`@BotFather`)
 - Dual-Provider 백엔드 (Windows 호스트에서 실행)
   - **Lemonade Server** (포트 8000) — LLM 응답 (`gpt-oss-20b-NPU`)
-  - **Ollama Server** (포트 11434) — 임베딩/리랭킹 (`Qwen3-Embedding-0.6B-GGUF`, `bge-reranker-v2-m3-GGUF`)
+  - **Ollama Server** (포트 11434) — 임베딩/리랭킹 (`dengcao/Qwen3-Embedding-0.6B:Q8_0`, `dengcao/bge-reranker-v2-m3:latest`)
 
 ## 빠른 시작
 
@@ -137,6 +137,7 @@ ALLOWED_TELEGRAM_USERS=123456789
 - `ALLOWED_TELEGRAM_USERS`는 **숫자 Chat ID CSV**만 허용됩니다.
 - placeholder(`your_telegram_chat_id_here`) 상태면 시작 시 fail-fast로 종료됩니다.
 - 런타임 일반 설정(model/host/log/data_dir 등)은 `config/config.yaml`에서 관리합니다.
+- 모델 변경은 텔레그램 명령어가 아니라 서버에서 `config/config.yaml` 값을 수정한 뒤 컨테이너를 재시작하는 방식으로 운영합니다.
 
 ### 3) LLM 백엔드 준비 (Dual-Provider)
 
@@ -151,8 +152,8 @@ ALLOWED_TELEGRAM_USERS=123456789
 #### Ollama Server (쿼리 최적화)
 
 ```bash
-ollama pull Qwen3-Embedding-0.6B-GGUF
-ollama pull bge-reranker-v2-m3-GGUF
+ollama pull dengcao/Qwen3-Embedding-0.6B:Q8_0
+ollama pull dengcao/bge-reranker-v2-m3:latest
 ollama serve
 ```
 
@@ -206,8 +207,6 @@ python -m apps.cli test
 | `/auto disable <name>` | 자동화 비활성화 |
 | `/auto run <name>` | 자동화 1회 수동 실행 |
 | `/auto reload` | 자동화 strict 리로드 |
-| `/model` | Dual-Provider 모델 현황 확인 |
-| `/model <name>` | 기본 모델 전환 |
 | `/memory` | 메모리 통계 |
 | `/memory clear` | 현재 채팅 대화 기록 삭제 |
 | `/memory export` | 현재 채팅 기록 markdown 내보내기 |
@@ -343,8 +342,8 @@ lemonade:
 # 쿼리 최적화 — Ollama Server (임베딩 + 리랭킹)
 ollama:
   host: "http://host.docker.internal:11434"
-  embedding_model: "Qwen3-Embedding-0.6B-GGUF"
-  reranker_model: "bge-reranker-v2-m3-GGUF"
+  embedding_model: "dengcao/Qwen3-Embedding-0.6B:Q8_0"
+  reranker_model: "dengcao/bge-reranker-v2-m3:latest"
 ```
 
 `.env` 우선순위 관련:

@@ -7,8 +7,6 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
-from telegram.constants import ParseMode
-
 from core.config import AppSettings, BotConfig, FeedbackConfig, LemonadeConfig, SecurityConfig, MemoryConfig, TelegramConfig
 from core.security import SecurityManager, AuthenticationError, RateLimitError
 from core.telegram_handler import TelegramHandler
@@ -164,63 +162,6 @@ class TestPrivateChatOnly:
         await telegram_handler._cmd_help(update, context)
 
         assert message.reply_text.await_count == 1
-
-
-class TestModelCommand:
-    @pytest.mark.asyncio
-    async def test_model_shows_registry_roles(
-        self,
-        telegram_handler: TelegramHandler,
-        app_config: AppSettings,
-    ) -> None:
-        chat = MagicMock()
-        chat.id = 111
-        chat.type = "private"
-
-        message = MagicMock()
-        message.reply_text = AsyncMock()
-
-        update = MagicMock()
-        update.effective_chat = chat
-        update.effective_message = message
-
-        context = MagicMock()
-        context.args = []
-
-        await telegram_handler._cmd_model(update, context)
-
-        message.reply_text.assert_awaited_once()
-        sent_text = message.reply_text.await_args.args[0]
-        assert "기본 응답 모델" in sent_text
-        assert "Retrieval 모델" in sent_text
-        assert app_config.ollama.embedding_model in sent_text
-        assert app_config.ollama.reranker_model in sent_text
-        assert "/model list" not in sent_text
-        assert message.reply_text.await_args.kwargs["parse_mode"] == ParseMode.HTML
-
-    @pytest.mark.asyncio
-    async def test_model_change_error_returns_message(self, telegram_handler: TelegramHandler) -> None:
-        telegram_handler._engine.change_model = AsyncMock(side_effect=RuntimeError("failed"))
-
-        chat = MagicMock()
-        chat.id = 111
-        chat.type = "private"
-
-        message = MagicMock()
-        message.reply_text = AsyncMock()
-
-        update = MagicMock()
-        update.effective_chat = chat
-        update.effective_message = message
-
-        context = MagicMock()
-        context.args = ["new-model"]
-
-        await telegram_handler._cmd_model(update, context)
-
-        message.reply_text.assert_awaited_once_with(
-            "모델 변경 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요."
-        )
 
 
 class TestAnalyzeAllCommand:
