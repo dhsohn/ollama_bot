@@ -71,10 +71,8 @@ _CONTINUE_REQUEST_RE = re.compile(
 _LONG_RESPONSE_STOP_NOTICE_PREFIX = "⚠️ 응답이 길어서 여기서 끊었습니다."
 
 # 전체 문서 분석 자동 우회 트리거(일반 채팅용)
-_FULL_SCAN_AUTO_TRIGGER_RE = re.compile(
-    r"(전체\s*문서|전수\s*분석|전체\s*읽고|모든\s*문서)",
-    re.IGNORECASE,
-)
+# "분석" 키워드가 포함되면 전체 분석 경로를 우선 적용한다.
+_FULL_SCAN_AUTO_TRIGGER_RE = re.compile(r"분석", re.IGNORECASE)
 
 # 사용자 체감용 즉시 안내 메시지
 _THINKING_PLACEHOLDER_TEMPLATE = "{bot_name}이 답변을 위해 생각 중입니다..."
@@ -213,7 +211,6 @@ class TelegramHandler:
             CommandHandler("auto", self._cmd_auto),
             CommandHandler("memory", self._cmd_memory),
             CommandHandler("status", self._cmd_status),
-            CommandHandler("analyze_all", self._cmd_analyze_all),
             CommandHandler("continue", self._cmd_continue),
         ]
         if self._feedback_enabled:
@@ -228,7 +225,6 @@ class TelegramHandler:
             BotCommand("auto", "자동화 관리"),
             BotCommand("memory", "메모리 관리"),
             BotCommand("status", "시스템 상태"),
-            BotCommand("analyze_all", "전체 문서 분석"),
             BotCommand("continue", "긴 답변 이어보기"),
         ]
         if self._feedback_enabled:
@@ -305,24 +301,23 @@ class TelegramHandler:
             "/auto — 자동화 관리/리로드",
             "/memory — 메모리 관리",
             "/status — 시스템 상태",
-            "/analyze_all — RAG 전체 문서 분석",
             "/continue — 긴 답변 이어보기",
         ]
         if self._feedback_enabled:
             command_lines.insert(6, "/feedback — 피드백 통계")
 
         help_text = (
-            "📋 *사용 가능한 명령어*\n\n"
+            "📋 <b>사용 가능한 명령어</b>\n\n"
             + "\n".join(command_lines)
             + "\n\n"
-            "💬 *대화 모드*\n"
+            "💬 <b>대화 모드</b>\n"
             "명령어 없이 자유롭게 대화하세요.\n\n"
-            "🔧 *스킬 모드*\n"
+            "🔧 <b>스킬 모드</b>\n"
             "스킬 트리거 키워드를 사용하면 전문 기능이 활성화됩니다.\n"
             "/skills 명령으로 스킬 목록을 확인하고, /skills reload로 다시 로드할 수 있습니다."
         )
         await update.effective_message.reply_text(  # type: ignore[union-attr]
-            help_text, parse_mode=ParseMode.MARKDOWN
+            help_text, parse_mode=ParseMode.HTML
         )
 
     @_auth_required
@@ -557,28 +552,6 @@ class TelegramHandler:
             text, parse_mode=ParseMode.HTML
         )
 
-    @_auth_required
-    @_global_slot_required
-    async def _cmd_analyze_all(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """RAG 인덱스 전체를 읽어 map-reduce 분석을 수행한다."""
-        chat = update.effective_chat
-        message = update.effective_message
-        if chat is None or message is None:
-            return
-
-        args = context.args or []
-        query = " ".join(args).strip()
-        if not query:
-            await message.reply_text("사용법: /analyze_all [질문]")
-            return
-
-        await self._run_analyze_all_flow(
-            chat=chat,
-            message=message,
-            query=query,
-            auto_triggered=False,
-        )
-
     @staticmethod
     def _should_auto_trigger_analyze_all(text: str) -> bool:
         """일반 채팅에서 full-scan 분석으로 우회할 문구인지 검사한다."""
@@ -600,7 +573,7 @@ class TelegramHandler:
         """전체 문서 분석 실행 + 진행률 렌더링 공통 처리."""
         query_text = query.strip()
         if not query_text:
-            await message.reply_text("사용법: /analyze_all [질문]")
+            await message.reply_text("분석할 질문을 입력해주세요.")
             return
 
         await chat.send_action(ChatAction.TYPING)

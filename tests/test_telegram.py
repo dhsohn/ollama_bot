@@ -164,84 +164,13 @@ class TestPrivateChatOnly:
         assert message.reply_text.await_count == 1
 
 
-class TestAnalyzeAllCommand:
-    @pytest.mark.asyncio
-    async def test_analyze_all_requires_query_arg(
-        self,
-        telegram_handler: TelegramHandler,
-    ) -> None:
-        chat = MagicMock()
-        chat.id = 111
-        chat.type = "private"
+class TestCommandRegistration:
+    def test_analyze_all_command_is_not_registered(self, telegram_handler: TelegramHandler) -> None:
+        handler_names = {cmd for handler in telegram_handler._build_command_handlers() for cmd in handler.commands}
+        bot_command_names = [cmd.command for cmd in telegram_handler._build_bot_commands()]
 
-        message = MagicMock()
-        message.reply_text = AsyncMock()
-
-        update = MagicMock()
-        update.effective_chat = chat
-        update.effective_message = message
-
-        context = MagicMock()
-        context.args = []
-
-        await telegram_handler._cmd_analyze_all(update, context)
-
-        message.reply_text.assert_awaited_once_with("사용법: /analyze_all [질문]")
-
-    @pytest.mark.asyncio
-    async def test_analyze_all_runs_and_updates_progress(
-        self,
-        telegram_handler: TelegramHandler,
-    ) -> None:
-        async def _analyze(query: str, progress_callback=None):
-            assert query == "전체 문서를 분석해줘"
-            if progress_callback is not None:
-                await progress_callback({"phase": "collect"})
-                await progress_callback({"phase": "map_start", "total_chunks": 12, "total_segments": 3})
-                await progress_callback({
-                    "phase": "map",
-                    "processed_segments": 3,
-                    "total_segments": 3,
-                    "mapped_segments": 2,
-                    "evidence_lines": 5,
-                })
-                await progress_callback({"phase": "final"})
-            return {
-                "answer": "최종 분석 결과입니다.",
-                "stats": {
-                    "total_chunks": 12,
-                    "total_segments": 3,
-                    "mapped_segments": 2,
-                    "evidence_lines": 5,
-                    "duration_ms": 888.8,
-                },
-            }
-
-        telegram_handler._engine.analyze_all_corpus = AsyncMock(side_effect=_analyze)
-
-        chat = MagicMock()
-        chat.id = 111
-        chat.type = "private"
-        chat.send_action = AsyncMock()
-
-        progress_message = MagicMock()
-        progress_message.edit_text = AsyncMock()
-        message = MagicMock()
-        message.reply_text = AsyncMock(return_value=progress_message)
-
-        update = MagicMock()
-        update.effective_chat = chat
-        update.effective_message = message
-
-        context = MagicMock()
-        context.args = ["전체", "문서를", "분석해줘"]
-
-        await telegram_handler._cmd_analyze_all(update, context)
-
-        telegram_handler._engine.analyze_all_corpus.assert_awaited_once()
-        edited_texts = [call.args[0] for call in progress_message.edit_text.await_args_list]
-        assert any("전체 문서 분석 결과" in text for text in edited_texts)
-        assert any("최종 분석 결과입니다." in text for text in edited_texts)
+        assert "analyze_all" not in handler_names
+        assert "analyze_all" not in bot_command_names
 
 
 class TestReloadCommands:
@@ -360,7 +289,7 @@ class TestReloadCommands:
 
 class TestHandleMessage:
     @pytest.mark.asyncio
-    async def test_handle_message_auto_routes_to_analyze_all_for_full_scan_phrase(
+    async def test_handle_message_auto_routes_to_analyze_all_when_analysis_keyword_exists(
         self,
         app_config: AppSettings,
         mock_engine: AsyncMock,
@@ -390,7 +319,7 @@ class TestHandleMessage:
         sent_message.edit_reply_markup = AsyncMock()
 
         message = MagicMock()
-        message.text = "전체문서 읽고 분석해줘"
+        message.text = "이 요청 좀 분석해줘"
         message.reply_text = AsyncMock(return_value=sent_message)
 
         update = MagicMock()
@@ -594,7 +523,7 @@ class TestHandleMessage:
         sent_message.edit_reply_markup = AsyncMock()
 
         message = MagicMock()
-        message.text = "심층 분석해줘"
+        message.text = "심층 검토해줘"
         message.photo = []
         message.reply_text = AsyncMock(return_value=sent_message)
 

@@ -211,9 +211,10 @@ python -m apps.cli test
 | `/memory clear` | 현재 채팅 대화 기록 삭제 |
 | `/memory export` | 현재 채팅 기록 markdown 내보내기 |
 | `/status` | 시스템 상태 |
-| `/analyze_all <질문>` | RAG 인덱스 전체 문서를 map-reduce로 읽어 분석 |
 | `/feedback` | 피드백 통계 (`feedback.enabled: true`일 때) |
 | `/skip` | 부정 피드백 사유 입력 건너뛰기 (`collect_reason: true`일 때) |
+
+- 일반 대화에 `분석` 단어가 포함되면 `/analyze_all` 없이도 전체 문서 분석(full-scan)이 자동 실행됩니다.
 
 ## 내장 스킬 (`skills/_builtin`)
 
