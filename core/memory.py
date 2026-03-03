@@ -300,6 +300,33 @@ class MemoryManager:
         self._logger.info("conversation_cleared", chat_id=chat_id, deleted=deleted)
         return deleted
 
+    async def delete_last_turn(self, chat_id: int) -> int:
+        """가장 최근 사용자+어시스턴트 턴 쌍을 삭제한다.
+
+        스트리밍 응답이 비정상이어서 재시도해야 할 때 사용한다.
+        최근 2개(user + assistant) 메시지를 ID 역순으로 삭제한다.
+
+        Returns:
+            삭제된 행 수.
+        """
+        deleted = 0
+        async with self._write_transaction() as db:
+            cursor = await db.execute(
+                "DELETE FROM conversations WHERE chat_id = ? AND id IN ("
+                "  SELECT id FROM conversations WHERE chat_id = ? "
+                "  ORDER BY id DESC LIMIT 2"
+                ")",
+                (chat_id, chat_id),
+            )
+            deleted = cursor.rowcount
+        if deleted:
+            self._logger.info(
+                "last_turn_deleted",
+                chat_id=chat_id,
+                deleted=deleted,
+            )
+        return deleted
+
     # ── 장기 메모리 ──
 
     async def store_memory(

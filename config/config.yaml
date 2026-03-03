@@ -19,6 +19,8 @@ lemonade:
   system_prompt: |
     당신은 유용한 AI 어시스턴트입니다.
     한국어로 답변하며, 간결하고 정확한 정보를 제공합니다.
+    대화 기록이 주어질 경우, 반드시 가장 마지막 사용자 메시지에 대해 답변하세요.
+    이전 대화는 맥락 파악에만 참고하고, 현재 질문에 집중하세요.
   timeout_seconds: 120
   model_load_timeout_seconds: 120
   heavy_model_load_timeout_seconds: 420
@@ -84,7 +86,7 @@ instant_responder:
 semantic_cache:
   enabled: true
   model_name: "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
-  similarity_threshold: 0.92
+  similarity_threshold: 0.96
   min_query_chars: 6
   exclude_patterns:
     - "(지금|현재)\\s*몇\\s*시"
@@ -134,16 +136,6 @@ rag:
     - "지식베이스"
     - "kb"
     - "검색해"
-    - "찾아"
-    - "파일"
-    - "어디"
-    - "뭐였"
-    - "알려줘"
-    - "내용"
-    - "코드"
-    - "함수"
-    - "클래스"
-    - "설정"
   chunk_min_tokens: 400
   chunk_max_tokens: 900
   chunk_overlap_ratio: 0.15

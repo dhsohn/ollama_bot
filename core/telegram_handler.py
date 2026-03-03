@@ -902,6 +902,23 @@ class TelegramHandler:
                     reason=recovery_reason,
                     anomaly_reasons=anomaly_reasons or None,
                 )
+                # 스트리밍에서 이미 저장된 비정상 턴을 삭제하여
+                # recovery LLM 호출이 오염된 히스토리를 보지 않도록 한다.
+                try:
+                    rollback_fn = getattr(self._engine, "rollback_last_turn", None)
+                    if callable(rollback_fn):
+                        deleted = await rollback_fn(chat_id)
+                        self._logger.info(
+                            "stream_recovery_turn_rolled_back",
+                            chat_id=chat_id,
+                            deleted=deleted,
+                        )
+                except Exception as rb_exc:
+                    self._logger.warning(
+                        "stream_recovery_rollback_failed",
+                        chat_id=chat_id,
+                        error=str(rb_exc),
+                    )
                 try:
                     recovered_response = await self._engine.process_message(
                         chat_id,

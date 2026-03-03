@@ -634,6 +634,10 @@ class Engine:
                 self._logger.error("request_failed", error=str(exc))
                 raise
 
+    async def rollback_last_turn(self, chat_id: int) -> int:
+        """최근 스트리밍 턴을 롤백한다 (recovery 전 호출용)."""
+        return await self._memory.delete_last_turn(chat_id)
+
     # ── 인텐트 분류 (외부 접근용) ──
 
     async def classify_intent(self, text: str) -> str | None:
@@ -1191,13 +1195,12 @@ class Engine:
     ) -> CacheContext:
         from core.semantic_cache import CacheContext
 
-        scope = "global" if intent in {"chitchat", "simple_qa"} else "user"
         return CacheContext(
             model=model_override or self._llm_client.default_model,
             prompt_ver=self._config.lemonade.prompt_version,
             intent=intent,
-            scope=scope,
-            chat_id=chat_id if scope == "user" else None,
+            scope="user",
+            chat_id=chat_id,
         )
 
     @staticmethod
