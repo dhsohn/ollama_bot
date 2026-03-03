@@ -152,14 +152,14 @@ class DFTIndex:
                 removed += 1
 
             # 신규/변경 파일 인덱싱
-            for fpath in to_index:
+            for source_path in to_index:
                 try:
-                    result = parse_orca_output(fpath)
+                    result = parse_orca_output(source_path)
                     await self._upsert(db, result)
                     indexed += 1
                 except Exception as exc:
                     self._logger.warning(
-                        "dft_parse_failed", path=fpath, error=str(exc)
+                        "dft_parse_failed", path=source_path, error=str(exc)
                     )
                     failed += 1
 
