@@ -124,18 +124,9 @@ rag:
     - "/app/orca_outputs"
   max_file_size_mb: 5
   trigger_keywords:
-    - "문서"
-    - "프로젝트"
-    - "레포"
-    - "노트"
-    - "논문"
-    - "출처"
-    - "인용"
-    - "어디에 적혀"
-    - "내 파일"
-    - "지식베이스"
-    - "kb"
-    - "검색해"
+    - "orca"
+    - "결과"
+    - "dft"
   chunk_min_tokens: 400
   chunk_max_tokens: 900
   chunk_overlap_ratio: 0.15
@@ -158,3 +149,10 @@ rag:
     - ".toml"
     - ".sh"
     - ".pdf"
+    - ".out"
+    - ".log"
+
+dft:
+  enabled: true
+  auto_index_on_startup: true
+  max_file_size_mb: 64

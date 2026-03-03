@@ -554,6 +554,44 @@ async def _build_runtime(
                 logger.warning("rag_pipeline_init_failed", error=str(exc))
                 rag_pipeline = None
 
+        # ── DFT 인덱스 초기화 ──
+        dft_index: DFTIndex | None = None
+        dft_query_engine: DFTQueryEngine | None = None
+
+        if config.dft.enabled:
+            try:
+                from core.dft_index import DFTIndex
+                from core.dft_query import DFTQueryEngine
+
+                dft_db_path = str(
+                    Path(config.data_dir) / "rag_index" / "dft.db"
+                )
+                dft_index = DFTIndex()
+                await dft_index.initialize(dft_db_path)
+                cleanup_stack.push_async_callback(dft_index.close)
+
+                dft_query_engine = DFTQueryEngine(dft_index)
+
+                if config.dft.auto_index_on_startup and config.rag.kb_dirs:
+                    kb_dirs = [
+                        d for d in config.rag.kb_dirs if Path(d).is_dir()
+                    ]
+                    if kb_dirs:
+                        dft_startup_result = await dft_index.index_calculations(
+                            kb_dirs,
+                            max_file_size_mb=config.dft.max_file_size_mb,
+                        )
+                        logger.info(
+                            "dft_startup_index_complete",
+                            **dft_startup_result,
+                        )
+
+                logger.info("dft_index_initialized")
+            except Exception as exc:
+                logger.warning("dft_index_init_failed", error=str(exc))
+                dft_index = None
+                dft_query_engine = None
+
         engine = Engine(
             config=config,
             llm_client=llm,
@@ -565,6 +603,7 @@ async def _build_runtime(
             intent_router=intent_router,
             context_compressor=context_compressor,
             rag_pipeline=rag_pipeline,
+            dft_query_engine=dft_query_engine,
         )
 
         auto_evaluator: AutoEvaluator | None = None
@@ -610,6 +649,8 @@ async def _build_runtime(
             allowed_users=config.security.allowed_users,
             data_dir=config.data_dir,
             feedback=feedback,
+            dft_index=dft_index,
+            kb_dirs=config.rag.kb_dirs if config.rag.enabled else None,
         )
         telegram.set_scheduler(scheduler)
         assert telegram.has_scheduler(), (

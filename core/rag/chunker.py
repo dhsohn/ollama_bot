@@ -32,6 +32,24 @@ _JS_FUNC_RE = re.compile(
 # 마크다운 헤더 패턴
 _MD_HEADER_RE = re.compile(r"^(#{1,6})\s+(.+)$", re.MULTILINE)
 
+# ORCA 출력 파일 섹션 헤더 패턴
+_ORCA_SECTION_HEADERS: list[tuple[re.Pattern, str]] = [
+    (re.compile(r"^\s*INPUT FILE\s*$", re.MULTILINE), "INPUT FILE"),
+    (re.compile(r"^\s*CARTESIAN COORDINATES \(ANGSTROEM\)\s*$", re.MULTILINE), "CARTESIAN COORDINATES"),
+    (re.compile(r"^\s*ORBITAL ENERGIES\s*$", re.MULTILINE), "ORBITAL ENERGIES"),
+    (re.compile(r"^\s*MULLIKEN (?:ATOMIC CHARGES|POPULATION)\s*", re.MULTILINE), "MULLIKEN POPULATION"),
+    (re.compile(r"^\s*LOEWDIN (?:ATOMIC CHARGES|POPULATION)\s*", re.MULTILINE), "LOEWDIN POPULATION"),
+    (re.compile(r"^\s*SCF ITERATIONS\s*$", re.MULTILINE), "SCF ITERATIONS"),
+    (re.compile(r"^\s*GEOMETRY OPTIMIZATION (?:CYCLE|RUN)\s*", re.MULTILINE), "GEOMETRY OPTIMIZATION"),
+    (re.compile(r"^\s*VIBRATIONAL FREQUENCIES\s*$", re.MULTILINE), "VIBRATIONAL FREQUENCIES"),
+    (re.compile(r"^\s*NORMAL MODES\s*$", re.MULTILINE), "NORMAL MODES"),
+    (re.compile(r"^\s*IR SPECTRUM\s*$", re.MULTILINE), "IR SPECTRUM"),
+    (re.compile(r"^\s*THERMOCHEMISTRY\s*", re.MULTILINE), "THERMOCHEMISTRY"),
+    (re.compile(r"^\s*DIPOLE MOMENT\s*$", re.MULTILINE), "DIPOLE MOMENT"),
+    (re.compile(r"^\s*FINAL SINGLE POINT ENERGY\s+", re.MULTILINE), "FINAL ENERGY"),
+    (re.compile(r"^\s*TOTAL RUN TIME\s*:", re.MULTILINE), "TOTAL RUN TIME"),
+]
+
 
 class _HTMLTextExtractor(HTMLParser):
     """HTML에서 텍스트 노드만 추출한다."""
@@ -84,6 +102,8 @@ class DocumentChunker:
             raw_chunks = self._chunk_code(text, _JS_FUNC_RE)
         elif ext == ".md":
             raw_chunks = self._chunk_markdown(text)
+        elif ext in (".out", ".log"):
+            raw_chunks = self._chunk_orca(text)
         else:
             raw_chunks = self._chunk_text(text)
 
@@ -248,6 +268,53 @@ class DocumentChunker:
                 for j, (chunk_text, _) in enumerate(sub_chunks):
                     label = f"{func_name} (part {j + 1})" if j > 0 else func_name
                     chunks.append((chunk_text, label))
+
+        return chunks
+
+    def _chunk_orca(self, text: str) -> list[tuple[str, str | None]]:
+        """ORCA 출력 파일을 섹션 단위로 청킹한다.
+
+        알려진 ORCA 섹션 헤더를 인식하여 의미 단위로 분리한다.
+        대형 섹션(최적화 사이클 등)은 추가 분할한다.
+        """
+        # 모든 섹션 시작점 수집
+        boundaries: list[tuple[int, str]] = []
+        for pattern, label in _ORCA_SECTION_HEADERS:
+            for m in pattern.finditer(text):
+                boundaries.append((m.start(), label))
+
+        if not boundaries:
+            return self._chunk_text(text)
+
+        # 위치 순 정렬
+        boundaries.sort(key=lambda x: x[0])
+
+        chunks: list[tuple[str, str | None]] = []
+
+        # 첫 섹션 이전 (입력 파일 정보 등)
+        if boundaries[0][0] > 0:
+            preamble = text[: boundaries[0][0]].strip()
+            if preamble:
+                if len(preamble) <= self._max_chars:
+                    chunks.append((preamble, "ORCA HEADER"))
+                else:
+                    for ct, _ in self._chunk_text(preamble):
+                        chunks.append((ct, "ORCA HEADER"))
+
+        # 각 섹션
+        for i, (start, label) in enumerate(boundaries):
+            end = boundaries[i + 1][0] if i + 1 < len(boundaries) else len(text)
+            section = text[start:end].strip()
+            if not section:
+                continue
+
+            if len(section) <= self._max_chars:
+                chunks.append((section, label))
+            else:
+                sub_chunks = self._chunk_text(section)
+                for j, (ct, _) in enumerate(sub_chunks):
+                    sub_label = f"{label} (part {j + 1})" if j > 0 else label
+                    chunks.append((ct, sub_label))
 
         return chunks
 

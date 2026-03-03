@@ -266,6 +266,7 @@ class RAGConfig(BaseModel):
     supported_extensions: list[str] = Field(default_factory=lambda: [
         ".md", ".txt", ".pdf", ".docx", ".html", ".htm",
         ".json", ".csv", ".py", ".js", ".ts",
+        ".out", ".log",
     ])
     trigger_keywords: list[str] = Field(default_factory=lambda: [
         "문서", "프로젝트", "레포", "노트", "폴더", "논문",
@@ -286,6 +287,14 @@ class RAGConfig(BaseModel):
         if value < 1:
             raise ValueError("max_file_size_mb must be >= 1")
         return value
+
+
+class DFTConfig(BaseModel):
+    """DFT 계산 결과 인덱스 설정."""
+
+    enabled: bool = True
+    auto_index_on_startup: bool = True
+    max_file_size_mb: int = 64
 
 
 class AppSettings(BaseModel):
@@ -311,6 +320,7 @@ class AppSettings(BaseModel):
     context_compressor: ContextCompressorConfig = Field(default_factory=ContextCompressorConfig)
     ollama: RetrievalProviderConfig = Field(default_factory=RetrievalProviderConfig)
     rag: RAGConfig = Field(default_factory=RAGConfig)
+    dft: DFTConfig = Field(default_factory=DFTConfig)
 
 
 class _TelegramEnvSecrets(BaseSettings):

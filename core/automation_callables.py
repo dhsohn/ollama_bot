@@ -41,6 +41,8 @@ def register_builtin_callables(
     allowed_users: list[int],
     data_dir: str = "data",
     feedback: FeedbackManager | None = None,
+    dft_index: object | None = None,
+    kb_dirs: list[str] | None = None,
 ) -> None:
     """내장 자동화 callable을 스케줄러에 등록한다."""
     logger = get_logger("automation_callables")
@@ -117,6 +119,22 @@ def register_builtin_callables(
         async def _feedback_analysis_noop(**kwargs) -> str:
             return ""
         scheduler.register_callable("feedback_analysis", _feedback_analysis_noop)
+
+    # DFT 모니터 callable
+    if dft_index is not None:
+        from core.automation_callables_impl.dft_monitor import build_dft_monitor_callable
+        scheduler.register_callable(
+            "dft_monitor",
+            build_dft_monitor_callable(
+                dft_index=dft_index,
+                kb_dirs=kb_dirs or [],
+                logger=logger,
+            ),
+        )
+    else:
+        async def _dft_monitor_noop(**kwargs) -> str:
+            return ""
+        scheduler.register_callable("dft_monitor", _dft_monitor_noop)
 
     # KTO 파인튜닝 데이터 내보내기 callable
     if feedback is not None:
