@@ -8,12 +8,12 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import os
 from pathlib import Path
 from typing import Any
 
 import aiosqlite
 
+from core.dft_discovery import discover_orca_targets
 from core.logging_setup import get_logger
 from core.orca_parser import parse_orca_output
 
@@ -49,8 +49,6 @@ CREATE INDEX IF NOT EXISTS idx_dft_status  ON dft_calculations(status);
 CREATE INDEX IF NOT EXISTS idx_dft_energy  ON dft_calculations(energy_hartree);
 CREATE INDEX IF NOT EXISTS idx_dft_mtime   ON dft_calculations(mtime);
 """
-
-_ORCA_EXTENSIONS = {".out", ".log"}
 
 
 class DFTIndex:
@@ -119,18 +117,13 @@ class DFTIndex:
             if not kb_path.is_dir():
                 self._logger.warning("dft_kb_dir_not_found", path=kb_dir)
                 continue
-            for ext in _ORCA_EXTENSIONS:
-                for fpath in kb_path.rglob(f"*{ext}"):
-                    if not fpath.is_file():
-                        continue
-                    if fpath.stat().st_size > max_bytes:
-                        continue
-                    spath = str(fpath)
-                    h = hashlib.sha256()
-                    with open(fpath, "rb") as f:
-                        for chunk in iter(lambda: f.read(65536), b""):
-                            h.update(chunk)
-                    discovered[spath] = h.hexdigest()[:16]
+            for fpath in discover_orca_targets(kb_path, max_bytes=max_bytes, logger=self._logger):
+                spath = str(fpath)
+                h = hashlib.sha256()
+                with open(fpath, "rb") as f:
+                    for chunk in iter(lambda: f.read(65536), b""):
+                        h.update(chunk)
+                discovered[spath] = h.hexdigest()[:16]
 
         # 변경 감지
         to_index = {

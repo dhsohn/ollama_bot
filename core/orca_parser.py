@@ -85,6 +85,13 @@ _CHARGE_MULT_RE = re.compile(r"(?:\|\s*\d+>\s*)?\*\s*xyz\s+([-\d]+)\s+(\d+)")
 
 # 정상 종료 마커
 _NORMAL_TERMINATION_RE = re.compile(r"ORCA TERMINATED NORMALLY")
+_ERROR_TERMINATION_RE = re.compile(
+    r"ORCA\s+finished\s+by\s+error\s+termination|"
+    r"aborting the run|"
+    r"ended prematurely and may have crashed|"
+    r"FATAL ERROR",
+    re.IGNORECASE,
+)
 
 # 알려진 계산 유형 키워드 (입력 라인에서 검색)
 _CALC_TYPE_KEYWORDS: dict[str, str] = {
@@ -295,6 +302,36 @@ def _compute_file_hash(file_path: str) -> str:
     return h.hexdigest()[:16]
 
 
+def _read_orca_text(file_path: str) -> str:
+    """ORCA 출력 파일을 인코딩 자동 감지로 읽는다."""
+    with open(file_path, "rb") as f:
+        raw = f.read()
+
+    if not raw:
+        return ""
+
+    # BOM이 있으면 우선 사용
+    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return raw.decode("utf-16", errors="replace")
+    if raw.startswith(b"\xef\xbb\xbf"):
+        return raw.decode("utf-8-sig", errors="replace")
+
+    # UTF-16LE/BE (BOM 없음) 흔적: 널 바이트 비율이 높음
+    nul_ratio = raw.count(0) / len(raw)
+    if nul_ratio > 0.20:
+        for enc in ("utf-16-le", "utf-16-be"):
+            try:
+                return raw.decode(enc)
+            except UnicodeDecodeError:
+                continue
+
+    # 기본 UTF-8, 실패 시 대체
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return raw.decode("utf-8", errors="replace")
+
+
 def parse_orca_output(file_path: str) -> OrcaResult:
     """ORCA .out 파일을 파싱하여 OrcaResult를 반환한다.
 
@@ -308,8 +345,7 @@ def parse_orca_output(file_path: str) -> OrcaResult:
         FileNotFoundError: 파일이 존재하지 않을 때
         UnicodeDecodeError: 파일 인코딩 문제
     """
-    with open(file_path, encoding="utf-8", errors="replace") as f:
-        text = f.read()
+    text = _read_orca_text(file_path)
 
     result = OrcaResult(source_path=file_path)
     result.mtime = os.path.getmtime(file_path)
@@ -371,6 +407,8 @@ def parse_orca_output(file_path: str) -> OrcaResult:
             result.status = "failed"
         else:
             result.status = "completed"
+    elif _ERROR_TERMINATION_RE.search(text):
+        result.status = "failed"
     elif result.wall_time_seconds is not None:
         # TOTAL RUN TIME은 있지만 TERMINATED NORMALLY 없음
         result.status = "failed"

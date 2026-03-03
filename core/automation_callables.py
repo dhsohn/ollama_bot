@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from core.automation_callables_impl.common import (
     CONSOLIDATION_MERGE_SCHEMA as _CONSOLIDATION_MERGE_SCHEMA,
     DAILY_SUMMARY_SCHEMA as _DAILY_SUMMARY_SCHEMA,
@@ -129,6 +131,7 @@ def register_builtin_callables(
                 dft_index=dft_index,
                 kb_dirs=kb_dirs or [],
                 logger=logger,
+                state_file=str(Path(data_dir) / "automation" / "dft_monitor_state.json"),
             ),
         )
     else:
