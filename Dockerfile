@@ -1,9 +1,9 @@
 # Stage 1: 의존성 빌드
 FROM python:3.11-slim AS builder
 WORKDIR /build
-COPY requirements.txt .
+COPY requirements.lock .
 RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir -r requirements.txt
+    && pip install --no-cache-dir -r requirements.lock
 
 # Stage 2: 런타임
 FROM python:3.11-slim

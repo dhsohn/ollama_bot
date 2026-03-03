@@ -16,8 +16,8 @@ services:
       - ./skills/custom:/app/skills/custom
       - ./auto/custom:/app/auto/custom
       - ./config:/app/config
-      - /home/daehyupsohn/orca_outputs:/app/orca_outputs:ro
-      - /home/daehyupsohn/orca_runs:/app/orca_runs:ro
+      - ${HOST_KB_DIR:-./kb}/orca_outputs:/app/kb/orca_outputs:ro
+      - ${HOST_KB_DIR:-./kb}/orca_runs:/app/kb/orca_runs:ro
     security_opt:
       - no-new-privileges:true
     read_only: true

@@ -1,6 +1,7 @@
 .git
 .env
 data/
+kb/
 tests/
 __pycache__
 *.pyc

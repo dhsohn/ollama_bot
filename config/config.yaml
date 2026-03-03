@@ -120,8 +120,8 @@ rag:
   enabled: true
   startup_index_enabled: true
   kb_dirs:
-    - "/app/orca_runs"
-    - "/app/orca_outputs"
+    - "/app/kb/orca_runs"
+    - "/app/kb/orca_outputs"
   max_file_size_mb: 5
   trigger_keywords:
     - "orca"

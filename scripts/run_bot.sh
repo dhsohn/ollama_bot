@@ -7,12 +7,12 @@ ENV_FILE="${PROJECT_ROOT}/.env"
 CONFIG_FILE="${PROJECT_ROOT}/config/config.yaml"
 
 if [[ ! -f "${ENV_FILE}" ]]; then
-  echo "[up.sh] ERROR: ${ENV_FILE} 파일이 없습니다. 먼저 scripts/setup.sh를 실행하세요."
+  echo "[run_bot.sh] ERROR: ${ENV_FILE} 파일이 없습니다. 먼저 scripts/setup.sh를 실행하세요."
   exit 1
 fi
 
 if ! docker info >/dev/null 2>&1; then
-  echo "[up.sh] ERROR: Docker daemon에 연결할 수 없습니다."
+  echo "[run_bot.sh] ERROR: Docker daemon에 연결할 수 없습니다."
   exit 1
 fi
 
@@ -22,17 +22,17 @@ if [[ -f "${CONFIG_FILE}" ]]; then
   WINDOWS_HOST_IP="${WINDOWS_HOST_IP:-$(awk '/^nameserver / {print $2; exit}' /etc/resolv.conf)}"
   if [[ -n "${WINDOWS_HOST_IP}" ]]; then
     export WINDOWS_HOST_IP
-    echo "[up.sh] WINDOWS_HOST_IP=${WINDOWS_HOST_IP} (for docker compose extra_hosts)"
+    echo "[run_bot.sh] WINDOWS_HOST_IP=${WINDOWS_HOST_IP} (for docker compose extra_hosts)"
   else
-    echo "[up.sh] WARN: Windows host IP를 찾지 못했습니다. windows-host 매핑이 실패할 수 있습니다."
+    echo "[run_bot.sh] WARN: Windows host IP를 찾지 못했습니다. windows-host 매핑이 실패할 수 있습니다."
   fi
 
   # lemonade 포트 연결 프리체크
   if [[ -n "${WINDOWS_HOST_IP:-}" ]]; then
     LEMONADE_PORT=$(grep -A8 '^lemonade:' "${CONFIG_FILE}" | grep 'host:' | grep -oP ':\K[0-9]+' || echo "8000")
-    echo "[up.sh] lemonade 연결 확인 중: ${WINDOWS_HOST_IP}:${LEMONADE_PORT} ..."
+    echo "[run_bot.sh] lemonade 연결 확인 중: ${WINDOWS_HOST_IP}:${LEMONADE_PORT} ..."
     if timeout 5 bash -c "echo >/dev/tcp/${WINDOWS_HOST_IP}/${LEMONADE_PORT}" 2>/dev/null; then
-      echo "[up.sh] OK: lemonade-server 응답 확인"
+      echo "[run_bot.sh] OK: lemonade-server 응답 확인"
     else
       LEMONADE_APP_PARAMS=""
       if command -v powershell.exe >/dev/null 2>&1; then
@@ -43,9 +43,9 @@ if [[ -f "${CONFIG_FILE}" ]]; then
         )"
       fi
 
-      echo "[up.sh] WARN: ${WINDOWS_HOST_IP}:${LEMONADE_PORT} 연결 실패."
+      echo "[run_bot.sh] WARN: ${WINDOWS_HOST_IP}:${LEMONADE_PORT} 연결 실패."
       if [[ -n "${LEMONADE_APP_PARAMS}" ]]; then
-        echo "[up.sh] 감지된 LemonadeServer AppParameters: ${LEMONADE_APP_PARAMS}"
+        echo "[run_bot.sh] 감지된 LemonadeServer AppParameters: ${LEMONADE_APP_PARAMS}"
       fi
       echo "  가능한 원인:"
       LOCALHOST_BINDING_DETECTED=0
@@ -80,14 +80,16 @@ mkdir -p \
   "${PROJECT_ROOT}/data/conversations" \
   "${PROJECT_ROOT}/data/memory" \
   "${PROJECT_ROOT}/data/logs" \
-  "${PROJECT_ROOT}/data/reports"
+  "${PROJECT_ROOT}/data/reports" \
+  "${PROJECT_ROOT}/kb/orca_runs" \
+  "${PROJECT_ROOT}/kb/orca_outputs"
 
 cd "${PROJECT_ROOT}"
 
 if [[ "${1:-}" == "--build" ]]; then
-  echo "[up.sh] docker compose -f docker-compose.yml up -d --build"
+  echo "[run_bot.sh] docker compose -f docker-compose.yml up -d --build"
   docker compose -f docker-compose.yml up -d --build
 else
-  echo "[up.sh] docker compose -f docker-compose.yml up -d"
+  echo "[run_bot.sh] docker compose -f docker-compose.yml up -d"
   docker compose -f docker-compose.yml up -d
 fi

@@ -24,6 +24,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-dev.txt
 
+      - name: Check requirements.lock
+        run: bash scripts/check_requirements_lock.sh
+
       - name: Ruff
         run: ruff check .
 

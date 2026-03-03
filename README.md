@@ -9,7 +9,7 @@
 - 엔트리포인트: `apps/ollama_bot/main.py` (`main.py`는 단순 래퍼)
 - 코어 로직: `core/`
 - 설정: `config/config.yaml`
-- 컨테이너 실행 기본: `docker compose -f docker-compose.yml up -d`
+- 컨테이너 실행 기본: `bash scripts/run_bot.sh` (초기 설정 포함은 `bash scripts/setup.sh --run`)
 
 ## 핵심 기능
 
@@ -90,13 +90,13 @@ flowchart TD
 처음 설치까지 한 줄로 실행:
 
 ```bash
-git clone <repo-url> && cd ollama_bot && bash scripts/bootstrap.sh
+git clone <repo-url> && cd ollama_bot && bash scripts/setup.sh --run
 ```
 
 이미 리포지토리를 받은 상태라면:
 
 ```bash
-bash scripts/bootstrap.sh
+bash scripts/setup.sh --run
 ```
 
 - Dual-Provider 환경(Lemonade + Ollama):
@@ -106,7 +106,7 @@ bash scripts/bootstrap.sh
 - 이미지까지 강제 빌드하려면:
 
 ```bash
-bash scripts/bootstrap.sh --build
+bash scripts/setup.sh --run --build
 ```
 
 ### 1) 설치
@@ -122,20 +122,22 @@ bash scripts/setup.sh
 ```bash
 pip install -r requirements-dev.txt
 cp .env.example .env
-mkdir -p data/conversations data/memory data/logs data/reports
+mkdir -p data/conversations data/memory data/logs data/reports kb/orca_runs kb/orca_outputs
 ```
 
 ### 2) `.env` 설정
 
-`.env`는 텔레그램 관련 시크릿만 사용합니다:
+`.env` 기본 예시:
 
 ```env
 TELEGRAM_BOT_TOKEN=...
 ALLOWED_TELEGRAM_USERS=123456789
+HOST_KB_DIR=./kb
 ```
 
 - `ALLOWED_TELEGRAM_USERS`는 **숫자 Chat ID CSV**만 허용됩니다.
 - placeholder(`your_telegram_chat_id_here`) 상태면 시작 시 fail-fast로 종료됩니다.
+- `HOST_KB_DIR`는 docker compose 볼륨 마운트용 경로입니다. (앱 런타임 설정은 아님)
 - 런타임 일반 설정(model/host/log/data_dir 등)은 `config/config.yaml`에서 관리합니다.
 - 모델 변경은 텔레그램 명령어가 아니라 서버에서 `config/config.yaml` 값을 수정한 뒤 컨테이너를 재시작하는 방식으로 운영합니다.
 
@@ -164,7 +166,7 @@ ollama serve
 ### 4) 실행
 
 ```bash
-docker compose -f docker-compose.yml up --build -d
+bash scripts/run_bot.sh --build
 ```
 
 로그 확인:
@@ -182,6 +184,7 @@ docker compose ps
 ## 실행 정책/제약
 
 - 기본 정책은 **컨테이너 내부 실행 전용**입니다.
+- 실행은 `bash scripts/run_bot.sh` 또는 `bash scripts/setup.sh --run`을 사용하세요.
 - 로컬 직접 실행 우회가 필요하면 `ALLOW_LOCAL_RUN=1` 환경변수를 사용합니다.
 - 텔레그램은 private chat(1:1)만 처리합니다. 그룹/채널 메시지는 거절됩니다.
 
@@ -306,7 +309,7 @@ timeout: 120
 ## 설정 파일
 
 - `config/config.yaml`: 전역 런타임 설정
-- `.env`: 텔레그램 시크릿(`TELEGRAM_BOT_TOKEN`, `ALLOWED_TELEGRAM_USERS`)
+- `.env`: 텔레그램 시크릿 + compose 볼륨 오버라이드(`HOST_KB_DIR`)
 
 주요 섹션:
 - `bot`, `lemonade`, `telegram`, `security`, `memory`, `scheduler`
@@ -321,8 +324,8 @@ rag:
   enabled: true
   startup_index_enabled: false   # 부팅 시 백그라운드 인덱싱 비활성화
   kb_dirs:
-    - "/app/orca_runs"
-    - "/app/orca_outputs"
+    - "/app/kb/orca_runs"
+    - "/app/kb/orca_outputs"
   max_file_size_mb: 2
   supported_extensions:
     - ".md"
@@ -349,25 +352,40 @@ ollama:
 
 `.env` 우선순위 관련:
 - `APP_ENV_FILE` 또는 `APP_ENV_FILES`(CSV)로 로드 파일 지정 가능
-- `.env`에서 반영되는 값은 텔레그램 시크릿 2개뿐입니다.
+- 앱 런타임에서 `.env`로 반영되는 값은 텔레그램 시크릿 2개뿐입니다.
+- `HOST_KB_DIR`는 docker compose가 볼륨 마운트 시 사용합니다.
 
 ## 운영 스크립트
 
 | 스크립트 | 용도 |
 |---|---|
-| `scripts/bootstrap.sh` | 원클릭 설치/실행 (setup + Windows 네트워크 설정 + up) |
 | `scripts/configure_windows_lemonade.sh` | Lemonade용 Windows 방화벽/portproxy 자동 설정 |
-| `scripts/setup.sh` | 초기 설정(.env 생성, 디렉토리 준비) |
-| `scripts/up.sh` | 컨테이너 실행 |
+| `scripts/setup.sh` | 초기 설정(.env 생성, 디렉토리 준비), `--run`으로 원클릭 실행 |
+| `scripts/run_bot.sh` | 컨테이너 실행 |
 | `scripts/install_boot_service.sh` | systemd 부팅 서비스 설치 |
 | `scripts/healthcheck.sh` | 컨테이너 헬스체크 |
 | `scripts/soak_monitor.sh` | 장시간 안정성 모니터링 |
+| `scripts/check_requirements_lock.sh` | `requirements.lock` 최신성 검사 |
 | `scripts/finetune_unsloth.py` | KTO 파인튜닝(선택) |
 | `scripts/deploy_finetuned.sh` | 파인튜닝 모델 Ollama 배포(선택) |
+
+## 의존성 잠금 정책
+
+- `requirements.txt`: 직접 의존성 선언 파일
+- `requirements.lock`: 배포/런타임 기준 파일 (Docker/CI에서 사용)
+- `requirements-dev.txt`: 개발 도구 + `requirements.lock` 포함
+
+의존성 변경 시 아래 순서로 갱신합니다:
+
+```bash
+pip-compile --output-file=requirements.lock --pip-args='--use-feature=fast-deps' requirements.txt
+bash scripts/check_requirements_lock.sh
+```
 
 ## 품질 검증
 
 ```bash
+bash scripts/check_requirements_lock.sh
 .venv/bin/ruff check .
 .venv/bin/mypy
 .venv/bin/pytest -q
@@ -382,6 +400,7 @@ bash scripts/soak_monitor.sh --minutes 180 --max-restarts 0 --max-error-lines 0
 ## 데이터/볼륨
 
 기본 데이터 경로(`DATA_DIR`)는 `/app/data`이며, compose에서 `./data`로 마운트됩니다.
+기본 지식베이스 경로는 `${HOST_KB_DIR:-./kb}`이며, 컨테이너 내부에서 `/app/kb`로 마운트됩니다.
 
 주요 산출물:
 - `data/memory/ollama_bot.db` (대화/장기 메모리)

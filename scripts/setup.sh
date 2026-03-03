@@ -1,8 +1,72 @@
-#!/bin/bash
-# ollama_bot 초기 설정 스크립트
+#!/usr/bin/env bash
+# ollama_bot 초기 설정 스크립트 (옵션: 실행까지 원클릭)
 set -euo pipefail
 
-CONFIG_FILE="config/config.yaml"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+CONFIG_FILE="${PROJECT_ROOT}/config/config.yaml"
+RUN_AFTER_SETUP=0
+BUILD_FLAG=""
+INSTALL_BOOT_SERVICE=0
+SKIP_WINDOWS_FIX=0
+
+usage() {
+    cat <<'EOF'
+Usage: bash scripts/setup.sh [options]
+
+기본 동작:
+  - .env 생성/확인
+  - data/, kb/ 디렉토리 준비
+  - retrieval 모델 상태 점검
+
+Options:
+  --run                  setup 후 run_bot.sh 실행 (원클릭)
+  --build                --run과 함께 사용. 이미지 강제 빌드
+  --skip-windows-fix     --run 시 Windows 네트워크 자동 설정 단계 건너뜀
+  --install-boot-service systemd 부팅 서비스 설치/활성화 (sudo 필요)
+  -h, --help             도움말
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --run)
+            RUN_AFTER_SETUP=1
+            shift
+            ;;
+        --build)
+            BUILD_FLAG="--build"
+            shift
+            ;;
+        --skip-windows-fix)
+            SKIP_WINDOWS_FIX=1
+            shift
+            ;;
+        --install-boot-service)
+            INSTALL_BOOT_SERVICE=1
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "[setup.sh] 알 수 없는 옵션: $1" >&2
+            usage
+            exit 1
+            ;;
+    esac
+done
+
+if [[ -n "${BUILD_FLAG}" && "${RUN_AFTER_SETUP}" != "1" ]]; then
+    echo "[setup.sh] ERROR: --build는 --run과 함께 사용해야 합니다." >&2
+    exit 1
+fi
+
+if [[ "${SKIP_WINDOWS_FIX}" == "1" && "${RUN_AFTER_SETUP}" != "1" ]]; then
+    echo "[setup.sh] ERROR: --skip-windows-fix는 --run과 함께 사용해야 합니다." >&2
+    exit 1
+fi
 
 extract_yaml_value() {
     local section="$1"
@@ -45,7 +109,9 @@ check_ollama_model() {
     fi
 }
 
-echo "=== ollama_bot Setup ==="
+cd "${PROJECT_ROOT}"
+
+echo "=== ollama_bot setup ==="
 
 # Docker 확인
 command -v docker >/dev/null 2>&1 || { echo "오류: Docker가 필요합니다."; exit 1; }
@@ -60,6 +126,8 @@ fi
 
 # 데이터 디렉토리 생성
 mkdir -p data/conversations data/memory data/logs data/reports
+# 기본 RAG/DFT 지식베이스 디렉토리 생성
+mkdir -p kb/orca_runs kb/orca_outputs
 
 lemonade_host="$(extract_yaml_value "lemonade" "host")"
 ollama_host="$(extract_yaml_value "ollama" "host")"
@@ -87,10 +155,35 @@ else
 fi
 
 echo ""
-echo "=== 설정 완료 ==="
-echo "빠른 실행(추천): bash scripts/bootstrap.sh"
+echo "=== setup 완료 ==="
 echo "1. .env 파일을 환경에 맞게 편집하세요."
 echo "2. config/config.yaml의 lemonade/ollama host 및 모델값을 확인하세요."
-echo "3. (로컬 Ollama 사용 시) ollama serve"
-echo "4. 봇 실행: docker compose -f docker-compose.yml up -d"
-echo "5. (선택) 부팅 자동 실행: sudo bash scripts/install_boot_service.sh"
+echo "3. ORCA 데이터 경로가 기본(./kb)이 아니면 .env의 HOST_KB_DIR를 수정하세요."
+echo "4. (로컬 Ollama 사용 시) ollama serve"
+echo "5. 실행: bash scripts/run_bot.sh"
+echo "6. 원클릭(설정+실행): bash scripts/setup.sh --run"
+echo "7. (선택) 부팅 자동 실행: sudo bash scripts/install_boot_service.sh"
+
+if [[ "${RUN_AFTER_SETUP}" == "1" ]]; then
+    if [[ "${SKIP_WINDOWS_FIX}" == "0" ]]; then
+        echo "[setup.sh] step 1/2: Windows 네트워크 자동 설정(lemonade일 때만)"
+        bash "${PROJECT_ROOT}/scripts/configure_windows_lemonade.sh"
+    else
+        echo "[setup.sh] step 1/2: Windows 네트워크 자동 설정 건너뜀"
+    fi
+
+    if [[ "${INSTALL_BOOT_SERVICE}" == "1" ]]; then
+        echo "[setup.sh] boot service 설치"
+        sudo bash "${PROJECT_ROOT}/scripts/install_boot_service.sh"
+    fi
+
+    echo "[setup.sh] step 2/2: 컨테이너 실행"
+    if [[ -n "${BUILD_FLAG}" ]]; then
+        bash "${PROJECT_ROOT}/scripts/run_bot.sh" --build
+    else
+        bash "${PROJECT_ROOT}/scripts/run_bot.sh"
+    fi
+elif [[ "${INSTALL_BOOT_SERVICE}" == "1" ]]; then
+    echo "[setup.sh] boot service 설치"
+    sudo bash "${PROJECT_ROOT}/scripts/install_boot_service.sh"
+fi
