@@ -126,8 +126,9 @@ def build_dft_monitor_callable(
             return ""
 
         # 알림 메시지 포맷
-        lines = [f"DFT Monitor: {len(new_results)}건의 새 계산 감지\n"]
+        lines = [f"DFT Monitor: {len(new_results)}건의 새 계산 감지"]
         for r in new_results:
+            lines.append("")  # 계산 사이 빈 줄
             lines.append(
                 f"  {r['formula']} | {r['calc_type']} | "
                 f"{r['method_basis']} | {r['energy']} | "
