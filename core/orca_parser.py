@@ -83,6 +83,16 @@ _RUNTIME_RE = re.compile(
 # charge / multiplicity: "* xyz 0 1" 또는 "|  2> * xyz 0 1"
 _CHARGE_MULT_RE = re.compile(r"(?:\|\s*\d+>\s*)?\*\s*xyz\s+([-\d]+)\s+(\d+)")
 
+# 최적화 사이클 헤더
+_OPT_CYCLE_RE = re.compile(r"Geometry Optimization Cycle\s+(\d+)")
+
+# 수렴 테이블 항목 (Energy change, MAX gradient, RMS gradient, MAX step, RMS step)
+_CONVERGENCE_ITEM_RE = re.compile(
+    r"^\s*(Energy change|MAX gradient|RMS gradient|MAX step|RMS step)"
+    r"\s+([-\d.eE+]+)\s+[-\d.eE+]+\s+(YES|NO)\s*$",
+    re.MULTILINE,
+)
+
 # 정상 종료 마커
 _NORMAL_TERMINATION_RE = re.compile(r"ORCA TERMINATED NORMALLY")
 _ERROR_TERMINATION_RE = re.compile(
@@ -162,6 +172,34 @@ class OrcaResult:
     mtime: float = 0.0
     input_line: str = ""
     elements: list[str] = field(default_factory=list)
+
+
+@dataclass
+class OptStep:
+    """단일 최적화 사이클의 수렴 데이터."""
+
+    cycle: int
+    energy_hartree: float
+    energy_change: float | None = None
+    max_gradient: float | None = None
+    rms_gradient: float | None = None
+    max_step: float | None = None
+    rms_step: float | None = None
+    converged_flags: dict[str, bool] = field(default_factory=dict)
+
+
+@dataclass
+class OptProgress:
+    """최적화 진행 현황 요약."""
+
+    source_path: str
+    formula: str = ""
+    method: str = ""
+    basis_set: str = ""
+    calc_type: str = ""
+    steps: list[OptStep] = field(default_factory=list)
+    is_converged: bool = False
+    is_running: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -416,3 +454,96 @@ def parse_orca_output(file_path: str) -> OrcaResult:
         result.status = "running"
 
     return result
+
+
+def parse_opt_progress(file_path: str) -> OptProgress:
+    """ORCA 최적화 출력에서 사이클별 에너지/수렴 데이터를 추출한다.
+
+    Args:
+        file_path: ORCA 출력 파일 경로
+
+    Returns:
+        최적화 진행 현황
+
+    Raises:
+        FileNotFoundError: 파일이 존재하지 않을 때
+    """
+    text = _read_orca_text(file_path)
+
+    # 기본 메타데이터 (기존 헬퍼 재활용)
+    calc_type, method, basis_set, _ = _parse_input_line(text)
+    elements, _ = _parse_coordinates(text)
+    formula = _build_formula(elements)
+
+    progress = OptProgress(
+        source_path=file_path,
+        formula=formula,
+        method=method,
+        basis_set=basis_set,
+        calc_type=calc_type,
+    )
+
+    # 사이클 위치 인덱싱
+    cycle_positions = [
+        (m.start(), int(m.group(1)))
+        for m in _OPT_CYCLE_RE.finditer(text)
+    ]
+    if not cycle_positions:
+        return progress
+
+    # 에너지 위치 인덱싱
+    energy_positions = [
+        (m.start(), float(m.group(1)))
+        for m in _ENERGY_RE.finditer(text)
+    ]
+
+    for i, (cycle_start, cycle_num) in enumerate(cycle_positions):
+        # 이 사이클의 텍스트 범위 결정
+        cycle_end = (
+            cycle_positions[i + 1][0]
+            if i + 1 < len(cycle_positions)
+            else len(text)
+        )
+        cycle_text = text[cycle_start:cycle_end]
+
+        # 이 사이클 범위 내의 마지막 에너지 찾기
+        energy: float | None = None
+        for epos, eval_ in energy_positions:
+            if cycle_start <= epos < cycle_end:
+                energy = eval_
+
+        if energy is None:
+            continue
+
+        step = OptStep(cycle=cycle_num, energy_hartree=energy)
+
+        # 수렴 테이블 파싱
+        for item_match in _CONVERGENCE_ITEM_RE.finditer(cycle_text):
+            name = item_match.group(1)
+            value = float(item_match.group(2))
+            converged = item_match.group(3) == "YES"
+
+            step.converged_flags[name] = converged
+
+            if name == "Energy change":
+                step.energy_change = value
+            elif name == "MAX gradient":
+                step.max_gradient = value
+            elif name == "RMS gradient":
+                step.rms_gradient = value
+            elif name == "MAX step":
+                step.max_step = value
+            elif name == "RMS step":
+                step.rms_step = value
+
+        progress.steps.append(step)
+
+    # 상태 판별
+    progress.is_converged = bool(_OPT_CONVERGED_RE.search(text))
+    progress.is_running = (
+        not _NORMAL_TERMINATION_RE.search(text)
+        and not _ERROR_TERMINATION_RE.search(text)
+        and _parse_wall_time(text) is None
+    )
+
+    return progress

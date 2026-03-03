@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from core.dft_discovery import discover_orca_targets
-from core.orca_parser import parse_orca_output
+from core.orca_parser import OptProgress, parse_opt_progress, parse_orca_output
 
 
 def build_dft_monitor_callable(
@@ -20,6 +20,7 @@ def build_dft_monitor_callable(
     kb_dirs: list[str],
     logger: Any,
     state_file: str | None = None,
+    engine: Any | None = None,
 ):
     """DFT 모니터 callable을 빌드한다.
 
@@ -27,6 +28,8 @@ def build_dft_monitor_callable(
         dft_index: DFTIndex 인스턴스
         kb_dirs: 모니터링할 디렉토리 목록
         logger: 로거
+        state_file: 상태 파일 경로
+        engine: Engine 인스턴스 (LLM 한줄 해석용, 없으면 해석 생략)
 
     Returns:
         dft_monitor async callable
@@ -74,6 +77,35 @@ def build_dft_monitor_callable(
                 # 새 파일 또는 변경된 파일 발견
                 try:
                     result = parse_orca_output(spath)
+
+                    # 진행 중인 최적화 계산은 progress 알림 생성
+                    if result.status == "running" and "opt" in result.calc_type:
+                        try:
+                            opt_prog = parse_opt_progress(spath)
+                            if opt_prog.steps:
+                                progress_text = _format_opt_progress(opt_prog)
+                                if progress_text:
+                                    # LLM 한줄 해석 시도
+                                    ai_comment = await _get_ai_comment(
+                                        opt_prog, engine, model, model_role,
+                                        temperature, max_tokens, logger,
+                                    )
+                                    if ai_comment:
+                                        progress_text += f"\n\nAI: {ai_comment}"
+                                    new_results.append({
+                                        "_progress_text": progress_text,
+                                    })
+                        except Exception as exc:
+                            logger.warning(
+                                "dft_monitor_progress_parse_error",
+                                path=spath,
+                                error=str(exc),
+                            )
+                        # running 계산은 인덱스에 upsert하지 않음
+                        _last_mtimes[spath] = current_mtime
+                        state_dirty = True
+                        continue
+
                     success = await dft_index.upsert_single(spath)
                     if success:
                         _last_mtimes[spath] = current_mtime
@@ -150,20 +182,156 @@ def build_dft_monitor_callable(
         if not new_results:
             return ""
 
-        # 알림 메시지 포맷
-        lines = [f"DFT Monitor: {len(new_results)}건의 새 계산 감지"]
-        for r in new_results:
-            lines.append("")  # 계산 사이 빈 줄
-            lines.append(
-                f"  {r['formula']} | {r['calc_type']} | "
-                f"{r['method_basis']} | {r['energy']} | "
-                f"{r['status']}{r['note']}"
-            )
-            lines.append(f"    -> {r['path']}")
+        # 완료된 계산과 진행 중인 계산 분리
+        completed = [r for r in new_results if "_progress_text" not in r]
+        running = [r for r in new_results if "_progress_text" in r]
+
+        lines: list[str] = []
+
+        if completed:
+            lines.append(f"DFT Monitor: {len(completed)}건의 새 계산 감지")
+            for r in completed:
+                lines.append("")
+                lines.append(
+                    f"  {r['formula']} | {r['calc_type']} | "
+                    f"{r['method_basis']} | {r['energy']} | "
+                    f"{r['status']}{r['note']}"
+                )
+                lines.append(f"    -> {r['path']}")
+
+        if running:
+            if lines:
+                lines.append("")
+                lines.append("---")
+            lines.append(f"\nOPT Progress: {len(running)}건의 진행 중인 최적화")
+            for r in running:
+                lines.append("")
+                lines.append(r["_progress_text"])
 
         return "\n".join(lines)
 
     return dft_monitor
+
+
+def _format_opt_progress(progress: OptProgress) -> str:
+    """최적화 진행 현황을 텔레그램 알림 텍스트로 포맷한다."""
+    if not progress.steps:
+        return ""
+
+    method_basis = progress.method
+    if progress.basis_set:
+        method_basis += f"/{progress.basis_set}"
+
+    status = "RUNNING" if progress.is_running else (
+        "CONVERGED" if progress.is_converged else "NOT YET CONVERGED"
+    )
+    header = (
+        f"OPT Progress: {progress.formula or 'unknown'} | "
+        f"{progress.calc_type} | {method_basis}\n"
+        f"Status: {status} | Steps: {len(progress.steps)}\n"
+        f"  -> {_short_path(progress.source_path)}"
+    )
+
+    # 최근 5 스텝 상세 표시
+    MAX_DETAIL = 5
+    recent = progress.steps[-MAX_DETAIL:]
+    older = progress.steps[:-MAX_DETAIL] if len(progress.steps) > MAX_DETAIL else []
+
+    lines = [header, ""]
+
+    # 이전 스텝 요약 (있으면)
+    if older:
+        e_min = min(s.energy_hartree for s in older)
+        e_max = max(s.energy_hartree for s in older)
+        lines.append(
+            f"Steps 1-{older[-1].cycle}: "
+            f"E range [{e_min:.6f}, {e_max:.6f}] Eh"
+        )
+        lines.append("")
+
+    # 최근 스텝 테이블
+    lines.append("Step | Energy (Eh)     | dE         | MaxGrad    | Conv")
+    lines.append("-----|-----------------|------------|------------|-----")
+    for s in recent:
+        de_str = f"{s.energy_change:.2e}" if s.energy_change is not None else "   -"
+        mg_str = f"{s.max_gradient:.2e}" if s.max_gradient is not None else "   -"
+        n_conv = sum(1 for v in s.converged_flags.values() if v)
+        n_total = len(s.converged_flags)
+        conv_str = f"{n_conv}/{n_total}" if n_total > 0 else " -"
+        lines.append(
+            f"{s.cycle:4d} | {s.energy_hartree:15.8f} | {de_str:>10s} | {mg_str:>10s} | {conv_str}"
+        )
+
+    # dE 트렌드 (마지막 2-3개 값)
+    de_values = [
+        s.energy_change for s in progress.steps
+        if s.energy_change is not None
+    ]
+    if len(de_values) >= 2:
+        trend = de_values[-3:] if len(de_values) >= 3 else de_values[-2:]
+        trend_str = " -> ".join(f"{v:.2e}" for v in trend)
+        lines.append(f"\ndE trend: {trend_str}")
+
+    return "\n".join(lines)
+
+
+async def _get_ai_comment(
+    progress: OptProgress,
+    engine: Any | None,
+    model: str | None,
+    model_role: str | None,
+    temperature: float | None,
+    max_tokens: int | None,
+    logger: Any,
+) -> str:
+    """LLM에 최적화 진행 상황 한줄 해석을 요청한다.
+
+    engine이 None이거나 호출 실패 시 빈 문자열을 반환한다 (graceful degradation).
+    """
+    if engine is None or not progress.steps:
+        return ""
+
+    prompt = _build_analysis_prompt(progress)
+    try:
+        raw = await engine.process_prompt(
+            prompt=prompt,
+            model_override=model,
+            model_role=model_role,
+            temperature=temperature if temperature is not None else 0.3,
+            max_tokens=max_tokens if max_tokens is not None else 150,
+        )
+        # 첫 줄만 사용 (한 문장 코멘트)
+        comment = raw.strip().split("\n")[0].strip()
+        return comment
+    except Exception as exc:
+        logger.warning("dft_monitor_ai_comment_failed", error=str(exc))
+        return ""
+
+
+def _build_analysis_prompt(progress: OptProgress) -> str:
+    """최적화 진행 데이터를 LLM 프롬프트로 변환한다."""
+    data_lines: list[str] = []
+    for s in progress.steps:
+        de_str = f"{s.energy_change:.2e}" if s.energy_change is not None else "N/A"
+        mg_str = f"{s.max_gradient:.2e}" if s.max_gradient is not None else "N/A"
+        n_conv = sum(1 for v in s.converged_flags.values() if v)
+        n_total = len(s.converged_flags)
+        conv_str = f"{n_conv}/{n_total}" if n_total > 0 else "N/A"
+        data_lines.append(
+            f"Step {s.cycle}: E={s.energy_hartree:.8f} Eh, "
+            f"dE={de_str}, MaxGrad={mg_str}, Conv={conv_str}"
+        )
+
+    return (
+        "아래 ORCA 구조 최적화 진행 데이터를 분석하여 한국어로 한 문장 코멘트를 작성하세요.\n"
+        "수렴 패턴(monotonic/oscillating/plateau/diverging), "
+        "예상 남은 스텝, 주의사항을 포함하세요.\n"
+        "한 문장만 출력하세요.\n\n"
+        f"분자: {progress.formula or 'unknown'}\n"
+        f"메서드: {progress.method}/{progress.basis_set}\n"
+        f"총 {len(progress.steps)} 스텝\n\n"
+        + "\n".join(data_lines)
+    )
 
 
 def _short_path(path: str) -> str:
