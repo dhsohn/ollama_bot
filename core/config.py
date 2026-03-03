@@ -264,7 +264,7 @@ class RAGConfig(BaseModel):
     rerank_budget_ms: int = 1200
     retrieval_score_floor: float = 0.3
     supported_extensions: list[str] = Field(default_factory=lambda: [
-        ".md", ".txt", ".pdf", ".docx", ".html", ".htm",
+        ".md", ".txt", ".docx", ".html", ".htm",
         ".json", ".csv", ".py", ".js", ".ts",
         ".out", ".log",
     ])

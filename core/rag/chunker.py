@@ -135,8 +135,6 @@ class DocumentChunker:
             return DocumentChunker._load_html(path)
         if ext == ".docx":
             return DocumentChunker._load_docx(path)
-        if ext == ".pdf":
-            return DocumentChunker._load_pdf(path)
         if ext == ".json":
             data = json.loads(path.read_text(encoding="utf-8"))
             return json.dumps(data, ensure_ascii=False, indent=2)
@@ -166,21 +164,6 @@ class DocumentChunker:
             if texts:
                 paragraphs.append("".join(texts))
         return "\n".join(paragraphs)
-
-    @staticmethod
-    def _load_pdf(path: Path) -> str:
-        try:
-            from pypdf import PdfReader
-        except Exception:
-            return ""
-        reader = PdfReader(str(path))
-        pages: list[str] = []
-        for page in reader.pages:
-            page_text = page.extract_text() or ""
-            page_text = page_text.strip()
-            if page_text:
-                pages.append(page_text)
-        return "\n\n".join(pages)
 
     def _chunk_text(self, text: str) -> list[tuple[str, str | None]]:
         """토큰 수 기반 슬라이딩 윈도우 청킹."""

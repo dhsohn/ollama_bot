@@ -148,7 +148,6 @@ rag:
     - ".ini"
     - ".toml"
     - ".sh"
-    - ".pdf"
     - ".out"
     - ".log"
 
