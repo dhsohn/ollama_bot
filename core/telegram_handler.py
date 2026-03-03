@@ -64,6 +64,7 @@ _STREAM_MAX_TOTAL_CHARS = 8_192
 _STREAM_MAX_REPEATED_CHUNKS = 30
 _STREAM_RENDER_WAIT_GRACE_SECONDS = 5.0
 _CONTINUATION_TTL_SECONDS = 30 * 60
+_AUTO_CONTINUATION_MAX_TURNS = 3
 _CONTINUE_REQUEST_RE = re.compile(
     r"^\s*(continue|more|계속|이어서|이어줘|더\s*보여줘)\s*$",
     re.IGNORECASE,
@@ -717,6 +718,7 @@ class TelegramHandler:
         *,
         text_override: str | None = None,
         force_continuation: bool = False,
+        auto_continuation_turn: int = 0,
     ) -> None:
         """자유 텍스트 메시지를 처리한다. 스트리밍 UX를 제공한다."""
         chat = update.effective_chat
@@ -981,6 +983,16 @@ class TelegramHandler:
                     root_query=root_query,
                     turn=next_turn,
                 )
+                if auto_continuation_turn < _AUTO_CONTINUATION_MAX_TURNS:
+                    await message.reply_text("↪️ 답변이 길어 자동으로 이어서 보여드릴게요.")
+                    await self._handle_message_impl(
+                        update,
+                        context,
+                        text_override="",
+                        force_continuation=True,
+                        auto_continuation_turn=auto_continuation_turn + 1,
+                    )
+                    return
                 await message.reply_text(
                     self._build_long_response_followup_message(result.full_response)
                 )
