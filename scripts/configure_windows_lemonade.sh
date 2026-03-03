@@ -75,7 +75,10 @@ fi
 ps_file="$(mktemp "${TMPDIR:-/tmp}/lemonade_wsl_fix.XXXXXX.ps1")"
 trap 'rm -f "${ps_file}"' EXIT
 
-cat > "${ps_file}" <<'POWERSHELL'
+{
+  # Add UTF-8 BOM so Windows PowerShell parses the script consistently.
+  printf '\xEF\xBB\xBF'
+  cat <<'POWERSHELL'
 param(
   [int]$Port = 11434,
   [string]$RuleName = "Lemonade WSL",
@@ -94,7 +97,7 @@ $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.
 $isAdmin = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
 if (-not $isAdmin) {
-  Write-Log "관리자 권한(UAC)을 요청합니다."
+  Write-Log "Requesting administrator privileges (UAC)."
   $args = @(
     "-NoProfile",
     "-ExecutionPolicy", "Bypass",
@@ -111,7 +114,7 @@ if (-not $isAdmin) {
   exit $p.ExitCode
 }
 
-Write-Log "방화벽 규칙 적용: $RuleName (TCP/$Port)"
+Write-Log "Applying firewall rule: $RuleName (TCP/$Port)"
 $existingRules = @(Get-NetFirewallRule -DisplayName $RuleName -ErrorAction SilentlyContinue)
 if ($existingRules.Count -gt 0) {
   $existingRules | Remove-NetFirewallRule | Out-Null
@@ -123,14 +126,14 @@ if (-not $NoPortProxy) {
   $listeners = @(Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue)
   if ($listeners.Count -eq 0) {
     $needsPortProxy = $true
-    Write-Log "포트 리스너 미감지: portproxy를 설정합니다."
+    Write-Log "No listener detected: configuring portproxy."
   } else {
     $nonLoopback = @($listeners | Where-Object { $_.LocalAddress -notin @("127.0.0.1", "::1") })
     if ($nonLoopback.Count -eq 0) {
       $needsPortProxy = $true
-      Write-Log "loopback 리스너만 감지: portproxy를 설정합니다."
+      Write-Log "Loopback listener only: configuring portproxy."
     } else {
-      Write-Log "non-loopback 리스너 감지: portproxy를 생략합니다."
+      Write-Log "Non-loopback listener detected: skipping portproxy."
     }
   }
 
@@ -138,13 +141,14 @@ if (-not $NoPortProxy) {
     & netsh interface portproxy delete v4tov4 listenaddress=$ListenAddress listenport=$Port | Out-Null
     & netsh interface portproxy add v4tov4 listenaddress=$ListenAddress listenport=$Port connectaddress=$ConnectAddress connectport=$Port | Out-Null
     if ($LASTEXITCODE -ne 0) {
-      throw "portproxy 설정 실패 (exit=$LASTEXITCODE)"
+      throw "Failed to configure portproxy (exit=$LASTEXITCODE)"
     }
   }
 }
 
-Write-Log "완료: Firewall=OK PortProxy=$needsPortProxy Port=$Port"
+Write-Log "Done: Firewall=OK PortProxy=$needsPortProxy Port=$Port"
 POWERSHELL
+} > "${ps_file}"
 
 ps_file_win="$(wslpath -w "${ps_file}")"
 
