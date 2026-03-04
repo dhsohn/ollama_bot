@@ -8,6 +8,7 @@ action:
   target: "dft_monitor"
   parameters:
     max_file_size_mb: 1024
+    recent_completed_window_minutes: 60
 output:
   send_to_telegram: true
   save_to_file: null

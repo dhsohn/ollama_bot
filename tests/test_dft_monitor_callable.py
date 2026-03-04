@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -76,6 +77,56 @@ async def test_baseline_seed_prevents_restart_spam(tmp_path: Path) -> None:
     assert "DFT Monitor: 1건의 새 계산 감지" in third_result
     assert "OK" in third_result
     assert dft_index.upsert_single.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_detects_run_state_only_output_update(tmp_path: Path) -> None:
+    """run_state만 있을 때도 selected_inp 기반 out 변경을 감지해야 한다."""
+    kb_dir = tmp_path / "kb"
+    run_dir = kb_dir / "run_state_only"
+    run_dir.mkdir(parents=True)
+
+    inp_file = run_dir / "input.inp"
+    out_file = run_dir / "input.out"
+    inp_file.write_text("* xyz 0 1\n*", encoding="utf-8")
+    out_file.write_text(_COMPLETED_OUT, encoding="utf-8")
+
+    (run_dir / "run_state.json").write_text(
+        json.dumps(
+            {
+                "status": "running",
+                "reaction_dir": str(run_dir),
+                "selected_inp": str(inp_file),
+                "attempts": [],
+                "final_result": {},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    state_file = tmp_path / "automation" / "state.json"
+    dft_index = AsyncMock()
+    dft_index.upsert_single = AsyncMock(return_value=True)
+    logger = MagicMock()
+
+    monitor = build_dft_monitor_callable(
+        dft_index=dft_index,
+        kb_dirs=[str(kb_dir)],
+        logger=logger,
+        state_file=str(state_file),
+    )
+
+    await monitor()  # baseline
+
+    out_file.write_text(_COMPLETED_OUT + "\n# changed\n", encoding="utf-8")
+    mtime = os.path.getmtime(out_file)
+    os.utime(out_file, (mtime + 5.0, mtime + 5.0))
+
+    result = await monitor()
+    assert "DFT Monitor: 1건의 새 계산 감지" in result
+    assert "input.out" in result
+    dft_index.upsert_single.assert_awaited_once_with(str(out_file))
 
 
 # ---------------------------------------------------------------------------

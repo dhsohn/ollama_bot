@@ -42,6 +42,7 @@ def build_dft_monitor_callable(
 
     async def dft_monitor(
         max_file_size_mb: int = 64,
+        recent_completed_window_minutes: int = 60,
         model: str | None = None,
         model_role: str | None = None,
         temperature: float | None = None,
@@ -63,7 +64,12 @@ def build_dft_monitor_callable(
             if not kb_path.is_dir():
                 continue
 
-            for fpath in discover_orca_targets(kb_path, max_bytes=max_bytes, logger=logger):
+            for fpath in discover_orca_targets(
+                kb_path,
+                max_bytes=max_bytes,
+                logger=logger,
+                recent_completed_window_minutes=recent_completed_window_minutes,
+            ):
                 spath = str(fpath)
                 current_mtime = os.path.getmtime(spath)
                 scanned_mtimes[spath] = current_mtime
