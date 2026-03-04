@@ -133,11 +133,14 @@ mkdir -p data/conversations data/memory data/logs data/reports kb/orca_runs kb/o
 TELEGRAM_BOT_TOKEN=...
 ALLOWED_TELEGRAM_USERS=123456789
 HOST_KB_DIR=./kb
+SIM_INPUT_DIR_ORCA_AUTO=/app/kb/orca_runs
 ```
 
 - `ALLOWED_TELEGRAM_USERS`는 **숫자 Chat ID CSV**만 허용됩니다.
 - placeholder(`your_telegram_chat_id_here`) 상태면 시작 시 fail-fast로 종료됩니다.
 - `HOST_KB_DIR`는 docker compose 볼륨 마운트용 경로입니다. (앱 런타임 설정은 아님)
+- `/sim submit <tool> <이름>` shorthand를 쓰려면 `SIM_INPUT_DIR_<TOOL>` 또는 `SIM_INPUT_DIR`를 설정하세요.
+  - 예: `SIM_INPUT_DIR_ORCA_AUTO=/app/kb/orca_runs`이면 `/sim submit orca_auto STRUC1` → `/app/kb/orca_runs/STRUC1`
 - 런타임 일반 설정(model/host/log/data_dir 등)은 `config/config.yaml`에서 관리합니다.
 - 모델 변경은 텔레그램 명령어가 아니라 서버에서 `config/config.yaml` 값을 수정한 뒤 컨테이너를 재시작하는 방식으로 운영합니다.
 
@@ -352,7 +355,8 @@ ollama:
 
 `.env` 우선순위 관련:
 - `APP_ENV_FILE` 또는 `APP_ENV_FILES`(CSV)로 로드 파일 지정 가능
-- 앱 런타임에서 `.env`로 반영되는 값은 텔레그램 시크릿 2개뿐입니다.
+- 앱 런타임 설정 반영은 기본적으로 텔레그램 시크릿 2개만 지원하며,
+  시뮬레이션 shorthand 경로(`SIM_INPUT_DIR`, `SIM_INPUT_DIR_<TOOL>`)는 실행 시 `os.environ`에서 직접 참조합니다.
 - `HOST_KB_DIR`는 docker compose가 볼륨 마운트 시 사용합니다.
 
 ## 운영 스크립트

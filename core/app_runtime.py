@@ -67,6 +67,7 @@ class RuntimeState:
     auto_evaluator: AutoEvaluator | None = None
     semantic_cache: Any = None  # SemanticCache | None
     rag_startup_index_task: asyncio.Task[Any] | None = None
+    sim_scheduler: Any = None  # SimJobScheduler | None
 
 
 def _is_running_in_container() -> bool:
@@ -592,6 +593,40 @@ async def _build_runtime(
                 dft_index = None
                 dft_query_engine = None
 
+        # ── 시뮬레이션 큐 초기화 ──
+        sim_scheduler = None
+
+        if config.sim_queue.enabled:
+            try:
+                from core.sim_job_store import SimJobStore
+                from core.sim_resource_manager import ResourceManager
+                from core.sim_scheduler import SimJobScheduler
+
+                sim_db_path = str(
+                    Path(config.data_dir) / "sim_queue" / "sim_jobs.db"
+                )
+                sim_store = SimJobStore()
+                await sim_store.initialize(sim_db_path)
+                cleanup_stack.push_async_callback(sim_store.close)
+
+                sim_resources = ResourceManager(
+                    total_cores=config.sim_queue.total_cores,
+                    total_memory_mb=config.sim_queue.total_memory_mb,
+                    max_concurrent=config.sim_queue.max_concurrent_jobs,
+                )
+
+                sim_scheduler = SimJobScheduler(
+                    config=config.sim_queue,
+                    store=sim_store,
+                    resources=sim_resources,
+                    dft_index=dft_index,
+                )
+                sim_scheduler.set_allowed_users(config.security.allowed_users)
+                logger.info("sim_scheduler_initialized")
+            except Exception as exc:
+                logger.warning("sim_scheduler_init_failed", error=str(exc))
+                sim_scheduler = None
+
         engine = Engine(
             config=config,
             llm_client=llm,
@@ -657,6 +692,10 @@ async def _build_runtime(
             "Telegram handler must receive scheduler before initialization."
         )
 
+        if sim_scheduler is not None:
+            telegram.set_sim_scheduler(sim_scheduler)
+            sim_scheduler.set_telegram(telegram)
+
         try:
             auto_count = await scheduler.load_automations(strict=True)
         except Exception as exc:
@@ -691,6 +730,7 @@ async def _build_runtime(
             auto_evaluator=auto_evaluator,
             semantic_cache=semantic_cache,
             rag_startup_index_task=rag_startup_index_task,
+            sim_scheduler=sim_scheduler,
         )
     except Exception:
         await cleanup_stack.aclose()
@@ -709,6 +749,12 @@ async def _shutdown_runtime(
     logger = runtime.logger
     app = runtime.app
     logger.info("shutting_down")
+
+    if runtime.sim_scheduler is not None:
+        try:
+            await runtime.sim_scheduler.stop()
+        except Exception as exc:
+            logger.error("sim_scheduler_stop_failed", error=str(exc))
 
     if scheduler_started:
         try:
@@ -831,6 +877,9 @@ async def async_main(
 
             runtime.scheduler.start()
             scheduler_started = True
+
+            if runtime.sim_scheduler is not None:
+                await runtime.sim_scheduler.start()
 
             memory_maintenance_task = asyncio.create_task(
                 _memory_maintenance_loop(

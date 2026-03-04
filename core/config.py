@@ -297,6 +297,64 @@ class DFTConfig(BaseModel):
     max_file_size_mb: int = 64
 
 
+class SimToolConfig(BaseModel):
+    """시뮬레이션 도구별 설정."""
+
+    enabled: bool = True
+    executable: str
+    cli_template: str
+    command_prefix: str = ""
+    default_cores: int = 4
+    default_memory_mb: int = 8192
+    max_cores: int = 16
+    max_memory_mb: int = 65536
+    output_extension: str = ".out"
+    env_vars: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("default_cores", "max_cores")
+    @classmethod
+    def validate_positive_cores(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("core count must be >= 1")
+        return value
+
+    @field_validator("default_memory_mb", "max_memory_mb")
+    @classmethod
+    def validate_positive_memory(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("memory must be >= 1 MB")
+        return value
+
+
+class SimQueueConfig(BaseModel):
+    """시뮬레이션 작업 큐 설정."""
+
+    enabled: bool = False
+    total_cores: int = 16
+    total_memory_mb: int = 131072
+    max_concurrent_jobs: int = 4
+    default_retry_count: int = 2
+    max_retry_count: int = 5
+    retry_delay_seconds: int = 30
+    queue_check_interval_seconds: int = 5
+    job_work_dir: str = "data/sim_jobs"
+    tools: dict[str, SimToolConfig] = Field(default_factory=dict)
+
+    @field_validator("total_cores", "max_concurrent_jobs")
+    @classmethod
+    def validate_positive_ints(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("simulation queue numeric settings must be >= 1")
+        return value
+
+    @field_validator("total_memory_mb")
+    @classmethod
+    def validate_memory(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("total_memory_mb must be >= 1")
+        return value
+
+
 class AppSettings(BaseModel):
     """루트 설정. 런타임 설정은 YAML에서, 텔레그램 시크릿은 .env에서 로드한다."""
 
@@ -321,6 +379,7 @@ class AppSettings(BaseModel):
     ollama: RetrievalProviderConfig = Field(default_factory=RetrievalProviderConfig)
     rag: RAGConfig = Field(default_factory=RAGConfig)
     dft: DFTConfig = Field(default_factory=DFTConfig)
+    sim_queue: SimQueueConfig = Field(default_factory=SimQueueConfig)
 
 
 class _TelegramEnvSecrets(BaseSettings):

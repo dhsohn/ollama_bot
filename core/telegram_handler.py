@@ -180,6 +180,8 @@ class TelegramHandler:
         self._max_message_length = config.telegram.max_message_length
         # auto_scheduler 참조 (main.py에서 주입)
         self._scheduler = None
+        # sim_scheduler 참조 (app_runtime에서 주입)
+        self._sim_scheduler = None
         # 프리뷰 캐시: {(chat_id, bot_message_id): {"user": str, "bot": str, "ts": float}}
         self._preview_cache: dict[tuple[int, int], dict] = {}
         # 사유 수집 대기: {chat_id: {"bot_message_id": int, "expires": float}}
@@ -194,6 +196,10 @@ class TelegramHandler:
     def has_scheduler(self) -> bool:
         """auto_scheduler 참조 주입 여부를 반환한다."""
         return self._scheduler is not None
+
+    def set_sim_scheduler(self, sim_scheduler) -> None:
+        """SimJobScheduler 참조를 설정한다 (순환 의존 방지)."""
+        self._sim_scheduler = sim_scheduler
 
     @property
     def _feedback_enabled(self) -> bool:
@@ -216,6 +222,8 @@ class TelegramHandler:
         ]
         if self._feedback_enabled:
             handlers.append(CommandHandler("feedback", self._cmd_feedback))
+        if self._sim_scheduler is not None:
+            handlers.append(CommandHandler("sim", self._cmd_sim))
         return handlers
 
     def _build_bot_commands(self) -> list[BotCommand]:
@@ -230,6 +238,8 @@ class TelegramHandler:
         ]
         if self._feedback_enabled:
             commands.append(BotCommand("feedback", "피드백 통계"))
+        if self._sim_scheduler is not None:
+            commands.append(BotCommand("sim", "시뮬레이션 큐 관리"))
         return commands
 
     async def initialize(self) -> Application:
@@ -306,6 +316,8 @@ class TelegramHandler:
         ]
         if self._feedback_enabled:
             command_lines.insert(6, "/feedback — 피드백 통계")
+        if self._sim_scheduler is not None:
+            command_lines.append("/sim — 시뮬레이션 큐 관리")
 
         help_text = (
             "📋 <b>사용 가능한 명령어</b>\n\n"
@@ -1418,6 +1430,311 @@ class TelegramHandler:
 
         # 사유 대기가 아니면 일반 메시지 처리로 위임
         await self._handle_message_impl(update, context)
+
+    # ── 시뮬레이션 큐 명령어 ──
+
+    @_auth_required
+    @_global_slot_required
+    async def _cmd_sim(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if self._sim_scheduler is None:
+            await update.effective_message.reply_text(  # type: ignore[union-attr]
+                "시뮬레이션 큐가 활성화되어 있지 않습니다."
+            )
+            return
+
+        args = context.args or []
+        if not args:
+            await update.effective_message.reply_text(  # type: ignore[union-attr]
+                "사용법: /sim [submit|list|status|info|cancel|priority|retry|tools]"
+            )
+            return
+
+        subcmd = args[0].lower()
+        handlers = {
+            "submit": self._sim_submit,
+            "list": self._sim_list,
+            "status": self._sim_status,
+            "info": self._sim_info,
+            "cancel": self._sim_cancel,
+            "priority": self._sim_priority,
+            "retry": self._sim_retry,
+            "tools": self._sim_tools,
+        }
+        handler = handlers.get(subcmd)
+        if handler is None:
+            await update.effective_message.reply_text(  # type: ignore[union-attr]
+                f"알 수 없는 서브커맨드: {subcmd}"
+            )
+            return
+        await handler(update, args[1:])
+
+    async def _sim_submit(self, update: Update, args: list[str]) -> None:
+        """Usage: /sim submit <tool> <input_file> [--cores N] [--mem N] [--priority N] [--label TEXT]"""
+        if len(args) < 2:
+            await update.effective_message.reply_text(  # type: ignore[union-attr]
+                "사용법: /sim submit <tool> <input_file> "
+                "[--cores N] [--mem N] [--priority N] [--label TEXT]"
+            )
+            return
+
+        tool = args[0]
+        input_file = args[1]
+        cores: int | None = None
+        memory_mb: int | None = None
+        priority = 100
+        label = ""
+
+        i = 2
+        while i < len(args):
+            if args[i] == "--cores" and i + 1 < len(args):
+                try:
+                    cores = int(args[i + 1])
+                except ValueError:
+                    pass
+                i += 2
+            elif args[i] == "--mem" and i + 1 < len(args):
+                try:
+                    memory_mb = int(args[i + 1])
+                except ValueError:
+                    pass
+                i += 2
+            elif args[i] == "--priority" and i + 1 < len(args):
+                try:
+                    priority = int(args[i + 1])
+                except ValueError:
+                    pass
+                i += 2
+            elif args[i] == "--label" and i + 1 < len(args):
+                label = args[i + 1]
+                i += 2
+            else:
+                i += 1
+
+        try:
+            job_id = await self._sim_scheduler.submit_job(
+                tool=tool,
+                input_file=input_file,
+                submitted_by=update.effective_chat.id,  # type: ignore[union-attr]
+                cores=cores,
+                memory_mb=memory_mb,
+                priority=priority,
+                label=label,
+            )
+            await update.effective_message.reply_text(  # type: ignore[union-attr]
+                f"작업 등록 완료: {job_id[:8]}\n"
+                f"도구: {tool} | 우선순위: {priority}"
+            )
+        except (ValueError, FileNotFoundError) as exc:
+            await update.effective_message.reply_text(  # type: ignore[union-attr]
+                f"등록 실패: {exc}"
+            )
+
+    async def _sim_list(self, update: Update, args: list[str]) -> None:
+        status_filter = args[0] if args else None
+        jobs = await self._sim_scheduler.list_jobs(status=status_filter)
+        if not jobs:
+            await update.effective_message.reply_text(  # type: ignore[union-attr]
+                "등록된 작업이 없습니다."
+            )
+            return
+
+        lines = ["<b>시뮬레이션 작업 목록</b>\n"]
+        for j in jobs:
+            label = f" ({self._escape_html(j['label'])})" if j.get("label") else ""
+            lines.append(
+                f"<code>{j['job_id'][:8]}</code> "
+                f"{self._escape_html(j['tool'])} "
+                f"[{j['status']}] "
+                f"C{j['cores']}/M{j['memory_mb']}MB"
+                f"{label}"
+            )
+        await update.effective_message.reply_text(  # type: ignore[union-attr]
+            "\n".join(lines), parse_mode=ParseMode.HTML,
+        )
+
+    async def _sim_status(self, update: Update, args: list[str]) -> None:
+        status = await self._sim_scheduler.get_queue_status()
+        text = (
+            "<b>시뮬레이션 큐 현황</b>\n\n"
+            f"대기: {status.get('queued', 0)}\n"
+            f"실행 중: {status.get('running', 0)}\n"
+            f"완료: {status.get('completed', 0)}\n"
+            f"실패: {status.get('failed', 0)}\n\n"
+            f"<b>리소스</b>\n"
+            f"CPU: {status.get('allocated_cores', 0)}/{status.get('total_cores', 0)} 코어\n"
+            f"메모리: {status.get('allocated_memory_mb', 0)}/{status.get('total_memory_mb', 0)} MB\n"
+            f"동시실행: {status.get('running_jobs', 0)}/{status.get('max_concurrent', 0)}"
+        )
+        await update.effective_message.reply_text(  # type: ignore[union-attr]
+            text, parse_mode=ParseMode.HTML,
+        )
+
+    async def _sim_info(self, update: Update, args: list[str]) -> None:
+        if not args:
+            await update.effective_message.reply_text(  # type: ignore[union-attr]
+                "사용법: /sim info <job_id>"
+            )
+            return
+
+        job_id_prefix = args[0]
+        jobs = await self._sim_scheduler.list_jobs(limit=50)
+        matched = [j for j in jobs if j["job_id"].startswith(job_id_prefix)]
+        if not matched:
+            await update.effective_message.reply_text(  # type: ignore[union-attr]
+                f"작업을 찾을 수 없음: {job_id_prefix}"
+            )
+            return
+
+        j = matched[0]
+        lines = [
+            f"<b>작업 상세: {j['job_id'][:8]}</b>\n",
+            f"도구: {self._escape_html(j['tool'])}",
+            f"상태: {j['status']}",
+            f"입력: <code>{self._escape_html(j['input_file'])}</code>",
+            f"코어: {j['cores']} | 메모리: {j['memory_mb']}MB",
+            f"우선순위: {j['priority']}",
+            f"재시도: {j['retry_count']}/{j['max_retries']}",
+            f"제출: {j['submitted_at'] or '-'}",
+            f"시작: {j['started_at'] or '-'}",
+            f"완료: {j['completed_at'] or '-'}",
+        ]
+        if j.get("label"):
+            lines.append(f"라벨: {self._escape_html(j['label'])}")
+        if j.get("exit_code") is not None:
+            lines.append(f"종료코드: {j['exit_code']}")
+        if j.get("error_message"):
+            lines.append(f"오류: {self._escape_html(j['error_message'])}")
+        if j.get("output_file"):
+            lines.append(f"출력: <code>{self._escape_html(j['output_file'])}</code>")
+
+        await update.effective_message.reply_text(  # type: ignore[union-attr]
+            "\n".join(lines), parse_mode=ParseMode.HTML,
+        )
+
+    async def _sim_cancel(self, update: Update, args: list[str]) -> None:
+        if not args:
+            await update.effective_message.reply_text(  # type: ignore[union-attr]
+                "사용법: /sim cancel <job_id>"
+            )
+            return
+
+        job_id_prefix = args[0]
+        jobs = await self._sim_scheduler.list_jobs(limit=50)
+        matched = [j for j in jobs if j["job_id"].startswith(job_id_prefix)]
+        if not matched:
+            await update.effective_message.reply_text(  # type: ignore[union-attr]
+                f"작업을 찾을 수 없음: {job_id_prefix}"
+            )
+            return
+
+        success = await self._sim_scheduler.cancel_job(matched[0]["job_id"])
+        if success:
+            await update.effective_message.reply_text(  # type: ignore[union-attr]
+                f"작업 {matched[0]['job_id'][:8]} 취소 완료"
+            )
+        else:
+            await update.effective_message.reply_text(  # type: ignore[union-attr]
+                f"작업 {matched[0]['job_id'][:8]} 취소 불가 (이미 완료/실패/취소됨)"
+            )
+
+    async def _sim_priority(self, update: Update, args: list[str]) -> None:
+        if len(args) < 2:
+            await update.effective_message.reply_text(  # type: ignore[union-attr]
+                "사용법: /sim priority <job_id> <priority>"
+            )
+            return
+
+        job_id_prefix = args[0]
+        try:
+            new_priority = int(args[1])
+        except ValueError:
+            await update.effective_message.reply_text(  # type: ignore[union-attr]
+                "우선순위는 정수여야 합니다."
+            )
+            return
+
+        jobs = await self._sim_scheduler.list_jobs(limit=50)
+        matched = [j for j in jobs if j["job_id"].startswith(job_id_prefix)]
+        if not matched:
+            await update.effective_message.reply_text(  # type: ignore[union-attr]
+                f"작업을 찾을 수 없음: {job_id_prefix}"
+            )
+            return
+
+        success = await self._sim_scheduler.reprioritize(matched[0]["job_id"], new_priority)
+        if success:
+            await update.effective_message.reply_text(  # type: ignore[union-attr]
+                f"작업 {matched[0]['job_id'][:8]} 우선순위 → {new_priority}"
+            )
+        else:
+            await update.effective_message.reply_text(  # type: ignore[union-attr]
+                f"우선순위 변경 불가 (대기 상태가 아님)"
+            )
+
+    async def _sim_retry(self, update: Update, args: list[str]) -> None:
+        if not args:
+            await update.effective_message.reply_text(  # type: ignore[union-attr]
+                "사용법: /sim retry <job_id>"
+            )
+            return
+
+        job_id_prefix = args[0]
+        jobs = await self._sim_scheduler.list_jobs(limit=50)
+        matched = [j for j in jobs if j["job_id"].startswith(job_id_prefix)]
+        if not matched:
+            await update.effective_message.reply_text(  # type: ignore[union-attr]
+                f"작업을 찾을 수 없음: {job_id_prefix}"
+            )
+            return
+
+        old_job = matched[0]
+        if old_job["status"] not in ("failed", "cancelled"):
+            await update.effective_message.reply_text(  # type: ignore[union-attr]
+                "실패 또는 취소된 작업만 재시도할 수 있습니다."
+            )
+            return
+
+        try:
+            job_id = await self._sim_scheduler.submit_job(
+                tool=old_job["tool"],
+                input_file=old_job["input_file"],
+                submitted_by=update.effective_chat.id,  # type: ignore[union-attr]
+                cores=old_job["cores"],
+                memory_mb=old_job["memory_mb"],
+                priority=old_job["priority"],
+                label=old_job.get("label", ""),
+            )
+            await update.effective_message.reply_text(  # type: ignore[union-attr]
+                f"재시도 등록: {job_id[:8]} (원본: {old_job['job_id'][:8]})"
+            )
+        except (ValueError, FileNotFoundError) as exc:
+            await update.effective_message.reply_text(  # type: ignore[union-attr]
+                f"재시도 실패: {exc}"
+            )
+
+    async def _sim_tools(self, update: Update, args: list[str]) -> None:
+        tools = self._sim_scheduler.get_tools()
+        if not tools:
+            await update.effective_message.reply_text(  # type: ignore[union-attr]
+                "설정된 시뮬레이션 도구가 없습니다."
+            )
+            return
+
+        lines = ["<b>시뮬레이션 도구 목록</b>\n"]
+        for name, info in tools.items():
+            status = "활성" if info["enabled"] else "비활성"
+            prefix = str(info.get("command_prefix", "")).strip()
+            prefix_display = prefix if prefix else "(없음)"
+            lines.append(
+                f"<b>{self._escape_html(name)}</b> [{status}]\n"
+                f"  실행: <code>{self._escape_html(info['executable'])}</code>\n"
+                f"  prefix: <code>{self._escape_html(prefix_display)}</code>\n"
+                f"  기본: C{info['default_cores']}/M{info['default_memory_mb']}MB\n"
+                f"  최대: C{info['max_cores']}/M{info['max_memory_mb']}MB"
+            )
+        await update.effective_message.reply_text(  # type: ignore[union-attr]
+            "\n".join(lines), parse_mode=ParseMode.HTML,
+        )
 
     # ── 에러 핸들러 ──
 
