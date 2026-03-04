@@ -134,6 +134,7 @@ TELEGRAM_BOT_TOKEN=...
 ALLOWED_TELEGRAM_USERS=123456789
 HOST_KB_DIR=./kb
 SIM_INPUT_DIR_ORCA_AUTO=/app/kb/orca_runs
+SIM_EXTERNAL_AGENT_TOKEN=<긴_랜덤_토큰>
 ```
 
 - `ALLOWED_TELEGRAM_USERS`는 **숫자 Chat ID CSV**만 허용됩니다.
@@ -141,6 +142,7 @@ SIM_INPUT_DIR_ORCA_AUTO=/app/kb/orca_runs
 - `HOST_KB_DIR`는 docker compose 볼륨 마운트용 경로입니다. (앱 런타임 설정은 아님)
 - `/sim submit <tool> <이름>` shorthand를 쓰려면 `SIM_INPUT_DIR_<TOOL>` 또는 `SIM_INPUT_DIR`를 설정하세요.
   - 예: `SIM_INPUT_DIR_ORCA_AUTO=/app/kb/orca_runs`이면 `/sim submit orca_auto STRUC1` → `/app/kb/orca_runs/STRUC1`
+- `SIM_EXTERNAL_AGENT_TOKEN`은 `sim_host_agent` 인증 토큰입니다. 충분히 긴 랜덤 문자열을 사용하세요.
 - 런타임 일반 설정(model/host/log/data_dir 등)은 `config/config.yaml`에서 관리합니다.
 - 모델 변경은 텔레그램 명령어가 아니라 서버에서 `config/config.yaml` 값을 수정한 뒤 컨테이너를 재시작하는 방식으로 운영합니다.
 
@@ -182,6 +184,22 @@ docker compose logs -f ollama_bot
 
 ```bash
 docker compose ps
+```
+
+### 외부 시뮬레이션 에이전트 분리(권장)
+
+`/sim list|status|info|cancel`의 외부 작업 처리는 `sim_host_agent`가 담당합니다.
+
+- `ollama_bot`: 일반 봇 기능만 담당 (host PID 미사용)
+- `sim_host_agent`: host PID에서 외부 시뮬레이션 조회/종료 API만 제공
+- 인증: `SIM_EXTERNAL_AGENT_TOKEN` Bearer 토큰 필수
+- 취소 가드: 감지된 external 작업만 종료 허용 (임의 PID 차단)
+
+점검 예시:
+
+```bash
+docker compose ps
+docker compose logs -f sim_host_agent
 ```
 
 ## 실행 정책/제약

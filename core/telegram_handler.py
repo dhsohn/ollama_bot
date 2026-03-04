@@ -1582,10 +1582,14 @@ class TelegramHandler:
                 f"{elapsed_minutes}m" if elapsed_minutes > 0 else f"{elapsed_seconds}s"
             )
             input_hint = self._escape_html(j.get("input_file") or "-")
+            ext_status = self._escape_html(str(j.get("status") or "running"))
+            ext_cores = int(j.get("cores", 0))
+            ext_memory = int(j.get("memory_mb", 0))
+            resource_hint = " (추정)" if j.get("resource_source") == "config_default" else ""
             lines.append(
                 f"<code>{j['job_id'][:8]}</code> "
                 f"{self._escape_html(j['tool'])} "
-                f"[running] C?/M? "
+                f"[{ext_status}] C{ext_cores}/M{ext_memory}MB{resource_hint} "
                 f"(외부 PID:{j.get('pid', '?')}, {elapsed_text}, 입력:{input_hint})"
             )
         await update.effective_message.reply_text(  # type: ignore[union-attr]
@@ -1604,6 +1608,14 @@ class TelegramHandler:
         running_line = f"실행 중: {running_total}"
         if external_running:
             running_line += f" (큐:{queue_running}, 외부:{external_running})"
+        queue_alloc_cores = int(status.get("allocated_cores", 0))
+        external_alloc_cores = int(status.get("allocated_external_cores", 0))
+        total_alloc_cores = int(status.get("allocated_total_cores", queue_alloc_cores))
+        queue_alloc_memory = int(status.get("allocated_memory_mb", 0))
+        external_alloc_memory = int(status.get("allocated_external_memory_mb", 0))
+        total_alloc_memory = int(status.get("allocated_total_memory_mb", queue_alloc_memory))
+        running_jobs_queue = int(status.get("running_jobs", 0))
+        running_jobs_total = int(status.get("running_total_jobs", running_jobs_queue))
 
         text = (
             "<b>시뮬레이션 큐 현황</b>\n\n"
@@ -1612,9 +1624,12 @@ class TelegramHandler:
             f"완료: {status.get('completed', 0)}\n"
             f"실패: {status.get('failed', 0)}\n\n"
             f"<b>리소스</b>\n"
-            f"CPU: {status.get('allocated_cores', 0)}/{status.get('total_cores', 0)} 코어\n"
-            f"메모리: {status.get('allocated_memory_mb', 0)}/{status.get('total_memory_mb', 0)} MB\n"
-            f"동시실행: {status.get('running_jobs', 0)}/{status.get('max_concurrent', 0)}"
+            f"CPU: {total_alloc_cores}/{status.get('total_cores', 0)} 코어 "
+            f"(큐:{queue_alloc_cores}, 외부:{external_alloc_cores})\n"
+            f"메모리: {total_alloc_memory}/{status.get('total_memory_mb', 0)} MB "
+            f"(큐:{queue_alloc_memory}, 외부:{external_alloc_memory})\n"
+            f"동시실행(큐): {running_jobs_queue}/{status.get('max_concurrent', 0)} | "
+            f"실행합계: {running_jobs_total}"
         )
         await update.effective_message.reply_text(  # type: ignore[union-attr]
             text, parse_mode=ParseMode.HTML,
@@ -1670,9 +1685,11 @@ class TelegramHandler:
                     f"PID: {ext.get('pid', '-')}",
                     f"경과: {elapsed_text}",
                     f"입력: <code>{self._escape_html(str(ext.get('input_file') or '-'))}</code>",
-                    "코어/메모리: 외부 프로세스라 추적 불가",
+                    f"코어: {int(ext.get('cores', 0))} | 메모리: {int(ext.get('memory_mb', 0))}MB",
                     "제출/시작/완료: 외부 프로세스라 추적 불가",
                 ]
+                if ext.get("resource_source") == "config_default":
+                    lines.append("리소스 근거: 도구 기본값(추정)")
                 if cmd:
                     lines.append(f"명령: <code>{self._escape_html(cmd)}</code>")
 

@@ -167,6 +167,10 @@ sim_queue:
   max_retry_count: 5
   retry_delay_seconds: 30
   queue_check_interval_seconds: 5
+  external_agent_enabled: true
+  external_agent_base_url: "http://sim_host_agent:18081"
+  external_agent_timeout_seconds: 3.0
+  external_agent_token_env: "SIM_EXTERNAL_AGENT_TOKEN"
   job_work_dir: "data/sim_jobs"
   tools:
     orca_auto:

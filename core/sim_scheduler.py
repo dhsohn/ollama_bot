@@ -7,12 +7,16 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import signal
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
+
+import httpx
 
 from core.config import SimQueueConfig
 from core.logging_setup import get_logger
@@ -124,6 +128,194 @@ class SimJobScheduler:
         except OSError:
             return False
 
+    @staticmethod
+    def _resolve_scan_root(raw_path: str) -> Path:
+        root = Path(raw_path).expanduser()
+        if root.is_absolute():
+            return root
+        return (Path.cwd() / root).resolve()
+
+    def _lockfile_scan_roots(self) -> list[tuple[str, Path]]:
+        """외부 실행 lock 파일(run.lock) 탐색 루트를 반환한다."""
+        candidates: list[tuple[str, Path]] = []
+        for tool_name in self._config.tools:
+            key = f"SIM_INPUT_DIR_{self._tool_env_suffix(tool_name)}"
+            raw = os.environ.get(key, "").strip()
+            if not raw:
+                continue
+            root = self._resolve_scan_root(raw)
+            if root.is_dir():
+                candidates.append((tool_name, root))
+
+        global_root = os.environ.get("SIM_INPUT_DIR", "").strip()
+        if global_root:
+            root = self._resolve_scan_root(global_root)
+            if root.is_dir():
+                fallback_tool = (
+                    "orca_auto"
+                    if "orca_auto" in self._config.tools
+                    else (next(iter(self._config.tools), "external"))
+                )
+                candidates.append((fallback_tool, root))
+
+        fallback_tool = (
+            "orca_auto"
+            if "orca_auto" in self._config.tools
+            else (next(iter(self._config.tools), "external"))
+        )
+        for raw in ("/app/kb/orca_runs", "kb/orca_runs"):
+            root = self._resolve_scan_root(raw)
+            if root.is_dir():
+                candidates.append((fallback_tool, root))
+
+        deduped: list[tuple[str, Path]] = []
+        seen_roots: set[Path] = set()
+        for tool_name, root in candidates:
+            try:
+                resolved = root.resolve()
+            except OSError:
+                continue
+            if resolved in seen_roots:
+                continue
+            seen_roots.add(resolved)
+            deduped.append((tool_name, resolved))
+        return deduped
+
+    @staticmethod
+    def _load_json_file(path: Path) -> dict[str, Any]:
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except OSError:
+            return {}
+        if not raw.strip():
+            return {}
+        try:
+            value = json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+        return value if isinstance(value, dict) else {}
+
+    @staticmethod
+    def _parse_iso_datetime(raw: str | None) -> datetime | None:
+        if not raw:
+            return None
+        text = raw.strip()
+        if not text:
+            return None
+        try:
+            dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+
+    def _elapsed_seconds_from_lock(
+        self,
+        *,
+        started_at_raw: str | None,
+        lock_path: Path,
+    ) -> int:
+        started_at = self._parse_iso_datetime(started_at_raw)
+        if started_at is not None:
+            delta = datetime.now(timezone.utc) - started_at
+            return max(0, int(delta.total_seconds()))
+        try:
+            mtime = lock_path.stat().st_mtime
+        except OSError:
+            return 0
+        return max(0, int(datetime.now(timezone.utc).timestamp() - mtime))
+
+    def _tool_default_resources(self, tool_name: str) -> tuple[int, int]:
+        """도구 기본 리소스(코어/메모리)를 반환한다."""
+        tool = self._config.tools.get(tool_name)
+        if tool is None:
+            return 0, 0
+        return int(tool.default_cores), int(tool.default_memory_mb)
+
+    def _scan_lockfile_external_jobs(
+        self,
+        *,
+        tracked_pids: set[int],
+        seen_external_pids: set[int],
+    ) -> list[dict[str, Any]]:
+        """run.lock/run_state.json 기반으로 외부 작업을 탐지한다."""
+        jobs: list[dict[str, Any]] = []
+        for tool_name, root in self._lockfile_scan_roots():
+            for lock_path in root.glob("*/run.lock"):
+                lock_dir = lock_path.parent
+                lock_data = self._load_json_file(lock_path)
+                state_data = self._load_json_file(lock_dir / "run_state.json")
+
+                state_status = str(state_data.get("status") or "").strip().lower()
+                if state_status and state_status not in {"running", "retrying"}:
+                    continue
+
+                pid_raw = lock_data.get("pid")
+                pid: int | None = None
+                try:
+                    if pid_raw is not None:
+                        pid = int(pid_raw)
+                except (TypeError, ValueError):
+                    pid = None
+
+                if pid is not None and pid > 0:
+                    if pid in tracked_pids or pid in seen_external_pids:
+                        continue
+                    seen_external_pids.add(pid)
+
+                input_hint = str(
+                    state_data.get("reaction_dir")
+                    or lock_dir
+                )
+                started_at_raw = (
+                    str(state_data.get("started_at"))
+                    if state_data.get("started_at")
+                    else str(lock_data.get("started_at") or "")
+                )
+                elapsed_seconds = self._elapsed_seconds_from_lock(
+                    started_at_raw=started_at_raw,
+                    lock_path=lock_path,
+                )
+                selected_inp = str(state_data.get("selected_inp") or "").strip()
+                if selected_inp:
+                    cli_command = f"run-inp --reaction-dir {input_hint}"
+                else:
+                    cli_command = f"lockfile:{lock_path}"
+
+                if pid is not None and pid > 0:
+                    job_id = f"external-{pid}"
+                else:
+                    job_id = f"external-lock-{lock_dir.name}"
+
+                default_cores, default_memory = self._tool_default_resources(tool_name)
+                jobs.append(
+                    {
+                        "job_id": job_id,
+                        "tool": tool_name,
+                        "status": state_status or "running",
+                        "priority": 0,
+                        "cores": default_cores,
+                        "memory_mb": default_memory,
+                        "input_file": input_hint,
+                        "output_file": None,
+                        "submitted_by": 0,
+                        "submitted_at": None,
+                        "started_at": started_at_raw or None,
+                        "completed_at": None,
+                        "pid": pid,
+                        "elapsed_seconds": elapsed_seconds,
+                        "cli_command": cli_command,
+                        "retry_count": 0,
+                        "max_retries": 0,
+                        "label": "external",
+                        "external": True,
+                        "source": "lockfile",
+                        "resource_source": "config_default",
+                    }
+                )
+        return jobs
+
     def _build_external_detection_tokens(self) -> dict[str, list[str]]:
         """도구별 외부 프로세스 탐지 토큰 목록을 구성한다."""
         placeholders = {"executable", "input_file", "output_file", "cores", "memory_mb"}
@@ -184,6 +376,191 @@ class SimJobScheduler:
                 break
 
         return best_tool
+
+    def _external_agent_headers(self) -> dict[str, str]:
+        headers = {"Accept": "application/json"}
+        token_env = self._config.external_agent_token_env.strip()
+        if not token_env:
+            return headers
+        token = os.environ.get(token_env, "").strip()
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        return headers
+
+    def _normalize_external_job_from_agent(self, item: dict[str, Any]) -> dict[str, Any]:
+        job_id_raw = str(item.get("job_id") or "").strip()
+        pid_raw = item.get("pid")
+        pid: int | None = None
+        if isinstance(pid_raw, int):
+            pid = pid_raw
+        else:
+            try:
+                if pid_raw is not None:
+                    pid = int(str(pid_raw))
+            except (TypeError, ValueError):
+                pid = None
+
+        if not job_id_raw:
+            if pid is not None and pid > 0:
+                job_id_raw = f"external-{pid}"
+            else:
+                job_id_raw = "external-agent-unknown"
+
+        tool_name = str(item.get("tool") or "external")
+        status = str(item.get("status") or "running")
+        input_file = str(item.get("input_file") or "-")
+        cli_command = str(item.get("cli_command") or "")
+
+        default_cores, default_memory = self._tool_default_resources(tool_name)
+
+        cores_raw = item.get("cores", default_cores)
+        memory_raw = item.get("memory_mb", default_memory)
+        try:
+            cores = max(0, int(cores_raw))
+        except (TypeError, ValueError):
+            cores = default_cores
+        try:
+            memory_mb = max(0, int(memory_raw))
+        except (TypeError, ValueError):
+            memory_mb = default_memory
+
+        elapsed_raw = item.get("elapsed_seconds", 0)
+        try:
+            elapsed_seconds = max(0, int(elapsed_raw))
+        except (TypeError, ValueError):
+            elapsed_seconds = 0
+        retry_raw = item.get("retry_count", 0)
+        max_retry_raw = item.get("max_retries", 0)
+        try:
+            retry_count = max(0, int(retry_raw))
+        except (TypeError, ValueError):
+            retry_count = 0
+        try:
+            max_retries = max(0, int(max_retry_raw))
+        except (TypeError, ValueError):
+            max_retries = 0
+
+        return {
+            "job_id": job_id_raw,
+            "tool": tool_name,
+            "status": status,
+            "priority": 0,
+            "cores": cores,
+            "memory_mb": memory_mb,
+            "input_file": input_file,
+            "output_file": item.get("output_file"),
+            "submitted_by": 0,
+            "submitted_at": item.get("submitted_at"),
+            "started_at": item.get("started_at"),
+            "completed_at": item.get("completed_at"),
+            "pid": pid,
+            "elapsed_seconds": elapsed_seconds,
+            "cli_command": cli_command,
+            "retry_count": retry_count,
+            "max_retries": max_retries,
+            "label": str(item.get("label") or "external"),
+            "external": True,
+            "source": "agent",
+            "resource_source": str(item.get("resource_source") or "agent"),
+            "cpu_percent": item.get("cpu_percent"),
+            "memory_rss_mb": item.get("memory_rss_mb"),
+        }
+
+    async def _fetch_external_jobs_from_agent(self) -> list[dict[str, Any]] | None:
+        """외부 에이전트에서 외부 작업 목록을 조회한다.
+
+        반환:
+        - list: 성공적으로 조회(빈 목록 포함)
+        - None: 에이전트 비활성/오류로 조회 실패
+        """
+        if not self._config.external_agent_enabled:
+            return None
+        base_url = self._config.external_agent_base_url.strip().rstrip("/")
+        if not base_url:
+            return None
+
+        url = f"{base_url}/v1/sim/external/jobs"
+        headers = self._external_agent_headers()
+        timeout = max(0.1, float(self._config.external_agent_timeout_seconds))
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.get(url, headers=headers)
+        except Exception as exc:
+            self._logger.warning("sim_external_agent_fetch_failed", error=str(exc), url=url)
+            return None
+
+        if response.status_code != 200:
+            self._logger.warning(
+                "sim_external_agent_fetch_failed",
+                url=url,
+                status_code=response.status_code,
+                body=response.text[:200],
+            )
+            return None
+
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            self._logger.warning("sim_external_agent_fetch_failed", error=str(exc), url=url)
+            return None
+
+        if not isinstance(payload, dict):
+            return []
+        jobs_payload = payload.get("jobs")
+        if not isinstance(jobs_payload, list):
+            return []
+
+        jobs: list[dict[str, Any]] = []
+        for item in jobs_payload:
+            if not isinstance(item, dict):
+                continue
+            jobs.append(self._normalize_external_job_from_agent(item))
+
+        jobs.sort(key=lambda job: int(job.get("elapsed_seconds", 0)), reverse=True)
+        return jobs
+
+    async def _cancel_external_job_via_agent(self, pid: int) -> bool | None:
+        """외부 에이전트를 통해 외부 작업 취소를 시도한다.
+
+        반환:
+        - bool: 에이전트 응답 성공
+        - None: 에이전트 비활성/통신 오류로 판단 불가
+        """
+        if not self._config.external_agent_enabled:
+            return None
+        base_url = self._config.external_agent_base_url.strip().rstrip("/")
+        if not base_url:
+            return None
+
+        url = f"{base_url}/v1/sim/external/cancel"
+        headers = self._external_agent_headers()
+        headers["Content-Type"] = "application/json"
+        timeout = max(0.1, float(self._config.external_agent_timeout_seconds))
+
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.post(
+                    url, headers=headers, json={"pid": int(pid)},
+                )
+        except Exception as exc:
+            self._logger.warning("sim_external_agent_cancel_failed", error=str(exc), url=url, pid=pid)
+            return None
+
+        if response.status_code in (200, 409, 404):
+            try:
+                payload = response.json()
+            except ValueError:
+                return response.status_code == 200
+            return bool(payload.get("cancelled", False))
+
+        self._logger.warning(
+            "sim_external_agent_cancel_failed",
+            url=url,
+            pid=pid,
+            status_code=response.status_code,
+            body=response.text[:200],
+        )
+        return False
 
     def _resolve_input_path(self, tool: str, input_file: str) -> Path:
         """입력 경로를 실제 경로로 해석한다.
@@ -631,13 +1008,33 @@ class SimJobScheduler:
             return False
 
         external_jobs = await self.get_external_running_jobs()
-        if not any(int(j.get("pid", -1)) == pid for j in external_jobs):
+        matched_job = next(
+            (
+                j for j in external_jobs
+                if isinstance(j.get("pid"), int) and int(j["pid"]) == pid
+            ),
+            None,
+        )
+        if matched_job is None:
+            return False
+
+        agent_cancel_result = await self._cancel_external_job_via_agent(pid)
+        if agent_cancel_result is not None:
+            return agent_cancel_result
+
+        # PID namespace가 다르면 kill(0)으로도 보이지 않는다.
+        if not self._is_pid_alive(pid):
+            self._logger.info(
+                "sim_external_cancel_unreachable_pid",
+                pid=pid,
+                source=str(matched_job.get("source") or "unknown"),
+            )
             return False
 
         try:
             os.kill(pid, signal.SIGTERM)
         except ProcessLookupError:
-            return True
+            return False
         except (PermissionError, OSError) as exc:
             self._logger.warning(
                 "sim_external_cancel_failed",
@@ -680,93 +1077,120 @@ class SimJobScheduler:
         external_jobs = await self.get_external_running_jobs()
         queue_running = int(queue_stats.get("running", 0))
         external_running = len(external_jobs)
+        allocated_external_cores = sum(
+            int(j.get("cores", 0)) for j in external_jobs
+        )
+        allocated_external_memory_mb = sum(
+            int(j.get("memory_mb", 0)) for j in external_jobs
+        )
+        allocated_queue_cores = int(resource_status.get("allocated_cores", 0))
+        allocated_queue_memory_mb = int(resource_status.get("allocated_memory_mb", 0))
         return {
             **queue_stats,
             **resource_status,
             "external_running": external_running,
             "running_total": queue_running + external_running,
+            "allocated_external_cores": allocated_external_cores,
+            "allocated_external_memory_mb": allocated_external_memory_mb,
+            "allocated_total_cores": allocated_queue_cores + allocated_external_cores,
+            "allocated_total_memory_mb": (
+                allocated_queue_memory_mb + allocated_external_memory_mb
+            ),
+            "running_total_jobs": int(resource_status.get("running_jobs", 0)) + external_running,
         }
 
     async def get_external_running_jobs(self) -> list[dict[str, Any]]:
         """큐 DB에 없는 실행 중 외부 시뮬레이션 프로세스를 탐지한다."""
-        token_map = self._build_external_detection_tokens()
-        if not token_map:
-            return []
+        agent_jobs = await self._fetch_external_jobs_from_agent()
+        if agent_jobs is not None:
+            return agent_jobs
 
+        token_map = self._build_external_detection_tokens()
         tracked_running = await self._store.get_running_jobs()
         tracked_pids = {
             int(job["pid"]) for job in tracked_running
             if isinstance(job.get("pid"), int)
         }
 
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "ps",
-                "-eo",
-                "pid=,etimes=,args=",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, stderr = await proc.communicate()
-        except FileNotFoundError:
-            return []
-        except Exception as exc:
-            self._logger.warning("sim_external_scan_failed", error=str(exc))
-            return []
-
-        if proc.returncode != 0:
-            self._logger.warning(
-                "sim_external_scan_failed",
-                returncode=proc.returncode,
-                stderr=stderr.decode(errors="ignore").strip(),
-            )
-            return []
-
         current_pid = os.getpid()
         external_jobs: list[dict[str, Any]] = []
-        for raw_line in stdout.decode(errors="ignore").splitlines():
-            line = raw_line.strip()
-            if not line:
-                continue
+        seen_external_pids: set[int] = set()
+        if token_map:
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    "ps",
+                    "-eo",
+                    "pid=,etimes=,args=",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout, stderr = await proc.communicate()
+            except FileNotFoundError:
+                self._logger.info("sim_external_scan_ps_unavailable")
+            except Exception as exc:
+                self._logger.warning("sim_external_scan_failed", error=str(exc))
+            else:
+                if proc.returncode != 0:
+                    self._logger.warning(
+                        "sim_external_scan_failed",
+                        returncode=proc.returncode,
+                        stderr=stderr.decode(errors="ignore").strip(),
+                    )
+                else:
+                    for raw_line in stdout.decode(errors="ignore").splitlines():
+                        line = raw_line.strip()
+                        if not line:
+                            continue
 
-            match = re.match(r"^(?P<pid>\d+)\s+(?P<elapsed>\d+)\s+(?P<cmd>.+)$", line)
-            if not match:
-                continue
+                        match = re.match(r"^(?P<pid>\d+)\s+(?P<elapsed>\d+)\s+(?P<cmd>.+)$", line)
+                        if not match:
+                            continue
 
-            pid = int(match.group("pid"))
-            if pid == current_pid or pid in tracked_pids:
-                continue
+                        pid = int(match.group("pid"))
+                        if pid == current_pid or pid in tracked_pids:
+                            continue
 
-            command = match.group("cmd").strip()
-            tool_name = self._match_tool_from_command(command, token_map)
-            if tool_name is None:
-                continue
+                        command = match.group("cmd").strip()
+                        tool_name = self._match_tool_from_command(command, token_map)
+                        if tool_name is None:
+                            continue
 
-            elapsed_seconds = int(match.group("elapsed"))
-            input_hint = self._extract_input_hint(command)
-            external_jobs.append(
-                {
-                    "job_id": f"external-{pid}",
-                    "tool": tool_name,
-                    "status": "running",
-                    "priority": 0,
-                    "cores": 0,
-                    "memory_mb": 0,
-                    "input_file": input_hint,
-                    "output_file": None,
-                    "submitted_by": 0,
-                    "submitted_at": None,
-                    "started_at": None,
-                    "completed_at": None,
-                    "pid": pid,
-                    "elapsed_seconds": elapsed_seconds,
-                    "cli_command": command,
-                    "retry_count": 0,
-                    "max_retries": 0,
-                    "label": "external",
-                    "external": True,
-                }
+                        seen_external_pids.add(pid)
+                        elapsed_seconds = int(match.group("elapsed"))
+                        input_hint = self._extract_input_hint(command)
+                        default_cores, default_memory = self._tool_default_resources(tool_name)
+                        external_jobs.append(
+                            {
+                                "job_id": f"external-{pid}",
+                                "tool": tool_name,
+                                "status": "running",
+                                "priority": 0,
+                                "cores": default_cores,
+                                "memory_mb": default_memory,
+                                "input_file": input_hint,
+                                "output_file": None,
+                                "submitted_by": 0,
+                                "submitted_at": None,
+                                "started_at": None,
+                                "completed_at": None,
+                                "pid": pid,
+                                "elapsed_seconds": elapsed_seconds,
+                                "cli_command": command,
+                                "retry_count": 0,
+                                "max_retries": 0,
+                                "label": "external",
+                                "external": True,
+                                "source": "process",
+                                "resource_source": "config_default",
+                            }
+                        )
+
+        external_jobs.extend(
+            self._scan_lockfile_external_jobs(
+                tracked_pids=tracked_pids,
+                seen_external_pids=seen_external_pids,
             )
+        )
 
         external_jobs.sort(key=lambda job: int(job.get("elapsed_seconds", 0)), reverse=True)
         return external_jobs
