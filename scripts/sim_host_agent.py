@@ -257,8 +257,9 @@ def discover_external_jobs(config_path: Path) -> list[dict[str, Any]]:
             rss_mb = _proc_rss_mb(pid)
             cpu_percent = _proc_cpu_percent(pid)
             default_cores, default_memory = tool_defaults.get(tool_name, (0, 0))
-            memory_mb = rss_mb if rss_mb > 0 else default_memory
-            resource_source = "agent_runtime" if rss_mb > 0 else "config_default"
+            # Keep memory_mb as configured allocation baseline and expose measured RSS separately.
+            memory_mb = default_memory
+            resource_source = "config_default"
 
             jobs.append(
                 {

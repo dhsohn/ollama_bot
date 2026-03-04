@@ -156,6 +156,7 @@ async def test_queue_status_includes_external_running_count(tmp_path: Path) -> N
         assert status["allocated_external_memory_mb"] == 24576
         assert status["allocated_total_cores"] == 12
         assert status["allocated_total_memory_mb"] == 24576
+        assert status["external_memory_rss_mb"] == 0
     finally:
         await store.close()
 

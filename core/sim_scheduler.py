@@ -423,6 +423,22 @@ class SimJobScheduler:
             memory_mb = max(0, int(memory_raw))
         except (TypeError, ValueError):
             memory_mb = default_memory
+        rss_raw = item.get("memory_rss_mb", 0)
+        try:
+            memory_rss_mb = max(0, int(float(rss_raw)))
+        except (TypeError, ValueError):
+            memory_rss_mb = 0
+        cpu_raw = item.get("cpu_percent", 0.0)
+        try:
+            cpu_percent: float | None = round(max(0.0, float(cpu_raw)), 2)
+        except (TypeError, ValueError):
+            cpu_percent = None
+        resource_source = str(item.get("resource_source") or "agent")
+        # Backward compatibility:
+        # old agent encoded RSS into memory_mb with `agent_runtime`.
+        if resource_source == "agent_runtime" and memory_rss_mb > 0 and memory_mb == memory_rss_mb:
+            memory_mb = default_memory
+            resource_source = "config_default"
 
         elapsed_raw = item.get("elapsed_seconds", 0)
         try:
@@ -461,9 +477,9 @@ class SimJobScheduler:
             "label": str(item.get("label") or "external"),
             "external": True,
             "source": "agent",
-            "resource_source": str(item.get("resource_source") or "agent"),
-            "cpu_percent": item.get("cpu_percent"),
-            "memory_rss_mb": item.get("memory_rss_mb"),
+            "resource_source": resource_source,
+            "cpu_percent": cpu_percent,
+            "memory_rss_mb": memory_rss_mb,
         }
 
     async def _fetch_external_jobs_from_agent(self) -> list[dict[str, Any]] | None:
@@ -1083,6 +1099,9 @@ class SimJobScheduler:
         allocated_external_memory_mb = sum(
             int(j.get("memory_mb", 0)) for j in external_jobs
         )
+        external_memory_rss_mb = sum(
+            int(j.get("memory_rss_mb", 0) or 0) for j in external_jobs
+        )
         allocated_queue_cores = int(resource_status.get("allocated_cores", 0))
         allocated_queue_memory_mb = int(resource_status.get("allocated_memory_mb", 0))
         return {
@@ -1096,6 +1115,7 @@ class SimJobScheduler:
             "allocated_total_memory_mb": (
                 allocated_queue_memory_mb + allocated_external_memory_mb
             ),
+            "external_memory_rss_mb": external_memory_rss_mb,
             "running_total_jobs": int(resource_status.get("running_jobs", 0)) + external_running,
         }
 

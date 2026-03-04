@@ -1499,8 +1499,8 @@ class TestSimInfoExternal:
         assert "PID: 54321" in reply
         assert "/tmp/STRUC2" in reply
         assert "run-inp" in reply
-        assert "코어: 4 | 메모리: 8192MB" in reply
-        assert "리소스 근거: 도구 기본값(추정)" in reply
+        assert "코어: 4 | 메모리(할당): 8192MB" in reply
+        assert "리소스 근거: 할당값은 도구 기본값(추정)" in reply
 
     @pytest.mark.asyncio
     async def test_sim_info_external_by_pid_prefix(
@@ -1556,6 +1556,7 @@ class TestSimInfoExternal:
                 "allocated_memory_mb": 0,
                 "allocated_external_memory_mb": 24576,
                 "allocated_total_memory_mb": 24576,
+                "external_memory_rss_mb": 114,
                 "running_jobs": 0,
                 "running_total_jobs": 3,
                 "max_concurrent": 4,
@@ -1574,7 +1575,8 @@ class TestSimInfoExternal:
 
         reply = message.reply_text.await_args[0][0]
         assert "CPU: 12/16 코어 (큐:0, 외부:12)" in reply
-        assert "메모리: 24576/131072 MB (큐:0, 외부:24576)" in reply
+        assert "메모리(할당): 24576/131072 MB (큐:0, 외부:24576)" in reply
+        assert "외부 메모리(RSS 실측): 114 MB" in reply
         assert "실행합계: 3" in reply
 
     @pytest.mark.asyncio
