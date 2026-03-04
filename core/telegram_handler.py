@@ -306,29 +306,32 @@ class TelegramHandler:
     @_auth_required
     @_global_slot_required
     async def _cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        command_lines = [
-            "/start — 봇 시작",
-            "/help — 이 도움말 표시",
-            "/skills — 스킬 목록/리로드",
-            "/auto — 자동화 관리/리로드",
-            "/memory — 메모리 관리",
-            "/status — 시스템 상태",
-            "/continue — 긴 답변 이어보기",
+        commands: list[tuple[str, str]] = [
+            ("/start", "봇 시작"),
+            ("/help", "이 도움말 표시"),
+            ("/skills", "스킬 목록/리로드"),
+            ("/auto", "자동화 관리/리로드"),
+            ("/memory", "메모리 관리"),
+            ("/status", "시스템 상태"),
+            ("/continue", "긴 답변 이어보기"),
         ]
         if self._feedback_enabled:
-            command_lines.insert(6, "/feedback — 피드백 통계")
+            commands.insert(6, ("/feedback", "피드백 통계"))
         if self._sim_scheduler is not None:
-            command_lines.append("/sim — 시뮬레이션 큐 관리")
+            commands.append(("/sim", "시뮬레이션 큐 관리"))
+
+        table_lines = ["명령어       설명", "─" * 25]
+        for cmd, desc in commands:
+            table_lines.append(f"{cmd:<12s} {desc}")
 
         help_text = (
             "📋 <b>사용 가능한 명령어</b>\n\n"
-            + "\n".join(command_lines)
-            + "\n\n"
+            f"<pre>{chr(10).join(table_lines)}</pre>\n\n"
             "💬 <b>대화 모드</b>\n"
             "명령어 없이 자유롭게 대화하세요.\n\n"
             "🔧 <b>스킬 모드</b>\n"
             "스킬 트리거 키워드를 사용하면 전문 기능이 활성화됩니다.\n"
-            "/skills 명령으로 스킬 목록을 확인하고, /skills reload로 다시 로드할 수 있습니다."
+            "/skills 명령으로 스킬 목록을 확인하세요."
         )
         await update.effective_message.reply_text(  # type: ignore[union-attr]
             help_text, parse_mode=ParseMode.HTML
@@ -360,17 +363,23 @@ class TelegramHandler:
             await update.effective_message.reply_text("등록된 스킬이 없습니다.")  # type: ignore[union-attr]
             return
 
-        lines = ["🔧 <b>사용 가능한 스킬</b>\n"]
+        # 열 너비 계산
+        name_w = max(4, max(len(s["name"]) for s in skills))
+        desc_w = max(4, max(len(s["description"]) for s in skills))
+        header = f"{'스킬':<{name_w}s}  {'설명':<{desc_w}s}  트리거"
+        sep = "─" * min(len(header) + 4, 50)
+        table_lines = [header, sep]
         for s in skills:
-            triggers = ", ".join(f"<code>{self._escape_html(t)}</code>" for t in s["triggers"])
-            lines.append(
-                f"• <b>{self._escape_html(s['name'])}</b> — "
-                f"{self._escape_html(s['description'])}\n"
-                f"  트리거: {triggers}"
+            triggers = ", ".join(s["triggers"])
+            table_lines.append(
+                f"{self._escape_html(s['name']):<{name_w}s}  "
+                f"{self._escape_html(s['description']):<{desc_w}s}  "
+                f"{self._escape_html(triggers)}"
             )
 
+        text = f"🔧 <b>사용 가능한 스킬</b>\n\n<pre>{chr(10).join(table_lines)}</pre>"
         await update.effective_message.reply_text(  # type: ignore[union-attr]
-            "\n".join(lines), parse_mode=ParseMode.HTML
+            text, parse_mode=ParseMode.HTML
         )
 
     @_auth_required
@@ -420,16 +429,22 @@ class TelegramHandler:
             await update.effective_message.reply_text("등록된 자동화가 없습니다.")
             return
 
-        lines = ["⏰ <b>자동화 목록</b>\n"]
+        name_w = max(4, max(len(a["name"]) for a in automations))
+        sched_w = max(6, max(len(a["schedule"]) for a in automations))
+        header = f"     {'이름':<{name_w}s}  {'스케줄':<{sched_w}s}  설명"
+        sep = "─" * min(len(header) + 4, 50)
+        table_lines = [header, sep]
         for auto in automations:
-            status = "✅" if auto["enabled"] else "❌"
-            lines.append(
-                f"{status} <b>{self._escape_html(auto['name'])}</b> — "
-                f"{self._escape_html(auto['description'])}\n"
-                f"  스케줄: <code>{self._escape_html(auto['schedule'])}</code>"
+            icon = " ✅ " if auto["enabled"] else " ❌ "
+            table_lines.append(
+                f"{icon} {self._escape_html(auto['name']):<{name_w}s}  "
+                f"{self._escape_html(auto['schedule']):<{sched_w}s}  "
+                f"{self._escape_html(auto['description'])}"
             )
+
+        text = f"⏰ <b>자동화 목록</b>\n\n<pre>{chr(10).join(table_lines)}</pre>"
         await update.effective_message.reply_text(
-            "\n".join(lines), parse_mode=ParseMode.HTML
+            text, parse_mode=ParseMode.HTML
         )
 
     async def _handle_auto_disable(self, update: Update, name: str) -> None:
@@ -491,12 +506,16 @@ class TelegramHandler:
 
         if not args:
             stats = await self._engine.get_memory_stats(chat_id)
+            oldest = self._escape_html(stats['oldest_conversation'] or '없음')
+            table = (
+                "항목              값\n"
+                "─" * 25 + "\n"
+                f"대화 기록         {stats['conversation_count']}건\n"
+                f"장기 메모리       {stats['memory_count']}건\n"
+                f"가장 오래된 대화  {oldest}"
+            )
             await update.effective_message.reply_text(  # type: ignore[union-attr]
-                f"🧠 <b>메모리 상태</b>\n\n"
-                f"대화 기록: {stats['conversation_count']}건\n"
-                f"장기 메모리: {stats['memory_count']}건\n"
-                f"가장 오래된 대화: "
-                f"{self._escape_html(stats['oldest_conversation'] or '없음')}",
+                f"🧠 <b>메모리 상태</b>\n\n<pre>{table}</pre>",
                 parse_mode=ParseMode.HTML,
             )
         elif args[0] == "clear":
@@ -525,43 +544,50 @@ class TelegramHandler:
         status = await self._engine.get_status()
         llm = status["llm"]
         llm_status = "🟢 정상" if llm.get("status") == "ok" else "🔴 오류"
+        model = self._escape_html(status['current_model'])
 
-        text = (
-            f"📊 <b>시스템 상태</b>\n\n"
-            f"가동 시간: {status['uptime_human']}\n"
-            f"LLM 백엔드: {llm_status}\n"
-            f"모델: <code>{self._escape_html(status['current_model'])}</code>\n"
-            f"로드된 스킬: {status['skills_loaded']}개"
-        )
+        rows: list[tuple[str, str]] = [
+            ("가동 시간", status['uptime_human']),
+            ("LLM 백엔드", llm_status),
+            ("모델", model),
+            ("로드된 스킬", f"{status['skills_loaded']}개"),
+        ]
 
         degraded_components = status.get("degraded_components", {})
         if degraded_components:
-            degraded_lines = []
+            parts = []
             for name, detail in degraded_components.items():
                 reason = detail.get("reason") or "unknown"
                 duration = detail.get("degraded_for_seconds")
                 if isinstance(duration, int):
-                    degraded_lines.append(
-                        f"- {name}: {reason} ({duration}초)"
-                    )
+                    parts.append(f"{name}: {reason} ({duration}초)")
                 else:
-                    degraded_lines.append(f"- {name}: {reason}")
-            text += "\n⚠️ degraded 상태:\n" + "\n".join(degraded_lines)
+                    parts.append(f"{name}: {reason}")
+            rows.append(("Degraded", "⚠️ " + ", ".join(parts)))
         else:
-            text += "\n✅ degraded 상태 없음"
+            rows.append(("Degraded", "✅ 없음"))
 
         if self._scheduler:
             autos = self._scheduler.list_automations()
             enabled = sum(1 for a in autos if a["enabled"])
-            text += f"\n자동화: {enabled}/{len(autos)}개 활성"
+            rows.append(("자동화", f"{enabled}/{len(autos)}개 활성"))
 
         if self._feedback:
             global_stats = await self._feedback.get_global_stats()
-            text += (
-                f"\n📊 피드백: {global_stats['total']}건 "
-                f"(만족도 {global_stats['satisfaction_rate']:.0%})"
-            )
+            rows.append((
+                "피드백",
+                f"{global_stats['total']}건 ({global_stats['satisfaction_rate']:.0%})",
+            ))
 
+        label_w = max(len(r[0]) for r in rows)
+        table_lines = [
+            f"{'항목':<{label_w}s}  값",
+            "─" * (label_w + 20),
+        ]
+        for label, value in rows:
+            table_lines.append(f"{label:<{label_w}s}  {value}")
+
+        text = f"📊 <b>시스템 상태</b>\n\n<pre>{chr(10).join(table_lines)}</pre>"
         await update.effective_message.reply_text(  # type: ignore[union-attr]
             text, parse_mode=ParseMode.HTML
         )
@@ -1349,13 +1375,15 @@ class TelegramHandler:
             return
         chat_id = update.effective_chat.id  # type: ignore[union-attr]
         stats = await self._feedback.get_user_stats(chat_id)
-        text = (
-            "📊 <b>피드백 통계</b>\n\n"
-            f"전체: {stats['total']}건\n"
-            f"👍 긍정: {stats['positive']}건\n"
-            f"👎 부정: {stats['negative']}건\n"
-            f"만족도: {stats['satisfaction_rate']:.0%}"
+        table = (
+            "항목        값\n"
+            "─" * 18 + "\n"
+            f"전체        {stats['total']}건\n"
+            f"👍 긍정     {stats['positive']}건\n"
+            f"👎 부정     {stats['negative']}건\n"
+            f"만족도      {stats['satisfaction_rate']:.0%}"
         )
+        text = f"📊 <b>피드백 통계</b>\n\n<pre>{table}</pre>"
         await update.effective_message.reply_text(text, parse_mode=ParseMode.HTML)  # type: ignore[union-attr]
 
     # ── 사유 수집 ──
@@ -1564,21 +1592,21 @@ class TelegramHandler:
             )
             return
 
-        lines = ["<b>시뮬레이션 작업 목록</b>\n"]
+        table_rows: list[str] = []
         for j in jobs:
-            label = f" ({self._escape_html(j['label'])})" if j.get("label") else ""
+            label = self._escape_html(j.get("label") or "")
             status = str(j.get("status") or "")
             cores = int(j.get("cores", 0))
             memory = self._format_memory_gb(j.get("memory_mb", 0))
             if status == "queued" and self._config.sim_queue.adaptive_allocation_enabled:
-                resource_text = f"요청 C{cores}/M{memory} (시작 시 재계산)"
+                resource_text = f"C{cores}/M{memory}*"
             else:
                 resource_text = f"C{cores}/M{memory}"
-            lines.append(
-                f"<code>{j['job_id'][:8]}</code> "
-                f"{self._escape_html(j['tool'])} "
-                f"[{status}] "
-                f"{resource_text}"
+            table_rows.append(
+                f"{j['job_id'][:8]}  "
+                f"{self._escape_html(j['tool']):<6s} "
+                f"{status:<9s} "
+                f"{resource_text:<12s} "
                 f"{label}"
             )
 
@@ -1588,8 +1616,7 @@ class TelegramHandler:
             elapsed_text = (
                 f"{elapsed_minutes}m" if elapsed_minutes > 0 else f"{elapsed_seconds}s"
             )
-            input_hint = self._escape_html(j.get("input_file") or "-")
-            ext_status = self._escape_html(str(j.get("status") or "running"))
+            ext_status = str(j.get("status") or "running")
             ext_cores = int(j.get("cores", 0))
             ext_memory = int(j.get("memory_mb", 0))
             rss_raw = j.get("memory_rss_mb", 0)
@@ -1597,19 +1624,32 @@ class TelegramHandler:
                 ext_rss = max(0, int(float(rss_raw)))
             except (TypeError, ValueError):
                 ext_rss = 0
-            memory_text = f"M{self._format_memory_gb(ext_memory)}"
+            mem_str = self._format_memory_gb(ext_memory)
             if ext_rss > 0:
-                memory_text += f" (RSS:{ext_rss}MB)"
-            elif j.get("resource_source") == "config_default":
-                memory_text += " (추정)"
-            lines.append(
-                f"<code>{j['job_id'][:8]}</code> "
-                f"{self._escape_html(j['tool'])} "
-                f"[{ext_status}] C{ext_cores}/{memory_text} "
-                f"(외부 PID:{j.get('pid', '?')}, {elapsed_text}, 입력:{input_hint})"
+                mem_str += f"(R:{ext_rss}M)"
+            resource_text = f"C{ext_cores}/M{mem_str}"
+            input_hint = self._escape_html(j.get("input_file") or "-")
+            table_rows.append(
+                f"{j['job_id'][:8]}  "
+                f"{self._escape_html(j['tool']):<6s} "
+                f"{ext_status:<9s} "
+                f"{resource_text:<12s} "
+                f"외부 PID:{j.get('pid', '?')} {elapsed_text}"
             )
+
+        header = "ID        도구    상태      리소스        비고"
+        sep = "─" * len(header)
+        table = chr(10).join([header, sep] + table_rows)
+        if any(
+            str(j.get("status")) == "queued"
+            and self._config.sim_queue.adaptive_allocation_enabled
+            for j in jobs
+        ):
+            table += "\n\n* 시작 시 리소스 재계산"
+
+        text = f"<b>시뮬레이션 작업 목록</b>\n\n<pre>{table}</pre>"
         await update.effective_message.reply_text(  # type: ignore[union-attr]
-            "\n".join(lines), parse_mode=ParseMode.HTML,
+            text, parse_mode=ParseMode.HTML,
         )
 
     async def _sim_status(self, update: Update, args: list[str]) -> None:
@@ -1621,9 +1661,9 @@ class TelegramHandler:
         queue_running = status.get("running", 0)
         external_running = status.get("external_running", 0)
         running_total = status.get("running_total", queue_running)
-        running_line = f"실행 중: {running_total}"
+        running_detail = ""
         if external_running:
-            running_line += f" (큐:{queue_running}, 외부:{external_running})"
+            running_detail = f"  (큐:{queue_running}, 외부:{external_running})"
         queue_alloc_cores = int(status.get("allocated_cores", 0))
         external_alloc_cores = int(status.get("allocated_external_cores", 0))
         total_alloc_cores = int(status.get("allocated_total_cores", queue_alloc_cores))
@@ -1634,26 +1674,51 @@ class TelegramHandler:
         running_jobs_queue = int(status.get("running_jobs", 0))
         running_jobs_total = int(status.get("running_total_jobs", running_jobs_queue))
 
+        # 큐 상태 표
+        q_rows = [
+            ("상태", "건수"),
+            ("─" * 10, "─" * 6),
+            ("대기", str(status.get("queued", 0))),
+            ("실행 중", f"{running_total}{running_detail}"),
+            ("완료", str(status.get("completed", 0))),
+            ("실패", str(status.get("failed", 0))),
+        ]
+        q_table = chr(10).join(f"{r[0]:<10s} {r[1]}" for r in q_rows)
+
+        # 리소스 표
+        total_cores = status.get("total_cores", 0)
+        total_mem = self._format_memory_gb(status.get("total_memory_mb", 0))
+        r_rows = [
+            ("리소스", "사용/전체", "큐", "외부"),
+            ("─" * 10, "─" * 12, "─" * 6, "─" * 6),
+            (
+                "CPU",
+                f"{total_alloc_cores}/{total_cores} 코어",
+                str(queue_alloc_cores),
+                str(external_alloc_cores),
+            ),
+            (
+                "메모리(할당)",
+                f"{self._format_memory_gb(total_alloc_memory)}/{total_mem}",
+                self._format_memory_gb(queue_alloc_memory),
+                self._format_memory_gb(external_alloc_memory),
+            ),
+        ]
+        r_table = chr(10).join(
+            f"{r[0]:<12s} {r[1]:<14s} {r[2]:<6s} {r[3]}" for r in r_rows
+        )
+
         rss_line = ""
         if external_running:
-            rss_line = f"외부 메모리(RSS 실측): {external_rss_memory} MB\n"
+            rss_line = f"\n외부 RSS 실측: {external_rss_memory} MB"
+
+        footer = f"동시실행(큐): {running_jobs_queue}/{status.get('max_concurrent', 0)} | 실행합계: {running_jobs_total}"
 
         text = (
-            "<b>시뮬레이션 큐 현황</b>\n\n"
-            f"대기: {status.get('queued', 0)}\n"
-            f"{running_line}\n"
-            f"완료: {status.get('completed', 0)}\n"
-            f"실패: {status.get('failed', 0)}\n\n"
-            f"<b>리소스</b>\n"
-            f"CPU: {total_alloc_cores}/{status.get('total_cores', 0)} 코어 "
-            f"(큐:{queue_alloc_cores}, 외부:{external_alloc_cores})\n"
-            f"메모리(할당): {self._format_memory_gb(total_alloc_memory)}/"
-            f"{self._format_memory_gb(status.get('total_memory_mb', 0))} "
-            f"(큐:{self._format_memory_gb(queue_alloc_memory)}, "
-            f"외부:{self._format_memory_gb(external_alloc_memory)})\n"
-            f"{rss_line}"
-            f"동시실행(큐): {running_jobs_queue}/{status.get('max_concurrent', 0)} | "
-            f"실행합계: {running_jobs_total}"
+            f"<b>시뮬레이션 큐 현황</b>\n\n"
+            f"<pre>{q_table}</pre>\n\n"
+            f"<b>리소스</b>\n\n"
+            f"<pre>{r_table}{rss_line}\n\n{footer}</pre>"
         )
         await update.effective_message.reply_text(  # type: ignore[union-attr]
             text, parse_mode=ParseMode.HTML,
@@ -1701,17 +1766,16 @@ class TelegramHandler:
                 if len(cmd) > 1000:
                     cmd = f"{cmd[:1000]}..."
 
-                lines = [
-                    f"<b>외부 작업 상세: {ext['job_id'][:12]}</b>\n",
-                    f"유형: external",
-                    f"도구: {self._escape_html(str(ext.get('tool', '-')))}",
-                    f"상태: {self._escape_html(str(ext.get('status', 'running')))}",
-                    f"PID: {ext.get('pid', '-')}",
-                    f"경과: {elapsed_text}",
-                    f"입력: <code>{self._escape_html(str(ext.get('input_file') or '-'))}</code>",
-                    f"코어: {int(ext.get('cores', 0))} | "
-                    f"메모리(할당): {self._format_memory_gb(ext.get('memory_mb', 0))}",
-                    "제출/시작/완료: 외부 프로세스라 추적 불가",
+                rows: list[tuple[str, str]] = [
+                    ("유형", "external"),
+                    ("도구", self._escape_html(str(ext.get("tool", "-")))),
+                    ("상태", self._escape_html(str(ext.get("status", "running")))),
+                    ("PID", str(ext.get("pid", "-"))),
+                    ("경과", elapsed_text),
+                    ("입력", self._escape_html(str(ext.get("input_file") or "-"))),
+                    ("코어", str(int(ext.get("cores", 0)))),
+                    ("메모리(할당)", self._format_memory_gb(ext.get("memory_mb", 0))),
+                    ("타임스탬프", "외부 프로세스라 추적 불가"),
                 ]
                 rss_raw = ext.get("memory_rss_mb", 0)
                 try:
@@ -1719,14 +1783,20 @@ class TelegramHandler:
                 except (TypeError, ValueError):
                     ext_rss = 0
                 if ext_rss > 0:
-                    lines.append(f"메모리(RSS 실측): {ext_rss}MB")
+                    rows.append(("메모리(RSS)", f"{ext_rss}MB"))
                 if ext.get("resource_source") == "config_default":
-                    lines.append("리소스 근거: 할당값은 도구 기본값(추정)")
+                    rows.append(("리소스 근거", "도구 기본값(추정)"))
                 if cmd:
-                    lines.append(f"명령: <code>{self._escape_html(cmd)}</code>")
+                    rows.append(("명령", self._escape_html(cmd)))
 
+                lw = max(len(r[0]) for r in rows)
+                table_lines = [f"{'항목':<{lw}s}  값", "─" * (lw + 20)]
+                for label, value in rows:
+                    table_lines.append(f"{label:<{lw}s}  {value}")
+                table = chr(10).join(table_lines)
+                text = f"<b>외부 작업 상세: {ext['job_id'][:12]}</b>\n\n<pre>{table}</pre>"
                 await update.effective_message.reply_text(  # type: ignore[union-attr]
-                    "\n".join(lines), parse_mode=ParseMode.HTML,
+                    text, parse_mode=ParseMode.HTML,
                 )
                 return
 
@@ -1736,29 +1806,35 @@ class TelegramHandler:
             return
 
         j = matched[0]
-        lines = [
-            f"<b>작업 상세: {j['job_id'][:8]}</b>\n",
-            f"도구: {self._escape_html(j['tool'])}",
-            f"상태: {j['status']}",
-            f"입력: <code>{self._escape_html(j['input_file'])}</code>",
-            f"코어: {j['cores']} | 메모리: {self._format_memory_gb(j.get('memory_mb', 0))}",
-            f"우선순위: {j['priority']}",
-            f"재시도: {j['retry_count']}/{j['max_retries']}",
-            f"제출: {j['submitted_at'] or '-'}",
-            f"시작: {j['started_at'] or '-'}",
-            f"완료: {j['completed_at'] or '-'}",
+        rows: list[tuple[str, str]] = [
+            ("도구", self._escape_html(j["tool"])),
+            ("상태", str(j["status"])),
+            ("입력", self._escape_html(j["input_file"])),
+            ("코어", str(j["cores"])),
+            ("메모리", self._format_memory_gb(j.get("memory_mb", 0))),
+            ("우선순위", str(j["priority"])),
+            ("재시도", f"{j['retry_count']}/{j['max_retries']}"),
+            ("제출", str(j["submitted_at"] or "-")),
+            ("시작", str(j["started_at"] or "-")),
+            ("완료", str(j["completed_at"] or "-")),
         ]
         if j.get("label"):
-            lines.append(f"라벨: {self._escape_html(j['label'])}")
+            rows.append(("라벨", self._escape_html(j["label"])))
         if j.get("exit_code") is not None:
-            lines.append(f"종료코드: {j['exit_code']}")
+            rows.append(("종료코드", str(j["exit_code"])))
         if j.get("error_message"):
-            lines.append(f"오류: {self._escape_html(j['error_message'])}")
+            rows.append(("오류", self._escape_html(j["error_message"])))
         if j.get("output_file"):
-            lines.append(f"출력: <code>{self._escape_html(j['output_file'])}</code>")
+            rows.append(("출력", self._escape_html(j["output_file"])))
 
+        lw = max(len(r[0]) for r in rows)
+        table_lines = [f"{'항목':<{lw}s}  값", "─" * (lw + 20)]
+        for label, value in rows:
+            table_lines.append(f"{label:<{lw}s}  {value}")
+        table = chr(10).join(table_lines)
+        text = f"<b>작업 상세: {j['job_id'][:8]}</b>\n\n<pre>{table}</pre>"
         await update.effective_message.reply_text(  # type: ignore[union-attr]
-            "\n".join(lines), parse_mode=ParseMode.HTML,
+            text, parse_mode=ParseMode.HTML,
         )
 
     async def _sim_cancel(self, update: Update, args: list[str]) -> None:
@@ -1916,21 +1992,34 @@ class TelegramHandler:
             )
             return
 
-        lines = ["<b>시뮬레이션 도구 목록</b>\n"]
+        name_w = max(4, max(len(n) for n in tools))
+        header = f"{'도구':<{name_w}s}  상태    실행파일"
+        sep = "─" * max(len(header), 40)
+        table_lines = [header, sep]
+        detail_lines: list[str] = []
         for name, info in tools.items():
             status = "활성" if info["enabled"] else "비활성"
-            prefix = str(info.get("command_prefix", "")).strip()
-            prefix_display = prefix if prefix else "(없음)"
-            lines.append(
-                f"<b>{self._escape_html(name)}</b> [{status}]\n"
-                f"  실행: <code>{self._escape_html(info['executable'])}</code>\n"
-                f"  prefix: <code>{self._escape_html(prefix_display)}</code>\n"
-                f"  최소: C{info['min_cores']}/M{self._format_memory_gb(info['min_memory_mb'])}\n"
-                f"  기본: C{info['default_cores']}/M{self._format_memory_gb(info['default_memory_mb'])}\n"
-                f"  최대: C{info['max_cores']}/M{self._format_memory_gb(info['max_memory_mb'])}"
+            table_lines.append(
+                f"{self._escape_html(name):<{name_w}s}  "
+                f"{status:<6s}  "
+                f"{self._escape_html(info['executable'])}"
             )
+            min_r = f"C{info['min_cores']}/M{self._format_memory_gb(info['min_memory_mb'])}"
+            def_r = f"C{info['default_cores']}/M{self._format_memory_gb(info['default_memory_mb'])}"
+            max_r = f"C{info['max_cores']}/M{self._format_memory_gb(info['max_memory_mb'])}"
+            detail_lines.append(
+                f"  {self._escape_html(name)}: "
+                f"최소 {min_r} / 기본 {def_r} / 최대 {max_r}"
+            )
+
+        table = chr(10).join(table_lines)
+        details = chr(10).join(detail_lines)
+        text = (
+            f"<b>시뮬레이션 도구 목록</b>\n\n"
+            f"<pre>{table}\n\n리소스 프로필\n{details}</pre>"
+        )
         await update.effective_message.reply_text(  # type: ignore[union-attr]
-            "\n".join(lines), parse_mode=ParseMode.HTML,
+            text, parse_mode=ParseMode.HTML,
         )
 
     # ── 에러 핸들러 ──

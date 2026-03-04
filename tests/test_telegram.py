@@ -1294,7 +1294,7 @@ class TestFeedbackButtons:
         await feedback_handler._cmd_status(update, MagicMock())
 
         call_text = message.reply_text.await_args[0][0]
-        assert "degraded 상태" in call_text
+        assert "Degraded" in call_text
         assert "semantic_cache" in call_text
         assert "encoder_unavailable" in call_text
 
@@ -1496,11 +1496,11 @@ class TestSimInfoExternal:
 
         reply = message.reply_text.await_args[0][0]
         assert "외부 작업 상세" in reply
-        assert "PID: 54321" in reply
+        assert "54321" in reply
         assert "/tmp/STRUC2" in reply
         assert "run-inp" in reply
-        assert "코어: 4 | 메모리(할당): 8GB" in reply
-        assert "리소스 근거: 할당값은 도구 기본값(추정)" in reply
+        assert "8GB" in reply
+        assert "도구 기본값(추정)" in reply
 
     @pytest.mark.asyncio
     async def test_sim_info_external_by_pid_prefix(
@@ -1534,7 +1534,7 @@ class TestSimInfoExternal:
 
         reply = message.reply_text.await_args[0][0]
         assert "외부 작업 상세" in reply
-        assert "PID: 98765" in reply
+        assert "98765" in reply
 
     @pytest.mark.asyncio
     async def test_sim_status_shows_external_resource_breakdown(
@@ -1574,9 +1574,9 @@ class TestSimInfoExternal:
         await telegram_handler._sim_status(update, [])
 
         reply = message.reply_text.await_args[0][0]
-        assert "CPU: 12/16 코어 (큐:0, 외부:12)" in reply
-        assert "메모리(할당): 24GB/128GB (큐:0GB, 외부:24GB)" in reply
-        assert "외부 메모리(RSS 실측): 114 MB" in reply
+        assert "12/16 코어" in reply
+        assert "24GB/128GB" in reply
+        assert "외부 RSS 실측: 114 MB" in reply
         assert "실행합계: 3" in reply
 
     @pytest.mark.asyncio
@@ -1610,7 +1610,7 @@ class TestSimInfoExternal:
 
         reply = message.reply_text.await_args[0][0]
         assert "C4/M8GB" in reply
-        assert "(추정)" in reply
+        assert "외부 PID:12345" in reply
 
     @pytest.mark.asyncio
     async def test_sim_list_marks_queued_resources_as_requested(
@@ -1641,4 +1641,5 @@ class TestSimInfoExternal:
         await telegram_handler._sim_list(update, [])
 
         reply = message.reply_text.await_args[0][0]
-        assert "요청 C4/M32GB (시작 시 재계산)" in reply
+        assert "C4/M32GB*" in reply
+        assert "시작 시 리소스 재계산" in reply
