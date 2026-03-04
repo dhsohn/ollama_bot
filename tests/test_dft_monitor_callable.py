@@ -37,6 +37,7 @@ async def test_baseline_seed_prevents_restart_spam(tmp_path: Path) -> None:
     kb_dir.mkdir(parents=True)
     out_file = kb_dir / "calc.out"
     out_file.write_text(_COMPLETED_OUT, encoding="utf-8")
+    (kb_dir / "run_state.json").write_text('{"status": "running"}', encoding="utf-8")
 
     state_file = tmp_path / "automation" / "dft_monitor_state.json"
 
@@ -194,6 +195,7 @@ async def test_running_opt_generates_progress_notification(tmp_path: Path) -> No
     kb_dir.mkdir(parents=True)
     out_file = kb_dir / "opt_run.out"
     out_file.write_text(_RUNNING_OPT_OUT, encoding="utf-8")
+    (kb_dir / "run_state.json").write_text('{"status": "running"}', encoding="utf-8")
 
     state_file = tmp_path / "automation" / "state.json"
 
@@ -229,6 +231,7 @@ async def test_running_opt_does_not_upsert_to_index(tmp_path: Path) -> None:
     kb_dir.mkdir(parents=True)
     out_file = kb_dir / "opt_run.out"
     out_file.write_text(_RUNNING_OPT_OUT, encoding="utf-8")
+    (kb_dir / "run_state.json").write_text('{"status": "running"}', encoding="utf-8")
 
     state_file = tmp_path / "automation" / "state.json"
 
@@ -259,13 +262,18 @@ async def test_running_opt_does_not_upsert_to_index(tmp_path: Path) -> None:
 async def test_completed_and_running_mixed(tmp_path: Path) -> None:
     """완료된 파일과 진행 중인 파일이 동시에 있을 때 각각 올바른 알림을 생성한다."""
     kb_dir = tmp_path / "kb"
-    kb_dir.mkdir(parents=True)
 
-    completed_file = kb_dir / "done.out"
+    done_dir = kb_dir / "done_dir"
+    done_dir.mkdir(parents=True)
+    completed_file = done_dir / "done.out"
     completed_file.write_text(_COMPLETED_OUT, encoding="utf-8")
+    (done_dir / "run_state.json").write_text('{"status": "completed"}', encoding="utf-8")
 
-    running_file = kb_dir / "running.out"
+    run_dir = kb_dir / "run_dir"
+    run_dir.mkdir(parents=True)
+    running_file = run_dir / "running.out"
     running_file.write_text(_RUNNING_OPT_OUT, encoding="utf-8")
+    (run_dir / "run_state.json").write_text('{"status": "running"}', encoding="utf-8")
 
     state_file = tmp_path / "automation" / "state.json"
 
@@ -309,6 +317,7 @@ async def test_ai_comment_included_when_engine_provided(tmp_path: Path) -> None:
     kb_dir.mkdir(parents=True)
     out_file = kb_dir / "opt_run.out"
     out_file.write_text(_RUNNING_OPT_OUT, encoding="utf-8")
+    (kb_dir / "run_state.json").write_text('{"status": "running"}', encoding="utf-8")
 
     state_file = tmp_path / "automation" / "state.json"
 
@@ -350,6 +359,7 @@ async def test_ai_comment_graceful_on_engine_failure(tmp_path: Path) -> None:
     kb_dir.mkdir(parents=True)
     out_file = kb_dir / "opt_run.out"
     out_file.write_text(_RUNNING_OPT_OUT, encoding="utf-8")
+    (kb_dir / "run_state.json").write_text('{"status": "running"}', encoding="utf-8")
 
     state_file = tmp_path / "automation" / "state.json"
 
@@ -402,6 +412,7 @@ async def test_running_ts_neb_irc_include_ai_comment(
     kb_dir.mkdir(parents=True)
     out_file = kb_dir / f"{expected_calc_type}_run.out"
     out_file.write_text(_build_running_special_out(calc_keyword), encoding="utf-8")
+    (kb_dir / "run_state.json").write_text('{"status": "running"}', encoding="utf-8")
 
     state_file = tmp_path / "automation" / "state.json"
 

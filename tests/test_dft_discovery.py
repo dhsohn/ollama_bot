@@ -144,8 +144,8 @@ def test_orca_outputs_tracks_latest_out_from_run_state_dir(tmp_path: Path) -> No
     newer_retry = run_dir / "final.retry01.out"
     final_out.write_text("final", encoding="utf-8")
     newer_retry.write_text("retry", encoding="utf-8")
-    if newer_retry.stat().st_mtime <= final_out.stat().st_mtime:
-        newer_retry.touch()
+    mtime = final_out.stat().st_mtime
+    os.utime(newer_retry, (mtime + 5.0, mtime + 5.0))
 
     (run_dir / "run_state.json").write_text(
         json.dumps(
