@@ -167,6 +167,8 @@ sim_queue:
   max_retry_count: 5
   retry_delay_seconds: 30
   queue_check_interval_seconds: 5
+  adaptive_allocation_enabled: true
+  adaptive_memory_step_mb: 1024
   external_agent_enabled: true
   external_agent_base_url: "http://sim_host_agent:18081"
   external_agent_timeout_seconds: 3.0
@@ -178,8 +180,10 @@ sim_queue:
       executable: "./bin/orca_auto"
       cli_template: "{executable} run-inp --reaction-dir '{input_file}' > {output_file} 2>&1"
       command_prefix: "conda run -n base"
+      min_cores: 2
       default_cores: 4
-      default_memory_mb: 8192
+      min_memory_mb: 16384
+      default_memory_mb: 32768
       max_cores: 16
       max_memory_mb: 65536
       output_extension: ".out"
@@ -190,10 +194,12 @@ sim_queue:
       executable: "crest"
       cli_template: "{executable} {input_file} --T {cores} > {output_file} 2>&1"
       command_prefix: "conda run -n base"
+      min_cores: 4
       default_cores: 8
-      default_memory_mb: 16384
+      min_memory_mb: 32768
+      default_memory_mb: 65536
       max_cores: 16
-      max_memory_mb: 32768
+      max_memory_mb: 131072
       output_extension: ".out"
       env_vars:
         OMP_NUM_THREADS: "{cores}"

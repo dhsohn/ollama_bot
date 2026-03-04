@@ -11,7 +11,7 @@ from typing import Sequence
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -304,26 +304,40 @@ class SimToolConfig(BaseModel):
     executable: str
     cli_template: str
     command_prefix: str = ""
+    min_cores: int = 1
     default_cores: int = 4
+    min_memory_mb: int = 1024
     default_memory_mb: int = 8192
     max_cores: int = 16
     max_memory_mb: int = 65536
     output_extension: str = ".out"
     env_vars: dict[str, str] = Field(default_factory=dict)
 
-    @field_validator("default_cores", "max_cores")
+    @field_validator("min_cores", "default_cores", "max_cores")
     @classmethod
     def validate_positive_cores(cls, value: int) -> int:
         if value < 1:
             raise ValueError("core count must be >= 1")
         return value
 
-    @field_validator("default_memory_mb", "max_memory_mb")
+    @field_validator("min_memory_mb", "default_memory_mb", "max_memory_mb")
     @classmethod
     def validate_positive_memory(cls, value: int) -> int:
         if value < 1:
             raise ValueError("memory must be >= 1 MB")
         return value
+
+    @model_validator(mode="after")
+    def validate_ranges(self) -> "SimToolConfig":
+        if self.min_cores > self.default_cores:
+            raise ValueError("min_cores must be <= default_cores")
+        if self.default_cores > self.max_cores:
+            raise ValueError("default_cores must be <= max_cores")
+        if self.min_memory_mb > self.default_memory_mb:
+            raise ValueError("min_memory_mb must be <= default_memory_mb")
+        if self.default_memory_mb > self.max_memory_mb:
+            raise ValueError("default_memory_mb must be <= max_memory_mb")
+        return self
 
 
 class SimQueueConfig(BaseModel):
@@ -337,6 +351,8 @@ class SimQueueConfig(BaseModel):
     max_retry_count: int = 5
     retry_delay_seconds: int = 30
     queue_check_interval_seconds: int = 5
+    adaptive_allocation_enabled: bool = True
+    adaptive_memory_step_mb: int = 1024
     external_agent_enabled: bool = False
     external_agent_base_url: str = "http://sim_host_agent:18081"
     external_agent_timeout_seconds: float = 3.0
@@ -344,7 +360,7 @@ class SimQueueConfig(BaseModel):
     job_work_dir: str = "data/sim_jobs"
     tools: dict[str, SimToolConfig] = Field(default_factory=dict)
 
-    @field_validator("total_cores", "max_concurrent_jobs")
+    @field_validator("total_cores", "max_concurrent_jobs", "adaptive_memory_step_mb")
     @classmethod
     def validate_positive_ints(cls, value: int) -> int:
         if value < 1:

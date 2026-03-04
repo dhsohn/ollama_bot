@@ -162,6 +162,167 @@ async def test_queue_status_includes_external_running_count(tmp_path: Path) -> N
 
 
 @pytest.mark.asyncio
+async def test_compute_dispatch_resources_scales_up_when_queue_is_shallow(
+    tmp_path: Path,
+) -> None:
+    scheduler, store = await _build_scheduler(tmp_path, "orca_auto")
+    scheduler._config.max_concurrent_jobs = 8
+    scheduler._config.total_cores = 16
+    scheduler._config.total_memory_mb = 131072
+    tool = scheduler._config.tools["orca_auto"]
+    tool.default_cores = 2
+    tool.default_memory_mb = 16384
+    tool.max_cores = 16
+    tool.max_memory_mb = 65536
+
+    try:
+        job = {"tool": "orca_auto", "cores": 2, "memory_mb": 16384}
+        cores, memory_mb = scheduler._compute_dispatch_resources(
+            job,
+            queued_count=1,
+            resource_status={
+                "running_jobs": 0,
+                "available_cores": 16,
+                "available_memory_mb": 131072,
+            },
+        )
+        assert cores == 16
+        assert memory_mb == 65536
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_compute_dispatch_resources_keeps_baseline_when_backlog_is_high(
+    tmp_path: Path,
+) -> None:
+    scheduler, store = await _build_scheduler(tmp_path, "orca_auto")
+    scheduler._config.max_concurrent_jobs = 8
+    scheduler._config.total_cores = 16
+    scheduler._config.total_memory_mb = 131072
+    tool = scheduler._config.tools["orca_auto"]
+    tool.default_cores = 2
+    tool.default_memory_mb = 16384
+    tool.max_cores = 16
+    tool.max_memory_mb = 65536
+
+    try:
+        job = {"tool": "orca_auto", "cores": 2, "memory_mb": 16384}
+        cores, memory_mb = scheduler._compute_dispatch_resources(
+            job,
+            queued_count=5,
+            resource_status={
+                "running_jobs": 3,
+                "available_cores": 10,
+                "available_memory_mb": 65536,
+            },
+        )
+        assert cores == 2
+        assert memory_mb == 16384
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_compute_dispatch_resources_can_scale_down_to_tool_min(
+    tmp_path: Path,
+) -> None:
+    scheduler, store = await _build_scheduler(tmp_path, "orca_auto")
+    scheduler._config.max_concurrent_jobs = 8
+    scheduler._config.total_cores = 8
+    scheduler._config.total_memory_mb = 65536
+    tool = scheduler._config.tools["orca_auto"]
+    tool.min_cores = 1
+    tool.default_cores = 2
+    tool.min_memory_mb = 8192
+    tool.default_memory_mb = 16384
+    tool.max_cores = 16
+    tool.max_memory_mb = 65536
+
+    try:
+        job = {"tool": "orca_auto", "cores": 2, "memory_mb": 16384}
+        cores, memory_mb = scheduler._compute_dispatch_resources(
+            job,
+            queued_count=8,
+            resource_status={
+                "running_jobs": 0,
+                "available_cores": 8,
+                "available_memory_mb": 65536,
+            },
+        )
+        assert cores == 1
+        assert memory_mb == 8192
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_compute_dispatch_resources_returns_baseline_when_disabled(
+    tmp_path: Path,
+) -> None:
+    scheduler, store = await _build_scheduler(tmp_path, "orca_auto")
+    scheduler._config.adaptive_allocation_enabled = False
+    scheduler._config.max_concurrent_jobs = 8
+    scheduler._config.total_cores = 16
+    scheduler._config.total_memory_mb = 131072
+    tool = scheduler._config.tools["orca_auto"]
+    tool.default_cores = 2
+    tool.default_memory_mb = 16384
+    tool.max_cores = 16
+    tool.max_memory_mb = 65536
+
+    try:
+        job = {"tool": "orca_auto", "cores": 2, "memory_mb": 16384}
+        cores, memory_mb = scheduler._compute_dispatch_resources(
+            job,
+            queued_count=1,
+            resource_status={
+                "running_jobs": 0,
+                "available_cores": 16,
+                "available_memory_mb": 131072,
+            },
+        )
+        assert cores == 2
+        assert memory_mb == 16384
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_submit_job_clamps_requested_resources_to_tool_min(
+    tmp_path: Path,
+) -> None:
+    scheduler, store = await _build_scheduler(tmp_path, "orca_auto")
+    tool = scheduler._config.tools["orca_auto"]
+    tool.min_cores = 2
+    tool.default_cores = 4
+    tool.max_cores = 16
+    tool.min_memory_mb = 8192
+    tool.default_memory_mb = 16384
+    tool.max_memory_mb = 65536
+
+    input_dir = tmp_path / "orca_runs" / "STRUCX"
+    input_dir.mkdir(parents=True)
+    os.environ["SIM_INPUT_DIR_ORCA_AUTO"] = str(input_dir.parent)
+
+    try:
+        job_id = await scheduler.submit_job(
+            tool="orca_auto",
+            input_file="STRUCX",
+            submitted_by=1,
+            cores=1,
+            memory_mb=4096,
+        )
+        job = await store.get_job(job_id)
+        assert job is not None
+        assert job["cores"] == 2
+        assert job["memory_mb"] == 8192
+    finally:
+        os.environ.pop("SIM_INPUT_DIR_ORCA_AUTO", None)
+        await store.close()
+
+
+@pytest.mark.asyncio
 async def test_cancel_external_job_terminates_with_sigterm(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

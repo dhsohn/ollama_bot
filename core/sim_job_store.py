@@ -122,7 +122,7 @@ class SimJobStore:
         allowed_fields = {
             "pid", "exit_code", "error_message", "output_file",
             "work_dir", "cli_command", "started_at", "completed_at",
-            "priority",
+            "priority", "cores", "memory_mb",
         }
         for key, value in kwargs.items():
             if key not in allowed_fields:

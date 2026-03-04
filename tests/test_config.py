@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from core.config import FeedbackConfig, load_config
+from core.config import FeedbackConfig, SimToolConfig, load_config
 
 
 def _write_minimal_yaml(path: Path) -> None:
@@ -256,6 +256,28 @@ def test_security_invalid_numeric_value_raises(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="security numeric settings must be >= 1"):
         load_config(config_path=str(config_path), env_file=str(env_path))
+
+
+def test_sim_tool_config_invalid_core_range_raises() -> None:
+    with pytest.raises(ValueError, match="min_cores must be <= default_cores"):
+        SimToolConfig(
+            executable="echo",
+            cli_template="{executable} {input_file}",
+            min_cores=4,
+            default_cores=2,
+            max_cores=8,
+        )
+
+
+def test_sim_tool_config_invalid_memory_range_raises() -> None:
+    with pytest.raises(ValueError, match="min_memory_mb must be <= default_memory_mb"):
+        SimToolConfig(
+            executable="echo",
+            cli_template="{executable} {input_file}",
+            min_memory_mb=16384,
+            default_memory_mb=8192,
+            max_memory_mb=32768,
+        )
 
 
 def test_feedback_section_loaded_from_yaml(tmp_path: Path) -> None:

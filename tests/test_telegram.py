@@ -1499,7 +1499,7 @@ class TestSimInfoExternal:
         assert "PID: 54321" in reply
         assert "/tmp/STRUC2" in reply
         assert "run-inp" in reply
-        assert "코어: 4 | 메모리(할당): 8192MB" in reply
+        assert "코어: 4 | 메모리(할당): 8GB" in reply
         assert "리소스 근거: 할당값은 도구 기본값(추정)" in reply
 
     @pytest.mark.asyncio
@@ -1575,7 +1575,7 @@ class TestSimInfoExternal:
 
         reply = message.reply_text.await_args[0][0]
         assert "CPU: 12/16 코어 (큐:0, 외부:12)" in reply
-        assert "메모리(할당): 24576/131072 MB (큐:0, 외부:24576)" in reply
+        assert "메모리(할당): 24GB/128GB (큐:0GB, 외부:24GB)" in reply
         assert "외부 메모리(RSS 실측): 114 MB" in reply
         assert "실행합계: 3" in reply
 
@@ -1609,5 +1609,5 @@ class TestSimInfoExternal:
         await telegram_handler._sim_list(update, [])
 
         reply = message.reply_text.await_args[0][0]
-        assert "C4/M8192MB" in reply
+        assert "C4/M8GB" in reply
         assert "(추정)" in reply

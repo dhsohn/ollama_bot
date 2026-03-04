@@ -682,19 +682,142 @@ class SimJobScheduler:
             except asyncio.TimeoutError:
                 pass
 
+    @staticmethod
+    def _round_down_step(value: int, step: int) -> int:
+        if value <= 0:
+            return 0
+        if step <= 1:
+            return value
+        if value < step:
+            return value
+        return max(1, (value // step) * step)
+
+    def _compute_dispatch_resources(
+        self,
+        job: dict[str, Any],
+        *,
+        queued_count: int,
+        resource_status: dict[str, Any],
+    ) -> tuple[int, int]:
+        """디스패치 직전 동적 리소스(코어/메모리)를 계산한다."""
+        tool_name = str(job.get("tool") or "")
+        tool_config = self._config.tools.get(tool_name)
+        job_cores = max(1, int(job.get("cores", 1)))
+        job_memory = max(1, int(job.get("memory_mb", 1)))
+        if tool_config is None:
+            return job_cores, job_memory
+
+        min_cores = min(
+            max(1, int(tool_config.min_cores)),
+            int(tool_config.max_cores),
+            int(self._config.total_cores),
+        )
+        min_memory = min(
+            max(1, int(tool_config.min_memory_mb)),
+            int(tool_config.max_memory_mb),
+            int(self._config.total_memory_mb),
+        )
+        preferred_cores = min(
+            max(job_cores, min_cores),
+            int(tool_config.max_cores),
+            int(self._config.total_cores),
+        )
+        preferred_memory = min(
+            max(job_memory, min_memory),
+            int(tool_config.max_memory_mb),
+            int(self._config.total_memory_mb),
+        )
+
+        if not self._config.adaptive_allocation_enabled:
+            return preferred_cores, preferred_memory
+
+        running_jobs = max(0, int(resource_status.get("running_jobs", 0)))
+        pending_jobs = max(1, int(queued_count))
+        target_parallelism = max(
+            1,
+            min(int(self._config.max_concurrent_jobs), running_jobs + pending_jobs),
+        )
+
+        fair_cores = max(1, int(self._config.total_cores) // target_parallelism)
+        fair_memory = max(1, int(self._config.total_memory_mb) // target_parallelism)
+
+        target_cores = min(
+            max(fair_cores, min_cores),
+            int(tool_config.max_cores),
+            int(self._config.total_cores),
+        )
+        target_memory = min(
+            max(fair_memory, min_memory),
+            int(tool_config.max_memory_mb),
+            int(self._config.total_memory_mb),
+        )
+
+        available_cores = max(0, int(resource_status.get("available_cores", 0)))
+        available_memory = max(0, int(resource_status.get("available_memory_mb", 0)))
+        if available_cores > 0:
+            target_cores = min(target_cores, available_cores)
+        if available_memory > 0:
+            target_memory = min(target_memory, available_memory)
+
+        target_memory = self._round_down_step(
+            target_memory,
+            int(self._config.adaptive_memory_step_mb),
+        )
+        target_memory = max(1, target_memory)
+
+        # 안전 하한 아래로는 내리지 않는다.
+        # 가용 리소스가 min 이하이면 can_allocate에서 대기한다.
+        target_cores = max(min_cores, target_cores)
+        target_memory = max(min_memory, target_memory)
+
+        # 실행 시작 시점을 기준으로 동적으로 증/감시키되,
+        # 제출 시 요청치(preferred)보다 낮게 내려갈 수 있도록 허용한다.
+        if target_cores == preferred_cores and target_memory == preferred_memory:
+            return preferred_cores, preferred_memory
+        return target_cores, target_memory
+
     async def _dispatch_pending_jobs(self) -> None:
         """리소스가 허용하는 만큼 대기 중인 작업을 디스패치한다."""
         while True:
+            queue_stats = await self._store.get_queue_stats()
+            queued_count = int(queue_stats.get("queued", 0))
+            if queued_count <= 0:
+                break
             candidates = await self._store.get_next_queued(limit=1)
             if not candidates:
                 break
             job = candidates[0]
-            if not await self._resources.can_allocate(job["cores"], job["memory_mb"]):
+            resource_status = await self._resources.get_status()
+            dispatch_cores, dispatch_memory = self._compute_dispatch_resources(
+                job,
+                queued_count=queued_count,
+                resource_status=resource_status,
+            )
+            dispatch_job = dict(job)
+            dispatch_job["cores"] = dispatch_cores
+            dispatch_job["memory_mb"] = dispatch_memory
+            if (
+                int(job.get("cores", 0)) != dispatch_cores
+                or int(job.get("memory_mb", 0)) != dispatch_memory
+            ):
+                self._logger.info(
+                    "sim_job_resources_adapted",
+                    job_id=str(job.get("job_id") or ""),
+                    tool=str(job.get("tool") or ""),
+                    queued_count=queued_count,
+                    running_jobs=int(resource_status.get("running_jobs", 0)),
+                    cores_from=int(job.get("cores", 0)),
+                    memory_from=int(job.get("memory_mb", 0)),
+                    cores_to=dispatch_cores,
+                    memory_to=dispatch_memory,
+                )
+
+            if not await self._resources.can_allocate(dispatch_cores, dispatch_memory):
                 break
-            success = await self._resources.allocate(job["cores"], job["memory_mb"])
+            success = await self._resources.allocate(dispatch_cores, dispatch_memory)
             if not success:
                 break
-            await self._launch_job(job)
+            await self._launch_job(dispatch_job)
 
     async def _launch_job(self, job: dict[str, Any]) -> None:
         """CLI 커맨드를 빌드하고 subprocess를 실행한다."""
@@ -761,6 +884,8 @@ class SimJobScheduler:
             await self._store.update_status(
                 job_id, "running",
                 pid=proc.pid,
+                cores=job["cores"],
+                memory_mb=job["memory_mb"],
                 output_file=output_file,
                 work_dir=str(work_dir),
                 cli_command=cmd,
@@ -945,13 +1070,17 @@ class SimJobScheduler:
 
         resolved_input = self._resolve_input_path(tool, input_file)
 
+        requested_cores = int(cores) if cores is not None else int(tool_config.default_cores)
         effective_cores = min(
-            cores or tool_config.default_cores,
-            tool_config.max_cores,
+            max(requested_cores, int(tool_config.min_cores)),
+            int(tool_config.max_cores),
+        )
+        requested_memory = (
+            int(memory_mb) if memory_mb is not None else int(tool_config.default_memory_mb)
         )
         effective_memory = min(
-            memory_mb or tool_config.default_memory_mb,
-            tool_config.max_memory_mb,
+            max(requested_memory, int(tool_config.min_memory_mb)),
+            int(tool_config.max_memory_mb),
         )
         effective_retries = min(
             max_retries if max_retries is not None else self._config.default_retry_count,
@@ -1238,7 +1367,9 @@ class SimJobScheduler:
                 "enabled": tc.enabled,
                 "executable": tc.executable,
                 "command_prefix": tc.command_prefix,
+                "min_cores": tc.min_cores,
                 "default_cores": tc.default_cores,
+                "min_memory_mb": tc.min_memory_mb,
                 "default_memory_mb": tc.default_memory_mb,
                 "max_cores": tc.max_cores,
                 "max_memory_mb": tc.max_memory_mb,

@@ -1571,7 +1571,7 @@ class TelegramHandler:
                 f"<code>{j['job_id'][:8]}</code> "
                 f"{self._escape_html(j['tool'])} "
                 f"[{j['status']}] "
-                f"C{j['cores']}/M{j['memory_mb']}MB"
+                f"C{j['cores']}/M{self._format_memory_gb(j.get('memory_mb', 0))}"
                 f"{label}"
             )
 
@@ -1590,7 +1590,7 @@ class TelegramHandler:
                 ext_rss = max(0, int(float(rss_raw)))
             except (TypeError, ValueError):
                 ext_rss = 0
-            memory_text = f"M{ext_memory}MB"
+            memory_text = f"M{self._format_memory_gb(ext_memory)}"
             if ext_rss > 0:
                 memory_text += f" (RSS:{ext_rss}MB)"
             elif j.get("resource_source") == "config_default":
@@ -1640,8 +1640,10 @@ class TelegramHandler:
             f"<b>리소스</b>\n"
             f"CPU: {total_alloc_cores}/{status.get('total_cores', 0)} 코어 "
             f"(큐:{queue_alloc_cores}, 외부:{external_alloc_cores})\n"
-            f"메모리(할당): {total_alloc_memory}/{status.get('total_memory_mb', 0)} MB "
-            f"(큐:{queue_alloc_memory}, 외부:{external_alloc_memory})\n"
+            f"메모리(할당): {self._format_memory_gb(total_alloc_memory)}/"
+            f"{self._format_memory_gb(status.get('total_memory_mb', 0))} "
+            f"(큐:{self._format_memory_gb(queue_alloc_memory)}, "
+            f"외부:{self._format_memory_gb(external_alloc_memory)})\n"
             f"{rss_line}"
             f"동시실행(큐): {running_jobs_queue}/{status.get('max_concurrent', 0)} | "
             f"실행합계: {running_jobs_total}"
@@ -1700,7 +1702,8 @@ class TelegramHandler:
                     f"PID: {ext.get('pid', '-')}",
                     f"경과: {elapsed_text}",
                     f"입력: <code>{self._escape_html(str(ext.get('input_file') or '-'))}</code>",
-                    f"코어: {int(ext.get('cores', 0))} | 메모리(할당): {int(ext.get('memory_mb', 0))}MB",
+                    f"코어: {int(ext.get('cores', 0))} | "
+                    f"메모리(할당): {self._format_memory_gb(ext.get('memory_mb', 0))}",
                     "제출/시작/완료: 외부 프로세스라 추적 불가",
                 ]
                 rss_raw = ext.get("memory_rss_mb", 0)
@@ -1731,7 +1734,7 @@ class TelegramHandler:
             f"도구: {self._escape_html(j['tool'])}",
             f"상태: {j['status']}",
             f"입력: <code>{self._escape_html(j['input_file'])}</code>",
-            f"코어: {j['cores']} | 메모리: {j['memory_mb']}MB",
+            f"코어: {j['cores']} | 메모리: {self._format_memory_gb(j.get('memory_mb', 0))}",
             f"우선순위: {j['priority']}",
             f"재시도: {j['retry_count']}/{j['max_retries']}",
             f"제출: {j['submitted_at'] or '-'}",
@@ -1915,8 +1918,9 @@ class TelegramHandler:
                 f"<b>{self._escape_html(name)}</b> [{status}]\n"
                 f"  실행: <code>{self._escape_html(info['executable'])}</code>\n"
                 f"  prefix: <code>{self._escape_html(prefix_display)}</code>\n"
-                f"  기본: C{info['default_cores']}/M{info['default_memory_mb']}MB\n"
-                f"  최대: C{info['max_cores']}/M{info['max_memory_mb']}MB"
+                f"  최소: C{info['min_cores']}/M{self._format_memory_gb(info['min_memory_mb'])}\n"
+                f"  기본: C{info['default_cores']}/M{self._format_memory_gb(info['default_memory_mb'])}\n"
+                f"  최대: C{info['max_cores']}/M{self._format_memory_gb(info['max_memory_mb'])}"
             )
         await update.effective_message.reply_text(  # type: ignore[union-attr]
             "\n".join(lines), parse_mode=ParseMode.HTML,
@@ -1946,6 +1950,22 @@ class TelegramHandler:
     def _escape_html(value: object) -> str:
         """HTML parse mode용 최소 이스케이프."""
         return escape_html(value)
+
+    @staticmethod
+    def _format_memory_gb(value_mb: object) -> str:
+        """MB 값을 사용자 표시용 GB 문자열로 변환한다."""
+        try:
+            mb = max(0.0, float(value_mb))
+        except (TypeError, ValueError):
+            mb = 0.0
+
+        gb = mb / 1024.0
+        rounded = round(gb)
+        if abs(gb - rounded) < 1e-9:
+            return f"{int(rounded)}GB"
+        if gb >= 10:
+            return f"{gb:.1f}GB"
+        return f"{gb:.2f}GB"
 
     @staticmethod
     def _coerce_error_list(value: object) -> list[str]:
