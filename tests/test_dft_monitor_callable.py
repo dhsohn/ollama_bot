@@ -76,7 +76,9 @@ async def test_baseline_seed_prevents_restart_spam(tmp_path: Path) -> None:
 
     third_result = await monitor_2()
     assert "DFT Monitor: 1건의 새 계산 감지" in third_result
-    assert "OK" in third_result
+    assert "✅" in third_result
+    assert "<b>" in third_result
+    assert "<pre>" in third_result
     assert dft_index.upsert_single.await_count == 1
 
 
@@ -222,6 +224,8 @@ async def test_running_opt_generates_progress_notification(tmp_path: Path) -> No
     assert "OPT Progress" in result
     assert "RUNNING" in result
     assert "Step" in result
+    assert "<b>" in result
+    assert "<pre>" in result
 
 
 @pytest.mark.asyncio
@@ -347,8 +351,9 @@ async def test_ai_comment_included_when_engine_provided(tmp_path: Path) -> None:
     os.utime(out_file, (mtime + 5.0, mtime + 5.0))
 
     result = await monitor()
-    assert "AI: " in result
-    assert "단조 감소" in result
+    assert "💬" in result
+    assert "<i>" in result
+    assert "에너지가 단조 감소" in result
     mock_engine.process_prompt.assert_awaited_once()
 
 
@@ -390,7 +395,7 @@ async def test_ai_comment_graceful_on_engine_failure(tmp_path: Path) -> None:
     # AI 코멘트 없이 progress 테이블은 정상 출력
     assert "OPT Progress" in result
     assert "Step" in result
-    assert "AI: " not in result
+    assert "💬" not in result
 
 
 @pytest.mark.asyncio
@@ -447,6 +452,7 @@ async def test_running_ts_neb_irc_include_ai_comment(
     result = await monitor()
     assert "RUNNING Progress" in result
     assert expected_calc_type in result
-    assert "AI: " in result
+    assert "💬" in result
+    assert "<i>" in result
     dft_index.upsert_single.assert_not_awaited()
     mock_engine.process_prompt.assert_awaited_once()

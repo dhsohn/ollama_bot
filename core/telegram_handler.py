@@ -2035,12 +2035,19 @@ class TelegramHandler:
 
     # ── 유틸리티 ──
 
-    async def send_message(self, chat_id: int, text: str) -> None:
+    async def send_message(
+        self,
+        chat_id: int,
+        text: str,
+        parse_mode: str | None = None,
+    ) -> None:
         """능동적으로 메시지를 전송한다 (auto_scheduler용)."""
         if self._app is None:
             raise RuntimeError("TelegramHandler가 아직 초기화되지 않았습니다.")
         for part in self._split_message(text):
-            await self._app.bot.send_message(chat_id=chat_id, text=part)
+            await self._app.bot.send_message(
+                chat_id=chat_id, text=part, parse_mode=parse_mode,
+            )
 
     @staticmethod
     def _escape_html(value: object) -> str:

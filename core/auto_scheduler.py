@@ -156,7 +156,9 @@ class EngineInterface(Protocol):
 
 
 class TelegramInterface(Protocol):
-    async def send_message(self, chat_id: int, text: str) -> None: ...
+    async def send_message(
+        self, chat_id: int, text: str, parse_mode: str | None = None,
+    ) -> None: ...
 
 
 class AutoScheduler:
@@ -544,10 +546,19 @@ class AutoScheduler:
 
         # 텔레그램 전송
         if output.send_to_telegram and self._telegram:
+            # HTML 태그가 포함된 결과는 HTML parse_mode로 전송
+            use_html = "<b>" in result or "<pre>" in result
+            parse_mode = "HTML" if use_html else None
+            header = (
+                f"⏰ <b>자동화: {auto.name}</b>\n\n"
+                if use_html
+                else f"⏰ 자동화: {auto.name}\n\n"
+            )
             for user_id in self._config.security.allowed_users:
                 try:
-                    header = f"⏰ 자동화: {auto.name}\n\n"
-                    await self._telegram.send_message(user_id, header + result)
+                    await self._telegram.send_message(
+                        user_id, header + result, parse_mode=parse_mode,
+                    )
                 except Exception as exc:
                     self._logger.error(
                         "auto_telegram_send_failed",
@@ -593,17 +604,21 @@ class AutoScheduler:
         if self._telegram is None:
             return
 
+        from html import escape as _h
+
         now = datetime.now(self._timezone).strftime("%Y-%m-%d %H:%M:%S %Z")
         message = (
-            f"⚠️ 자동화 실패: {auto.name}\n"
+            f"⚠️ <b>자동화 실패: {_h(auto.name)}</b>\n"
             f"- 시각: {now}\n"
-            f"- 원인: {self._format_exception(error)}\n"
+            f"- 원인: <code>{_h(self._format_exception(error))}</code>\n"
             f"- 재시도: {auto.retry.max_attempts}회 모두 실패"
         )
 
         for user_id in self._config.security.allowed_users:
             try:
-                await self._telegram.send_message(user_id, message)
+                await self._telegram.send_message(
+                    user_id, message, parse_mode="HTML",
+                )
             except Exception as exc:
                 self._logger.error(
                     "auto_failure_notice_send_failed",

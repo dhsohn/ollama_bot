@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+from html import escape as _h
 from pathlib import Path
 from typing import Any
 
@@ -106,7 +107,7 @@ def build_dft_monitor_callable(
                                         temperature, max_tokens, logger,
                                     )
                                     if ai_comment:
-                                        progress_text += f"\n\nAI: {ai_comment}"
+                                        progress_text += f'\n\n💬 "<i>{_h(ai_comment)}</i>"'
                         except Exception as exc:
                             logger.warning(
                                 "dft_monitor_progress_parse_error",
@@ -122,7 +123,7 @@ def build_dft_monitor_callable(
                                 temperature, max_tokens, logger,
                             )
                             if ai_comment:
-                                progress_text += f"\n\nAI: {ai_comment}"
+                                progress_text += f'\n\n💬 "<i>{_h(ai_comment)}</i>"'
 
                         if progress_text:
                             new_results.append({
@@ -150,9 +151,9 @@ def build_dft_monitor_callable(
                             method_basis += f"/{result.basis_set}"
 
                         status_emoji = {
-                            "completed": "OK",
-                            "failed": "FAIL",
-                            "running": "RUNNING",
+                            "completed": "✅",
+                            "failed": "🔴",
+                            "running": "🔄",
                         }.get(result.status, result.status)
 
                         notes: list[str] = []
@@ -232,21 +233,32 @@ def build_dft_monitor_callable(
         lines: list[str] = []
 
         if completed:
-            lines.append(f"DFT Monitor: {len(completed)}건의 새 계산 감지")
+            lines.append(
+                f"🧪 <b>DFT Monitor: {len(completed)}건의 새 계산 감지</b>"
+            )
+            table_rows: list[str] = []
+            table_rows.append("분자       계산  메서드/기저        에너지              상태")
+            table_rows.append("─" * 58)
             for r in completed:
-                lines.append("")
-                lines.append(
-                    f"  {r['formula']} | {r['calc_type']} | "
-                    f"{r['method_basis']} | {r['energy']} | "
-                    f"{r['status']}{r['note']}"
+                note_line = ""
+                if r["note"]:
+                    note_line = f"\n  ⚠️ {_h(r['note'].strip(' ()'))}"
+                table_rows.append(
+                    f"{_h(r['formula']):<10s} {_h(r['calc_type']):<4s}  "
+                    f"{_h(r['method_basis']):<17s} {_h(r['energy']):<19s} "
+                    f"{r['status']}"
+                    f"{note_line}"
+                    f"\n  📂 {_h(r['path'])}"
                 )
-                lines.append(f"    -> {r['path']}")
+            lines.append(f"<pre>{chr(10).join(table_rows)}</pre>")
 
         if running:
             if lines:
                 lines.append("")
-                lines.append("---")
-            lines.append(f"\nRUNNING Progress: {len(running)}건의 진행 중인 계산")
+                lines.append("─" * 40)
+            lines.append(
+                f"\n🔄 <b>RUNNING Progress: {len(running)}건의 진행 중인 계산</b>"
+            )
             for r in running:
                 lines.append("")
                 lines.append(r["_progress_text"])
@@ -274,22 +286,26 @@ def _is_progress_comment_target(calc_type: str) -> bool:
 
 
 def _format_opt_progress(progress: OptProgress) -> str:
-    """최적화 진행 현황을 텔레그램 알림 텍스트로 포맷한다."""
+    """최적화 진행 현황을 텔레그램 알림 텍스트로 포맷한다 (HTML)."""
     if not progress.steps:
         return ""
 
-    method_basis = progress.method
+    method_basis = _h(progress.method)
     if progress.basis_set:
-        method_basis += f"/{progress.basis_set}"
+        method_basis += f"/{_h(progress.basis_set)}"
 
-    status = "RUNNING" if progress.is_running else (
-        "CONVERGED" if progress.is_converged else "NOT YET CONVERGED"
-    )
+    if progress.is_running:
+        status = "🔄 RUNNING"
+    elif progress.is_converged:
+        status = "✅ CONVERGED"
+    else:
+        status = "⚠️ NOT YET CONVERGED"
+
     header = (
-        f"OPT Progress: {progress.formula or 'unknown'} | "
-        f"{progress.calc_type} | {method_basis}\n"
+        f"📈 <b>OPT Progress: {_h(progress.formula or 'unknown')} | "
+        f"{_h(progress.calc_type)} | {method_basis}</b>\n"
         f"Status: {status} | Steps: {len(progress.steps)}\n"
-        f"  -> {_short_path(progress.source_path)}"
+        f"📂 {_h(_short_path(progress.source_path))}"
     )
 
     # 최근 5 스텝 상세 표시
@@ -309,18 +325,20 @@ def _format_opt_progress(progress: OptProgress) -> str:
         )
         lines.append("")
 
-    # 최근 스텝 테이블
-    lines.append("Step | Energy (Eh)     | dE         | MaxGrad    | Conv")
-    lines.append("-----|-----------------|------------|------------|-----")
+    # 최근 스텝 테이블 (monospace)
+    pre_lines: list[str] = []
+    pre_lines.append("Step │ Energy (Eh)     │ dE         │ MaxGrad    │ Conv")
+    pre_lines.append("─────┼─────────────────┼────────────┼────────────┼─────")
     for s in recent:
         de_str = f"{s.energy_change:.2e}" if s.energy_change is not None else "   -"
         mg_str = f"{s.max_gradient:.2e}" if s.max_gradient is not None else "   -"
         n_conv = sum(1 for v in s.converged_flags.values() if v)
         n_total = len(s.converged_flags)
         conv_str = f"{n_conv}/{n_total}" if n_total > 0 else " -"
-        lines.append(
-            f"{s.cycle:4d} | {s.energy_hartree:15.8f} | {de_str:>10s} | {mg_str:>10s} | {conv_str}"
+        pre_lines.append(
+            f"{s.cycle:4d} │ {s.energy_hartree:15.8f} │ {de_str:>10s} │ {mg_str:>10s} │ {conv_str}"
         )
+    lines.append(f"<pre>{chr(10).join(pre_lines)}</pre>")
 
     # dE 트렌드 (마지막 2-3개 값)
     de_values = [
@@ -329,27 +347,27 @@ def _format_opt_progress(progress: OptProgress) -> str:
     ]
     if len(de_values) >= 2:
         trend = de_values[-3:] if len(de_values) >= 3 else de_values[-2:]
-        trend_str = " -> ".join(f"{v:.2e}" for v in trend)
+        trend_str = " → ".join(f"{v:.2e}" for v in trend)
         lines.append(f"\ndE trend: {trend_str}")
 
     return "\n".join(lines)
 
 
 def _format_running_snapshot(result: Any, source_path: str) -> str:
-    """OPT step 파싱이 어려운 running 계산의 간단 요약 텍스트를 만든다."""
-    method_basis = result.method or "unknown"
+    """OPT step 파싱이 어려운 running 계산의 간단 요약 텍스트를 만든다 (HTML)."""
+    method_basis = _h(result.method or "unknown")
     if result.basis_set:
-        method_basis += f"/{result.basis_set}"
+        method_basis += f"/{_h(result.basis_set)}"
     energy_str = (
         f"E = {result.energy_hartree:.6f} Eh"
         if result.energy_hartree is not None
         else "E = N/A"
     )
     return (
-        f"RUNNING Snapshot: {result.formula or 'unknown'} | "
-        f"{result.calc_type or 'unknown'} | {method_basis}\n"
-        f"Status: RUNNING | {energy_str}\n"
-        f"  -> {_short_path(source_path)}"
+        f"🔄 <b>RUNNING: {_h(result.formula or 'unknown')} | "
+        f"{_h(result.calc_type or 'unknown')} | {method_basis}</b>\n"
+        f"Status: 🔄 RUNNING | {energy_str}\n"
+        f"📂 {_h(_short_path(source_path))}"
     )
 
 
@@ -430,10 +448,10 @@ def _build_analysis_prompt(progress: OptProgress) -> str:
         )
 
     return (
-        "아래 ORCA 구조 최적화 진행 데이터를 분석하여 한국어로 한 문장 코멘트를 작성하세요.\n"
+        "아래 ORCA 구조 최적화 진행 데이터를 보고 사용자에게 전달할 한국어 한 문장 코멘트를 작성하세요.\n"
         "수렴 패턴(monotonic/oscillating/plateau/diverging), "
         "예상 남은 스텝, 주의사항을 포함하세요.\n"
-        "한 문장만 출력하세요.\n\n"
+        "분석 과정이나 사고 과정 없이 최종 코멘트 한 문장만 바로 출력하세요.\n\n"
         f"분자: {progress.formula or 'unknown'}\n"
         f"메서드: {progress.method}/{progress.basis_set}\n"
         f"총 {len(progress.steps)} 스텝\n\n"
@@ -452,9 +470,9 @@ def _build_running_analysis_prompt(result: Any, source_path: str) -> str:
         else "N/A"
     )
     return (
-        "아래 ORCA 진행 중 계산 정보를 바탕으로 한국어 한 문장 코멘트를 작성하세요.\n"
+        "아래 ORCA 진행 중 계산 정보를 보고 사용자에게 전달할 한국어 한 문장 코멘트를 작성하세요.\n"
         "현재 상태 요약과 다음 확인 포인트를 포함하세요.\n"
-        "한 문장만 출력하세요.\n\n"
+        "분석 과정이나 사고 과정 없이 최종 코멘트 한 문장만 바로 출력하세요.\n\n"
         f"분자: {result.formula or 'unknown'}\n"
         f"계산 유형: {result.calc_type or 'unknown'}\n"
         f"메서드: {method_basis}\n"
