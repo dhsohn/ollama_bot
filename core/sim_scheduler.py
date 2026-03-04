@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import signal
 import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
@@ -30,6 +31,27 @@ class _TelegramLike(Protocol):
 
 class SimJobScheduler:
     """비동기 스케줄링 루프로 시뮬레이션 작업을 관리한다."""
+
+    _IGNORED_PROCESS_TOKENS = {
+        "python",
+        "python3",
+        "bash",
+        "sh",
+        "conda",
+        "run",
+        "base",
+        "env",
+        "bin",
+        "usr",
+        "local",
+        "tmp",
+    }
+    _INPUT_HINT_PATTERNS = (
+        re.compile(r"--reaction-dir(?:=|\s+)(?P<value>'[^']+'|\"[^\"]+\"|\S+)"),
+        re.compile(r"(?:^|\s)--input(?:=|\s+)(?P<value>'[^']+'|\"[^\"]+\"|\S+)"),
+        re.compile(r"(?:^|\s)--input-file(?:=|\s+)(?P<value>'[^']+'|\"[^\"]+\"|\S+)"),
+        re.compile(r"(?:^|\s)-i(?:=|\s+)(?P<value>'[^']+'|\"[^\"]+\"|\S+)"),
+    )
 
     def __init__(
         self,
@@ -56,6 +78,112 @@ class SimJobScheduler:
     def _tool_env_suffix(tool: str) -> str:
         """도구명을 환경변수 suffix 형식으로 변환한다."""
         return re.sub(r"[^A-Z0-9]+", "_", tool.upper()).strip("_")
+
+    @staticmethod
+    def _token_in_command(command_lower: str, token_lower: str) -> bool:
+        """명령 문자열에 토큰이 단어 단위로 포함되는지 확인한다."""
+        if not token_lower:
+            return False
+        if token_lower.startswith("-"):
+            return re.search(
+                rf"(?<!\S){re.escape(token_lower)}(?:=|\s|$)",
+                command_lower,
+            ) is not None
+        if re.fullmatch(r"[a-z0-9_]+", token_lower):
+            return re.search(
+                rf"(?<![a-z0-9_]){re.escape(token_lower)}(?![a-z0-9_])",
+                command_lower,
+            ) is not None
+        return token_lower in command_lower
+
+    @classmethod
+    def _extract_input_hint(cls, command: str) -> str:
+        """실행 커맨드에서 입력 경로 힌트를 추출한다."""
+        for pattern in cls._INPUT_HINT_PATTERNS:
+            match = pattern.search(command)
+            if not match:
+                continue
+            value = match.group("value").strip().strip("'\"")
+            if value:
+                return value
+        return "-"
+
+    @staticmethod
+    def _is_pid_alive(pid: int) -> bool:
+        """PID가 현재 살아있는지 확인한다."""
+        if pid <= 0:
+            return False
+        try:
+            os.kill(pid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            # 권한 부족 시에도 프로세스는 존재한다고 본다.
+            return True
+        except OSError:
+            return False
+
+    def _build_external_detection_tokens(self) -> dict[str, list[str]]:
+        """도구별 외부 프로세스 탐지 토큰 목록을 구성한다."""
+        placeholders = {"executable", "input_file", "output_file", "cores", "memory_mb"}
+        token_map: dict[str, list[str]] = {}
+
+        for tool_name, tool_config in self._config.tools.items():
+            if not tool_config.enabled:
+                continue
+
+            tokens: set[str] = {tool_name.lower()}
+            executable = tool_config.executable
+            exec_name = Path(executable).name.lower()
+            if exec_name:
+                tokens.add(exec_name)
+                exec_stem = Path(exec_name).stem.lower()
+                if exec_stem:
+                    tokens.add(exec_stem)
+
+            for source in (tool_config.cli_template, tool_config.command_prefix):
+                for word in re.findall(r"[A-Za-z0-9_.-]{3,}", source):
+                    lw = word.lower()
+                    if lw in placeholders or lw in self._IGNORED_PROCESS_TOKENS:
+                        continue
+                    if lw.startswith("-") and len(lw) <= 3:
+                        continue
+                    if lw.isdigit():
+                        continue
+                    tokens.add(lw)
+
+            filtered = sorted(
+                (t for t in tokens if t and t not in self._IGNORED_PROCESS_TOKENS),
+                key=len,
+                reverse=True,
+            )
+            if filtered:
+                token_map[tool_name] = filtered
+
+        return token_map
+
+    def _match_tool_from_command(
+        self,
+        command: str,
+        token_map: dict[str, list[str]],
+    ) -> str | None:
+        """명령행 문자열로부터 가장 가능성 높은 도구명을 반환한다."""
+        command_lower = command.lower()
+        best_tool: str | None = None
+        best_len = -1
+
+        for tool_name, tokens in token_map.items():
+            for token in tokens:
+                if not self._token_in_command(command_lower, token):
+                    continue
+                token_len = len(token)
+                if token_len > best_len:
+                    best_tool = tool_name
+                    best_len = token_len
+                break
+
+        return best_tool
 
     def _resolve_input_path(self, tool: str, input_file: str) -> Path:
         """입력 경로를 실제 경로로 해석한다.
@@ -492,11 +620,156 @@ class SimJobScheduler:
 
         return await self._store.cancel_job(job_id)
 
+    async def cancel_external_job(
+        self,
+        pid: int,
+        *,
+        grace_seconds: float = 10.0,
+    ) -> bool:
+        """큐 외부에서 실행 중인 시뮬레이션 프로세스를 종료한다."""
+        if pid <= 0 or pid == os.getpid():
+            return False
+
+        external_jobs = await self.get_external_running_jobs()
+        if not any(int(j.get("pid", -1)) == pid for j in external_jobs):
+            return False
+
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return True
+        except (PermissionError, OSError) as exc:
+            self._logger.warning(
+                "sim_external_cancel_failed",
+                pid=pid,
+                signal="SIGTERM",
+                error=str(exc),
+            )
+            return False
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + max(grace_seconds, 0.1)
+        while loop.time() < deadline:
+            if not self._is_pid_alive(pid):
+                return True
+            await asyncio.sleep(0.2)
+
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            return True
+        except (PermissionError, OSError) as exc:
+            self._logger.warning(
+                "sim_external_cancel_failed",
+                pid=pid,
+                signal="SIGKILL",
+                error=str(exc),
+            )
+            return False
+
+        for _ in range(10):
+            if not self._is_pid_alive(pid):
+                return True
+            await asyncio.sleep(0.1)
+        return not self._is_pid_alive(pid)
+
     async def get_queue_status(self) -> dict[str, Any]:
         """큐 통계 + 리소스 현황을 합쳐 반환한다."""
         queue_stats = await self._store.get_queue_stats()
         resource_status = await self._resources.get_status()
-        return {**queue_stats, **resource_status}
+        external_jobs = await self.get_external_running_jobs()
+        queue_running = int(queue_stats.get("running", 0))
+        external_running = len(external_jobs)
+        return {
+            **queue_stats,
+            **resource_status,
+            "external_running": external_running,
+            "running_total": queue_running + external_running,
+        }
+
+    async def get_external_running_jobs(self) -> list[dict[str, Any]]:
+        """큐 DB에 없는 실행 중 외부 시뮬레이션 프로세스를 탐지한다."""
+        token_map = self._build_external_detection_tokens()
+        if not token_map:
+            return []
+
+        tracked_running = await self._store.get_running_jobs()
+        tracked_pids = {
+            int(job["pid"]) for job in tracked_running
+            if isinstance(job.get("pid"), int)
+        }
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "ps",
+                "-eo",
+                "pid=,etimes=,args=",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await proc.communicate()
+        except FileNotFoundError:
+            return []
+        except Exception as exc:
+            self._logger.warning("sim_external_scan_failed", error=str(exc))
+            return []
+
+        if proc.returncode != 0:
+            self._logger.warning(
+                "sim_external_scan_failed",
+                returncode=proc.returncode,
+                stderr=stderr.decode(errors="ignore").strip(),
+            )
+            return []
+
+        current_pid = os.getpid()
+        external_jobs: list[dict[str, Any]] = []
+        for raw_line in stdout.decode(errors="ignore").splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+
+            match = re.match(r"^(?P<pid>\d+)\s+(?P<elapsed>\d+)\s+(?P<cmd>.+)$", line)
+            if not match:
+                continue
+
+            pid = int(match.group("pid"))
+            if pid == current_pid or pid in tracked_pids:
+                continue
+
+            command = match.group("cmd").strip()
+            tool_name = self._match_tool_from_command(command, token_map)
+            if tool_name is None:
+                continue
+
+            elapsed_seconds = int(match.group("elapsed"))
+            input_hint = self._extract_input_hint(command)
+            external_jobs.append(
+                {
+                    "job_id": f"external-{pid}",
+                    "tool": tool_name,
+                    "status": "running",
+                    "priority": 0,
+                    "cores": 0,
+                    "memory_mb": 0,
+                    "input_file": input_hint,
+                    "output_file": None,
+                    "submitted_by": 0,
+                    "submitted_at": None,
+                    "started_at": None,
+                    "completed_at": None,
+                    "pid": pid,
+                    "elapsed_seconds": elapsed_seconds,
+                    "cli_command": command,
+                    "retry_count": 0,
+                    "max_retries": 0,
+                    "label": "external",
+                    "external": True,
+                }
+            )
+
+        external_jobs.sort(key=lambda job: int(job.get("elapsed_seconds", 0)), reverse=True)
+        return external_jobs
 
     async def list_jobs(self, **kwargs: Any) -> list[dict[str, Any]]:
         return await self._store.list_jobs(**kwargs)

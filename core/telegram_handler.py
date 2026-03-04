@@ -1554,7 +1554,11 @@ class TelegramHandler:
 
         status_filter = args[0] if args else None
         jobs = await sim_scheduler.list_jobs(status=status_filter)
-        if not jobs:
+        external_jobs: list[dict[str, Any]] = []
+        if status_filter in (None, "all", "running", "running_external", "external"):
+            external_jobs = await sim_scheduler.get_external_running_jobs()
+
+        if not jobs and not external_jobs:
             await update.effective_message.reply_text(  # type: ignore[union-attr]
                 "등록된 작업이 없습니다."
             )
@@ -1570,6 +1574,20 @@ class TelegramHandler:
                 f"C{j['cores']}/M{j['memory_mb']}MB"
                 f"{label}"
             )
+
+        for j in external_jobs:
+            elapsed_seconds = int(j.get("elapsed_seconds", 0))
+            elapsed_minutes = elapsed_seconds // 60
+            elapsed_text = (
+                f"{elapsed_minutes}m" if elapsed_minutes > 0 else f"{elapsed_seconds}s"
+            )
+            input_hint = self._escape_html(j.get("input_file") or "-")
+            lines.append(
+                f"<code>{j['job_id'][:8]}</code> "
+                f"{self._escape_html(j['tool'])} "
+                f"[running] C?/M? "
+                f"(외부 PID:{j.get('pid', '?')}, {elapsed_text}, 입력:{input_hint})"
+            )
         await update.effective_message.reply_text(  # type: ignore[union-attr]
             "\n".join(lines), parse_mode=ParseMode.HTML,
         )
@@ -1580,10 +1598,17 @@ class TelegramHandler:
             return
 
         status = await sim_scheduler.get_queue_status()
+        queue_running = status.get("running", 0)
+        external_running = status.get("external_running", 0)
+        running_total = status.get("running_total", queue_running)
+        running_line = f"실행 중: {running_total}"
+        if external_running:
+            running_line += f" (큐:{queue_running}, 외부:{external_running})"
+
         text = (
             "<b>시뮬레이션 큐 현황</b>\n\n"
             f"대기: {status.get('queued', 0)}\n"
-            f"실행 중: {status.get('running', 0)}\n"
+            f"{running_line}\n"
             f"완료: {status.get('completed', 0)}\n"
             f"실패: {status.get('failed', 0)}\n\n"
             f"<b>리소스</b>\n"
@@ -1610,6 +1635,52 @@ class TelegramHandler:
         jobs = await sim_scheduler.list_jobs(limit=50)
         matched = [j for j in jobs if j["job_id"].startswith(job_id_prefix)]
         if not matched:
+            external_jobs = await sim_scheduler.get_external_running_jobs()
+            matched_external = [
+                j for j in external_jobs if str(j.get("job_id", "")).startswith(job_id_prefix)
+            ]
+            if not matched_external and job_id_prefix.isdigit():
+                matched_external = [
+                    j for j in external_jobs
+                    if str(j.get("pid", "")).startswith(job_id_prefix)
+                ]
+
+            if matched_external:
+                ext = matched_external[0]
+                elapsed_seconds = int(ext.get("elapsed_seconds", 0))
+                elapsed_h = elapsed_seconds // 3600
+                elapsed_m = (elapsed_seconds % 3600) // 60
+                elapsed_s = elapsed_seconds % 60
+                if elapsed_h:
+                    elapsed_text = f"{elapsed_h}h {elapsed_m}m {elapsed_s}s"
+                elif elapsed_m:
+                    elapsed_text = f"{elapsed_m}m {elapsed_s}s"
+                else:
+                    elapsed_text = f"{elapsed_s}s"
+
+                cmd = str(ext.get("cli_command") or "").strip()
+                if len(cmd) > 1000:
+                    cmd = f"{cmd[:1000]}..."
+
+                lines = [
+                    f"<b>외부 작업 상세: {ext['job_id'][:12]}</b>\n",
+                    f"유형: external",
+                    f"도구: {self._escape_html(str(ext.get('tool', '-')))}",
+                    f"상태: {self._escape_html(str(ext.get('status', 'running')))}",
+                    f"PID: {ext.get('pid', '-')}",
+                    f"경과: {elapsed_text}",
+                    f"입력: <code>{self._escape_html(str(ext.get('input_file') or '-'))}</code>",
+                    "코어/메모리: 외부 프로세스라 추적 불가",
+                    "제출/시작/완료: 외부 프로세스라 추적 불가",
+                ]
+                if cmd:
+                    lines.append(f"명령: <code>{self._escape_html(cmd)}</code>")
+
+                await update.effective_message.reply_text(  # type: ignore[union-attr]
+                    "\n".join(lines), parse_mode=ParseMode.HTML,
+                )
+                return
+
             await update.effective_message.reply_text(  # type: ignore[union-attr]
                 f"작업을 찾을 수 없음: {job_id_prefix}"
             )
@@ -1655,20 +1726,50 @@ class TelegramHandler:
         job_id_prefix = args[0]
         jobs = await sim_scheduler.list_jobs(limit=50)
         matched = [j for j in jobs if j["job_id"].startswith(job_id_prefix)]
-        if not matched:
+        if matched:
+            success = await sim_scheduler.cancel_job(matched[0]["job_id"])
+            if success:
+                await update.effective_message.reply_text(  # type: ignore[union-attr]
+                    f"작업 {matched[0]['job_id'][:8]} 취소 완료"
+                )
+            else:
+                await update.effective_message.reply_text(  # type: ignore[union-attr]
+                    f"작업 {matched[0]['job_id'][:8]} 취소 불가 (이미 완료/실패/취소됨)"
+                )
+            return
+
+        external_jobs = await sim_scheduler.get_external_running_jobs()
+        matched_external = [
+            j for j in external_jobs if str(j.get("job_id", "")).startswith(job_id_prefix)
+        ]
+        if not matched_external and job_id_prefix.isdigit():
+            pid_prefix = job_id_prefix
+            matched_external = [
+                j for j in external_jobs if str(j.get("pid", "")).startswith(pid_prefix)
+            ]
+
+        if not matched_external:
             await update.effective_message.reply_text(  # type: ignore[union-attr]
                 f"작업을 찾을 수 없음: {job_id_prefix}"
             )
             return
 
-        success = await sim_scheduler.cancel_job(matched[0]["job_id"])
+        target = matched_external[0]
+        pid = target.get("pid")
+        if not isinstance(pid, int) or pid <= 0:
+            await update.effective_message.reply_text(  # type: ignore[union-attr]
+                "외부 작업 PID를 확인할 수 없어 취소할 수 없습니다."
+            )
+            return
+
+        success = await sim_scheduler.cancel_external_job(pid)
         if success:
             await update.effective_message.reply_text(  # type: ignore[union-attr]
-                f"작업 {matched[0]['job_id'][:8]} 취소 완료"
+                f"외부 작업 {target['job_id'][:12]} (PID:{pid}) 종료 완료"
             )
         else:
             await update.effective_message.reply_text(  # type: ignore[union-attr]
-                f"작업 {matched[0]['job_id'][:8]} 취소 불가 (이미 완료/실패/취소됨)"
+                f"외부 작업 {target['job_id'][:12]} 종료 불가 (이미 종료됨/권한 없음)"
             )
 
     async def _sim_priority(self, update: Update, args: list[str]) -> None:

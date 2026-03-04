@@ -1386,3 +1386,144 @@ class TestApplicationGuards:
     async def test_send_message_before_initialize_raises(self, telegram_handler: TelegramHandler) -> None:
         with pytest.raises(RuntimeError, match="초기화"):
             await telegram_handler.send_message(111, "hello")
+
+
+class TestSimCancelExternal:
+    @pytest.mark.asyncio
+    async def test_sim_cancel_external_by_job_id_prefix(
+        self,
+        telegram_handler: TelegramHandler,
+    ) -> None:
+        sim_scheduler = MagicMock()
+        sim_scheduler.list_jobs = AsyncMock(return_value=[])
+        sim_scheduler.get_external_running_jobs = AsyncMock(
+            return_value=[{"job_id": "external-43210", "pid": 43210}]
+        )
+        sim_scheduler.cancel_external_job = AsyncMock(return_value=True)
+        telegram_handler.set_sim_scheduler(sim_scheduler)
+
+        message = MagicMock()
+        message.reply_text = AsyncMock()
+        update = MagicMock()
+        update.effective_message = message
+
+        await telegram_handler._sim_cancel(update, ["external-43210"])
+
+        sim_scheduler.cancel_external_job.assert_awaited_once_with(43210)
+        reply = message.reply_text.await_args[0][0]
+        assert "종료 완료" in reply
+        assert "43210" in reply
+
+    @pytest.mark.asyncio
+    async def test_sim_cancel_external_by_pid_prefix(
+        self,
+        telegram_handler: TelegramHandler,
+    ) -> None:
+        sim_scheduler = MagicMock()
+        sim_scheduler.list_jobs = AsyncMock(return_value=[])
+        sim_scheduler.get_external_running_jobs = AsyncMock(
+            return_value=[{"job_id": "external-98765", "pid": 98765}]
+        )
+        sim_scheduler.cancel_external_job = AsyncMock(return_value=True)
+        telegram_handler.set_sim_scheduler(sim_scheduler)
+
+        message = MagicMock()
+        message.reply_text = AsyncMock()
+        update = MagicMock()
+        update.effective_message = message
+
+        await telegram_handler._sim_cancel(update, ["987"])
+
+        sim_scheduler.cancel_external_job.assert_awaited_once_with(98765)
+        reply = message.reply_text.await_args[0][0]
+        assert "종료 완료" in reply
+
+    @pytest.mark.asyncio
+    async def test_sim_cancel_external_failure_message(
+        self,
+        telegram_handler: TelegramHandler,
+    ) -> None:
+        sim_scheduler = MagicMock()
+        sim_scheduler.list_jobs = AsyncMock(return_value=[])
+        sim_scheduler.get_external_running_jobs = AsyncMock(
+            return_value=[{"job_id": "external-11111", "pid": 11111}]
+        )
+        sim_scheduler.cancel_external_job = AsyncMock(return_value=False)
+        telegram_handler.set_sim_scheduler(sim_scheduler)
+
+        message = MagicMock()
+        message.reply_text = AsyncMock()
+        update = MagicMock()
+        update.effective_message = message
+
+        await telegram_handler._sim_cancel(update, ["external-111"])
+
+        sim_scheduler.cancel_external_job.assert_awaited_once_with(11111)
+        reply = message.reply_text.await_args[0][0]
+        assert "종료 불가" in reply
+
+
+class TestSimInfoExternal:
+    @pytest.mark.asyncio
+    async def test_sim_info_external_by_job_id_prefix(
+        self,
+        telegram_handler: TelegramHandler,
+    ) -> None:
+        sim_scheduler = MagicMock()
+        sim_scheduler.list_jobs = AsyncMock(return_value=[])
+        sim_scheduler.get_external_running_jobs = AsyncMock(
+            return_value=[{
+                "job_id": "external-54321",
+                "tool": "orca_auto",
+                "status": "running",
+                "pid": 54321,
+                "elapsed_seconds": 125,
+                "input_file": "/tmp/STRUC2",
+                "cli_command": "python -m core.cli run-inp --reaction-dir /tmp/STRUC2",
+            }]
+        )
+        telegram_handler.set_sim_scheduler(sim_scheduler)
+
+        message = MagicMock()
+        message.reply_text = AsyncMock()
+        update = MagicMock()
+        update.effective_message = message
+
+        await telegram_handler._sim_info(update, ["external-543"])
+
+        reply = message.reply_text.await_args[0][0]
+        assert "외부 작업 상세" in reply
+        assert "PID: 54321" in reply
+        assert "/tmp/STRUC2" in reply
+        assert "run-inp" in reply
+
+    @pytest.mark.asyncio
+    async def test_sim_info_external_by_pid_prefix(
+        self,
+        telegram_handler: TelegramHandler,
+    ) -> None:
+        sim_scheduler = MagicMock()
+        sim_scheduler.list_jobs = AsyncMock(return_value=[])
+        sim_scheduler.get_external_running_jobs = AsyncMock(
+            return_value=[{
+                "job_id": "external-98765",
+                "tool": "orca_auto",
+                "status": "running",
+                "pid": 98765,
+                "elapsed_seconds": 10,
+                "input_file": "/tmp/STRUC9",
+                "cli_command": "python -m core.cli run-inp --reaction-dir /tmp/STRUC9",
+            }]
+        )
+        telegram_handler.set_sim_scheduler(sim_scheduler)
+
+        message = MagicMock()
+        message.reply_text = AsyncMock()
+        update = MagicMock()
+        update.effective_message = message
+
+        await telegram_handler._sim_info(update, ["987"])
+
+        reply = message.reply_text.await_args[0][0]
+        assert "외부 작업 상세" in reply
+        assert "PID: 98765" in reply
