@@ -1567,11 +1567,18 @@ class TelegramHandler:
         lines = ["<b>시뮬레이션 작업 목록</b>\n"]
         for j in jobs:
             label = f" ({self._escape_html(j['label'])})" if j.get("label") else ""
+            status = str(j.get("status") or "")
+            cores = int(j.get("cores", 0))
+            memory = self._format_memory_gb(j.get("memory_mb", 0))
+            if status == "queued" and self._config.sim_queue.adaptive_allocation_enabled:
+                resource_text = f"요청 C{cores}/M{memory} (시작 시 재계산)"
+            else:
+                resource_text = f"C{cores}/M{memory}"
             lines.append(
                 f"<code>{j['job_id'][:8]}</code> "
                 f"{self._escape_html(j['tool'])} "
-                f"[{j['status']}] "
-                f"C{j['cores']}/M{self._format_memory_gb(j.get('memory_mb', 0))}"
+                f"[{status}] "
+                f"{resource_text}"
                 f"{label}"
             )
 

@@ -58,10 +58,16 @@ def build_dft_monitor_callable(
         new_results: list[dict[str, str]] = []
         scanned_mtimes: dict[str, float] = {}
         state_dirty = False
+        missing_kb_dirs: list[str] = []
+
+        if not kb_dirs:
+            logger.warning("dft_monitor_no_kb_dirs_configured")
+            return ""
 
         for kb_dir in kb_dirs:
             kb_path = Path(kb_dir)
             if not kb_path.is_dir():
+                missing_kb_dirs.append(kb_dir)
                 continue
 
             for fpath in discover_orca_targets(
@@ -189,6 +195,13 @@ def build_dft_monitor_callable(
             if state_file:
                 _save_state(state_file, _last_mtimes, logger)
             logger.info("dft_monitor_baseline_seeded", file_count=len(_last_mtimes))
+            logger.info(
+                "dft_monitor_scan_complete",
+                scanned_files=len(scanned_mtimes),
+                new_results=0,
+                missing_kb_dirs=len(missing_kb_dirs),
+                baseline_seeded=True,
+            )
             return ""
 
         # 삭제된 파일은 캐시에서도 제거
@@ -202,6 +215,14 @@ def build_dft_monitor_callable(
             _save_state(state_file, _last_mtimes, logger)
 
         if not new_results:
+            logger.info(
+                "dft_monitor_scan_complete",
+                scanned_files=len(scanned_mtimes),
+                new_results=0,
+                stale_removed=len(stale_paths),
+                missing_kb_dirs=len(missing_kb_dirs),
+                baseline_seeded=True,
+            )
             return ""
 
         # 완료된 계산과 진행 중인 계산 분리
@@ -229,6 +250,17 @@ def build_dft_monitor_callable(
             for r in running:
                 lines.append("")
                 lines.append(r["_progress_text"])
+
+        logger.info(
+            "dft_monitor_scan_complete",
+            scanned_files=len(scanned_mtimes),
+            new_results=len(new_results),
+            completed=len(completed),
+            running=len(running),
+            stale_removed=len(stale_paths),
+            missing_kb_dirs=len(missing_kb_dirs),
+            baseline_seeded=True,
+        )
 
         return "\n".join(lines)
 

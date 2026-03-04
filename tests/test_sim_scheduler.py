@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from core.config import SimQueueConfig, SimToolConfig
-from core.sim_job_store import SimJobStore
+from core.sim_job_store import SimJob, SimJobStore
 from core.sim_resource_manager import ResourceManager
 from core.sim_scheduler import SimJobScheduler
 
@@ -157,6 +157,96 @@ async def test_queue_status_includes_external_running_count(tmp_path: Path) -> N
         assert status["allocated_total_cores"] == 12
         assert status["allocated_total_memory_mb"] == 24576
         assert status["external_memory_rss_mb"] == 0
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_waits_when_external_jobs_exhaust_resources(
+    tmp_path: Path,
+) -> None:
+    scheduler, store = await _build_scheduler(tmp_path, "orca_auto")
+    scheduler._config.total_cores = 16
+    scheduler._config.total_memory_mb = 131072
+    scheduler._config.max_concurrent_jobs = 4
+
+    tool = scheduler._config.tools["orca_auto"]
+    tool.min_cores = 2
+    tool.default_cores = 4
+    tool.min_memory_mb = 16384
+    tool.default_memory_mb = 32768
+    tool.max_cores = 16
+    tool.max_memory_mb = 65536
+
+    job_id = await store.insert_job(
+        SimJob(
+            job_id="job-ext-block-1",
+            tool="orca_auto",
+            input_file="/tmp/STRUC_EXT_BLOCK",
+            submitted_by=1,
+            cores=4,
+            memory_mb=32768,
+        )
+    )
+
+    scheduler.get_external_running_jobs = AsyncMock(  # type: ignore[method-assign]
+        return_value=[{"cores": 4, "memory_mb": 32768} for _ in range(4)]
+    )
+    try:
+        await scheduler._dispatch_pending_jobs()
+        job = await store.get_job(job_id)
+        assert job is not None
+        assert job["status"] == "queued"
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_runs_when_external_jobs_leave_capacity(
+    tmp_path: Path,
+) -> None:
+    scheduler, store = await _build_scheduler(tmp_path, "orca_auto")
+    scheduler._config.total_cores = 16
+    scheduler._config.total_memory_mb = 131072
+    scheduler._config.max_concurrent_jobs = 4
+
+    tool = scheduler._config.tools["orca_auto"]
+    tool.min_cores = 2
+    tool.default_cores = 4
+    tool.min_memory_mb = 16384
+    tool.default_memory_mb = 32768
+    tool.max_cores = 16
+    tool.max_memory_mb = 65536
+
+    job_id = await store.insert_job(
+        SimJob(
+            job_id="job-ext-run-1",
+            tool="orca_auto",
+            input_file="/tmp/STRUC_EXT_RUN",
+            submitted_by=1,
+            cores=4,
+            memory_mb=32768,
+        )
+    )
+
+    scheduler.get_external_running_jobs = AsyncMock(  # type: ignore[method-assign]
+        return_value=[{"cores": 4, "memory_mb": 32768} for _ in range(2)]
+    )
+
+    async def _fake_launch(job: dict[str, object]) -> None:
+        await store.update_status(
+            str(job["job_id"]),
+            "running",
+            cores=int(job["cores"]),
+            memory_mb=int(job["memory_mb"]),
+        )
+
+    scheduler._launch_job = _fake_launch  # type: ignore[method-assign]
+    try:
+        await scheduler._dispatch_pending_jobs()
+        job = await store.get_job(job_id)
+        assert job is not None
+        assert job["status"] == "running"
     finally:
         await store.close()
 

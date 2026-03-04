@@ -1611,3 +1611,34 @@ class TestSimInfoExternal:
         reply = message.reply_text.await_args[0][0]
         assert "C4/M8GB" in reply
         assert "(추정)" in reply
+
+    @pytest.mark.asyncio
+    async def test_sim_list_marks_queued_resources_as_requested(
+        self,
+        telegram_handler: TelegramHandler,
+    ) -> None:
+        sim_scheduler = MagicMock()
+        sim_scheduler.list_jobs = AsyncMock(
+            return_value=[
+                {
+                    "job_id": "queued-job-1234",
+                    "tool": "orca_auto",
+                    "status": "queued",
+                    "cores": 4,
+                    "memory_mb": 32768,
+                    "label": "",
+                }
+            ]
+        )
+        sim_scheduler.get_external_running_jobs = AsyncMock(return_value=[])
+        telegram_handler.set_sim_scheduler(sim_scheduler)
+
+        message = MagicMock()
+        message.reply_text = AsyncMock()
+        update = MagicMock()
+        update.effective_message = message
+
+        await telegram_handler._sim_list(update, [])
+
+        reply = message.reply_text.await_args[0][0]
+        assert "요청 C4/M32GB (시작 시 재계산)" in reply

@@ -788,10 +788,27 @@ class SimJobScheduler:
                 break
             job = candidates[0]
             resource_status = await self._resources.get_status()
+            external_jobs = await self.get_external_running_jobs()
+            external_running = len(external_jobs)
+            external_alloc_cores = sum(int(j.get("cores", 0)) for j in external_jobs)
+            external_alloc_memory = sum(int(j.get("memory_mb", 0)) for j in external_jobs)
+
+            allocated_cores = int(resource_status.get("allocated_cores", 0))
+            allocated_memory = int(resource_status.get("allocated_memory_mb", 0))
+            effective_status = dict(resource_status)
+            effective_status["running_jobs"] = int(resource_status.get("running_jobs", 0)) + external_running
+            effective_status["available_cores"] = max(
+                0,
+                int(self._config.total_cores) - allocated_cores - external_alloc_cores,
+            )
+            effective_status["available_memory_mb"] = max(
+                0,
+                int(self._config.total_memory_mb) - allocated_memory - external_alloc_memory,
+            )
             dispatch_cores, dispatch_memory = self._compute_dispatch_resources(
                 job,
                 queued_count=queued_count,
-                resource_status=resource_status,
+                resource_status=effective_status,
             )
             dispatch_job = dict(job)
             dispatch_job["cores"] = dispatch_cores
@@ -805,12 +822,29 @@ class SimJobScheduler:
                     job_id=str(job.get("job_id") or ""),
                     tool=str(job.get("tool") or ""),
                     queued_count=queued_count,
-                    running_jobs=int(resource_status.get("running_jobs", 0)),
+                    running_jobs=int(effective_status.get("running_jobs", 0)),
                     cores_from=int(job.get("cores", 0)),
                     memory_from=int(job.get("memory_mb", 0)),
                     cores_to=dispatch_cores,
                     memory_to=dispatch_memory,
                 )
+
+            if (
+                dispatch_cores > int(effective_status.get("available_cores", 0))
+                or dispatch_memory > int(effective_status.get("available_memory_mb", 0))
+            ):
+                self._logger.info(
+                    "sim_job_waiting_for_resources",
+                    job_id=str(job.get("job_id") or ""),
+                    tool=str(job.get("tool") or ""),
+                    queued_count=queued_count,
+                    running_jobs=int(effective_status.get("running_jobs", 0)),
+                    available_cores=int(effective_status.get("available_cores", 0)),
+                    available_memory_mb=int(effective_status.get("available_memory_mb", 0)),
+                    required_cores=dispatch_cores,
+                    required_memory_mb=dispatch_memory,
+                )
+                break
 
             if not await self._resources.can_allocate(dispatch_cores, dispatch_memory):
                 break
