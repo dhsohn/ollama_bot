@@ -14,6 +14,8 @@ from typing import Any
 from core.dft_discovery import discover_orca_targets
 from core.orca_parser import OptProgress, parse_opt_progress, parse_orca_output
 
+_RUNNING_PROGRESS_CALC_TYPES = ("opt", "ts", "neb", "irc")
+
 
 def build_dft_monitor_callable(
     dft_index: Any,
@@ -78,8 +80,9 @@ def build_dft_monitor_callable(
                 try:
                     result = parse_orca_output(spath)
 
-                    # 진행 중인 최적화 계산은 progress 알림 생성
-                    if result.status == "running" and "opt" in result.calc_type:
+                    # 진행 중인 계산(OPT/TS/NEB/IRC)은 progress + AI 코멘트 알림 생성
+                    if result.status == "running" and _is_progress_comment_target(result.calc_type):
+                        progress_text = ""
                         try:
                             opt_prog = parse_opt_progress(spath)
                             if opt_prog.steps:
@@ -92,15 +95,28 @@ def build_dft_monitor_callable(
                                     )
                                     if ai_comment:
                                         progress_text += f"\n\nAI: {ai_comment}"
-                                    new_results.append({
-                                        "_progress_text": progress_text,
-                                    })
                         except Exception as exc:
                             logger.warning(
                                 "dft_monitor_progress_parse_error",
                                 path=spath,
                                 error=str(exc),
                             )
+
+                        # OPT step 파싱 불가(또는 비-OPT 타입) 시 요약 스냅샷 + AI 코멘트
+                        if not progress_text:
+                            progress_text = _format_running_snapshot(result, spath)
+                            ai_comment = await _get_ai_comment_for_running(
+                                result, spath, engine, model, model_role,
+                                temperature, max_tokens, logger,
+                            )
+                            if ai_comment:
+                                progress_text += f"\n\nAI: {ai_comment}"
+
+                        if progress_text:
+                            new_results.append({
+                                "_progress_text": progress_text,
+                            })
+
                         # running 계산은 인덱스에 upsert하지 않음
                         _last_mtimes[spath] = current_mtime
                         state_dirty = True
@@ -203,7 +219,7 @@ def build_dft_monitor_callable(
             if lines:
                 lines.append("")
                 lines.append("---")
-            lines.append(f"\nOPT Progress: {len(running)}건의 진행 중인 최적화")
+            lines.append(f"\nRUNNING Progress: {len(running)}건의 진행 중인 계산")
             for r in running:
                 lines.append("")
                 lines.append(r["_progress_text"])
@@ -211,6 +227,12 @@ def build_dft_monitor_callable(
         return "\n".join(lines)
 
     return dft_monitor
+
+
+def _is_progress_comment_target(calc_type: str) -> bool:
+    """진행 알림 + AI 코멘트 대상 계산 유형인지 판별한다."""
+    normalized = (calc_type or "").lower()
+    return any(token in normalized for token in _RUNNING_PROGRESS_CALC_TYPES)
 
 
 def _format_opt_progress(progress: OptProgress) -> str:
@@ -275,6 +297,24 @@ def _format_opt_progress(progress: OptProgress) -> str:
     return "\n".join(lines)
 
 
+def _format_running_snapshot(result: Any, source_path: str) -> str:
+    """OPT step 파싱이 어려운 running 계산의 간단 요약 텍스트를 만든다."""
+    method_basis = result.method or "unknown"
+    if result.basis_set:
+        method_basis += f"/{result.basis_set}"
+    energy_str = (
+        f"E = {result.energy_hartree:.6f} Eh"
+        if result.energy_hartree is not None
+        else "E = N/A"
+    )
+    return (
+        f"RUNNING Snapshot: {result.formula or 'unknown'} | "
+        f"{result.calc_type or 'unknown'} | {method_basis}\n"
+        f"Status: RUNNING | {energy_str}\n"
+        f"  -> {_short_path(source_path)}"
+    )
+
+
 async def _get_ai_comment(
     progress: OptProgress,
     engine: Any | None,
@@ -308,6 +348,35 @@ async def _get_ai_comment(
         return ""
 
 
+async def _get_ai_comment_for_running(
+    result: Any,
+    source_path: str,
+    engine: Any | None,
+    model: str | None,
+    model_role: str | None,
+    temperature: float | None,
+    max_tokens: int | None,
+    logger: Any,
+) -> str:
+    """OPT step이 부족한 running 계산에 대한 한줄 해석을 요청한다."""
+    if engine is None:
+        return ""
+
+    prompt = _build_running_analysis_prompt(result, source_path)
+    try:
+        raw = await engine.process_prompt(
+            prompt=prompt,
+            model_override=model,
+            model_role=model_role,
+            temperature=temperature if temperature is not None else 0.3,
+            max_tokens=max_tokens if max_tokens is not None else 150,
+        )
+        return raw.strip().split("\n")[0].strip()
+    except Exception as exc:
+        logger.warning("dft_monitor_ai_comment_failed", error=str(exc))
+        return ""
+
+
 def _build_analysis_prompt(progress: OptProgress) -> str:
     """최적화 진행 데이터를 LLM 프롬프트로 변환한다."""
     data_lines: list[str] = []
@@ -331,6 +400,28 @@ def _build_analysis_prompt(progress: OptProgress) -> str:
         f"메서드: {progress.method}/{progress.basis_set}\n"
         f"총 {len(progress.steps)} 스텝\n\n"
         + "\n".join(data_lines)
+    )
+
+
+def _build_running_analysis_prompt(result: Any, source_path: str) -> str:
+    """OPT step이 없는 running 계산용 LLM 프롬프트."""
+    method_basis = result.method or "unknown"
+    if result.basis_set:
+        method_basis += f"/{result.basis_set}"
+    energy_str = (
+        f"{result.energy_hartree:.6f} Eh"
+        if result.energy_hartree is not None
+        else "N/A"
+    )
+    return (
+        "아래 ORCA 진행 중 계산 정보를 바탕으로 한국어 한 문장 코멘트를 작성하세요.\n"
+        "현재 상태 요약과 다음 확인 포인트를 포함하세요.\n"
+        "한 문장만 출력하세요.\n\n"
+        f"분자: {result.formula or 'unknown'}\n"
+        f"계산 유형: {result.calc_type or 'unknown'}\n"
+        f"메서드: {method_basis}\n"
+        f"에너지: {energy_str}\n"
+        f"경로: {_short_path(source_path)}"
     )
 
 

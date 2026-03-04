@@ -118,6 +118,24 @@ _RUNNING_OPT_OUT = "\n".join([
 ])
 
 
+def _build_running_special_out(calc_keyword: str) -> str:
+    """OPT step 테이블 없이 running 상태를 만들기 위한 ORCA 출력 템플릿."""
+    return "\n".join([
+        f"! B3LYP def2-SVP {calc_keyword}",
+        "* xyz 0 1",
+        "C 0.0 0.0 0.0",
+        "H 0.0 0.0 1.0",
+        "*",
+        "",
+        "CARTESIAN COORDINATES (ANGSTROEM)",
+        "----------------------------",
+        " C    0.000000    0.000000    0.000000",
+        " H    0.000000    0.000000    1.000000",
+        "",
+        "FINAL SINGLE POINT ENERGY      -100.200000000",
+    ])
+
+
 @pytest.mark.asyncio
 async def test_running_opt_generates_progress_notification(tmp_path: Path) -> None:
     """진행 중인 최적화 계산은 OPT Progress 알림을 생성한다."""
@@ -225,7 +243,7 @@ async def test_completed_and_running_mixed(tmp_path: Path) -> None:
 
     result = await monitor()
     assert "DFT Monitor: 1건의 새 계산 감지" in result
-    assert "OPT Progress: 1건의 진행 중인 최적화" in result
+    assert "RUNNING Progress: 1건의 진행 중인 계산" in result
 
 
 # ---------------------------------------------------------------------------
@@ -312,3 +330,61 @@ async def test_ai_comment_graceful_on_engine_failure(tmp_path: Path) -> None:
     assert "OPT Progress" in result
     assert "Step" in result
     assert "AI: " not in result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("calc_keyword", "expected_calc_type"),
+    [
+        ("OPTTS", "ts"),
+        ("NEB", "neb"),
+        ("IRC", "irc"),
+    ],
+)
+async def test_running_ts_neb_irc_include_ai_comment(
+    tmp_path: Path,
+    calc_keyword: str,
+    expected_calc_type: str,
+) -> None:
+    """running TS/NEB/IRC 계산도 AI 한줄 코멘트를 포함해 알림한다."""
+    kb_dir = tmp_path / "kb"
+    kb_dir.mkdir(parents=True)
+    out_file = kb_dir / f"{expected_calc_type}_run.out"
+    out_file.write_text(_build_running_special_out(calc_keyword), encoding="utf-8")
+
+    state_file = tmp_path / "automation" / "state.json"
+
+    dft_index = AsyncMock()
+    dft_index.upsert_single = AsyncMock(return_value=True)
+    logger = MagicMock()
+
+    mock_engine = AsyncMock()
+    mock_engine.process_prompt = AsyncMock(
+        return_value="진행 경향은 안정적이며 다음 스텝에서 수렴 여부를 확인하세요."
+    )
+
+    monitor = build_dft_monitor_callable(
+        dft_index=dft_index,
+        kb_dirs=[str(kb_dir)],
+        logger=logger,
+        state_file=str(state_file),
+        engine=mock_engine,
+    )
+
+    # baseline
+    await monitor()
+
+    # 파일 변경
+    out_file.write_text(
+        _build_running_special_out(calc_keyword) + "\n# updated\n",
+        encoding="utf-8",
+    )
+    mtime = os.path.getmtime(out_file)
+    os.utime(out_file, (mtime + 5.0, mtime + 5.0))
+
+    result = await monitor()
+    assert "RUNNING Progress" in result
+    assert expected_calc_type in result
+    assert "AI: " in result
+    dft_index.upsert_single.assert_not_awaited()
+    mock_engine.process_prompt.assert_awaited_once()

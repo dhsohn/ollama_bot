@@ -6,7 +6,8 @@ schedule: "*/10 * * * *"
 action:
   type: "callable"
   target: "dft_monitor"
-  parameters: {}
+  parameters:
+    max_file_size_mb: 1024
 output:
   send_to_telegram: true
   save_to_file: null
