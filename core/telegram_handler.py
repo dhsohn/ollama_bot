@@ -42,6 +42,7 @@ from core.text_utils import detect_output_anomalies
 
 if TYPE_CHECKING:
     from core.semantic_cache import SemanticCache
+    from core.sim_scheduler import SimJobScheduler
 
 # 메시지 편집 최소 간격 (초) — 텔레그램 API 제한 대응
 _EDIT_INTERVAL = 1.0
@@ -181,7 +182,7 @@ class TelegramHandler:
         # auto_scheduler 참조 (main.py에서 주입)
         self._scheduler = None
         # sim_scheduler 참조 (app_runtime에서 주입)
-        self._sim_scheduler = None
+        self._sim_scheduler: SimJobScheduler | None = None
         # 프리뷰 캐시: {(chat_id, bot_message_id): {"user": str, "bot": str, "ts": float}}
         self._preview_cache: dict[tuple[int, int], dict] = {}
         # 사유 수집 대기: {chat_id: {"bot_message_id": int, "expires": float}}
@@ -197,7 +198,7 @@ class TelegramHandler:
         """auto_scheduler 참조 주입 여부를 반환한다."""
         return self._scheduler is not None
 
-    def set_sim_scheduler(self, sim_scheduler) -> None:
+    def set_sim_scheduler(self, sim_scheduler: SimJobScheduler) -> None:
         """SimJobScheduler 참조를 설정한다 (순환 의존 방지)."""
         self._sim_scheduler = sim_scheduler
 
@@ -1436,15 +1437,19 @@ class TelegramHandler:
     @_auth_required
     @_global_slot_required
     async def _cmd_sim(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        message = update.effective_message
+        if message is None:
+            return
+
         if self._sim_scheduler is None:
-            await update.effective_message.reply_text(  # type: ignore[union-attr]
+            await message.reply_text(
                 "시뮬레이션 큐가 활성화되어 있지 않습니다."
             )
             return
 
         args = context.args or []
         if not args:
-            await update.effective_message.reply_text(  # type: ignore[union-attr]
+            await message.reply_text(
                 "사용법: /sim [submit|list|status|info|cancel|priority|retry|tools]"
             )
             return
@@ -1462,14 +1467,27 @@ class TelegramHandler:
         }
         handler = handlers.get(subcmd)
         if handler is None:
-            await update.effective_message.reply_text(  # type: ignore[union-attr]
+            await message.reply_text(
                 f"알 수 없는 서브커맨드: {subcmd}"
             )
             return
         await handler(update, args[1:])
 
+    async def _get_sim_scheduler(self, update: Update) -> SimJobScheduler | None:
+        sim_scheduler = self._sim_scheduler
+        if sim_scheduler is None:
+            message = update.effective_message
+            if message is not None:
+                await message.reply_text("시뮬레이션 큐가 활성화되어 있지 않습니다.")
+            return None
+        return sim_scheduler
+
     async def _sim_submit(self, update: Update, args: list[str]) -> None:
         """Usage: /sim submit <tool> <input_file> [--cores N] [--mem N] [--priority N] [--label TEXT]"""
+        sim_scheduler = await self._get_sim_scheduler(update)
+        if sim_scheduler is None:
+            return
+
         if len(args) < 2:
             await update.effective_message.reply_text(  # type: ignore[union-attr]
                 "사용법: /sim submit <tool> <input_file> "
@@ -1511,7 +1529,7 @@ class TelegramHandler:
                 i += 1
 
         try:
-            job_id = await self._sim_scheduler.submit_job(
+            job_id = await sim_scheduler.submit_job(
                 tool=tool,
                 input_file=input_file,
                 submitted_by=update.effective_chat.id,  # type: ignore[union-attr]
@@ -1530,8 +1548,12 @@ class TelegramHandler:
             )
 
     async def _sim_list(self, update: Update, args: list[str]) -> None:
+        sim_scheduler = await self._get_sim_scheduler(update)
+        if sim_scheduler is None:
+            return
+
         status_filter = args[0] if args else None
-        jobs = await self._sim_scheduler.list_jobs(status=status_filter)
+        jobs = await sim_scheduler.list_jobs(status=status_filter)
         if not jobs:
             await update.effective_message.reply_text(  # type: ignore[union-attr]
                 "등록된 작업이 없습니다."
@@ -1553,7 +1575,11 @@ class TelegramHandler:
         )
 
     async def _sim_status(self, update: Update, args: list[str]) -> None:
-        status = await self._sim_scheduler.get_queue_status()
+        sim_scheduler = await self._get_sim_scheduler(update)
+        if sim_scheduler is None:
+            return
+
+        status = await sim_scheduler.get_queue_status()
         text = (
             "<b>시뮬레이션 큐 현황</b>\n\n"
             f"대기: {status.get('queued', 0)}\n"
@@ -1570,6 +1596,10 @@ class TelegramHandler:
         )
 
     async def _sim_info(self, update: Update, args: list[str]) -> None:
+        sim_scheduler = await self._get_sim_scheduler(update)
+        if sim_scheduler is None:
+            return
+
         if not args:
             await update.effective_message.reply_text(  # type: ignore[union-attr]
                 "사용법: /sim info <job_id>"
@@ -1577,7 +1607,7 @@ class TelegramHandler:
             return
 
         job_id_prefix = args[0]
-        jobs = await self._sim_scheduler.list_jobs(limit=50)
+        jobs = await sim_scheduler.list_jobs(limit=50)
         matched = [j for j in jobs if j["job_id"].startswith(job_id_prefix)]
         if not matched:
             await update.effective_message.reply_text(  # type: ignore[union-attr]
@@ -1612,6 +1642,10 @@ class TelegramHandler:
         )
 
     async def _sim_cancel(self, update: Update, args: list[str]) -> None:
+        sim_scheduler = await self._get_sim_scheduler(update)
+        if sim_scheduler is None:
+            return
+
         if not args:
             await update.effective_message.reply_text(  # type: ignore[union-attr]
                 "사용법: /sim cancel <job_id>"
@@ -1619,7 +1653,7 @@ class TelegramHandler:
             return
 
         job_id_prefix = args[0]
-        jobs = await self._sim_scheduler.list_jobs(limit=50)
+        jobs = await sim_scheduler.list_jobs(limit=50)
         matched = [j for j in jobs if j["job_id"].startswith(job_id_prefix)]
         if not matched:
             await update.effective_message.reply_text(  # type: ignore[union-attr]
@@ -1627,7 +1661,7 @@ class TelegramHandler:
             )
             return
 
-        success = await self._sim_scheduler.cancel_job(matched[0]["job_id"])
+        success = await sim_scheduler.cancel_job(matched[0]["job_id"])
         if success:
             await update.effective_message.reply_text(  # type: ignore[union-attr]
                 f"작업 {matched[0]['job_id'][:8]} 취소 완료"
@@ -1638,6 +1672,10 @@ class TelegramHandler:
             )
 
     async def _sim_priority(self, update: Update, args: list[str]) -> None:
+        sim_scheduler = await self._get_sim_scheduler(update)
+        if sim_scheduler is None:
+            return
+
         if len(args) < 2:
             await update.effective_message.reply_text(  # type: ignore[union-attr]
                 "사용법: /sim priority <job_id> <priority>"
@@ -1653,7 +1691,7 @@ class TelegramHandler:
             )
             return
 
-        jobs = await self._sim_scheduler.list_jobs(limit=50)
+        jobs = await sim_scheduler.list_jobs(limit=50)
         matched = [j for j in jobs if j["job_id"].startswith(job_id_prefix)]
         if not matched:
             await update.effective_message.reply_text(  # type: ignore[union-attr]
@@ -1661,7 +1699,7 @@ class TelegramHandler:
             )
             return
 
-        success = await self._sim_scheduler.reprioritize(matched[0]["job_id"], new_priority)
+        success = await sim_scheduler.reprioritize(matched[0]["job_id"], new_priority)
         if success:
             await update.effective_message.reply_text(  # type: ignore[union-attr]
                 f"작업 {matched[0]['job_id'][:8]} 우선순위 → {new_priority}"
@@ -1672,6 +1710,10 @@ class TelegramHandler:
             )
 
     async def _sim_retry(self, update: Update, args: list[str]) -> None:
+        sim_scheduler = await self._get_sim_scheduler(update)
+        if sim_scheduler is None:
+            return
+
         if not args:
             await update.effective_message.reply_text(  # type: ignore[union-attr]
                 "사용법: /sim retry <job_id>"
@@ -1679,7 +1721,7 @@ class TelegramHandler:
             return
 
         job_id_prefix = args[0]
-        jobs = await self._sim_scheduler.list_jobs(limit=50)
+        jobs = await sim_scheduler.list_jobs(limit=50)
         matched = [j for j in jobs if j["job_id"].startswith(job_id_prefix)]
         if not matched:
             await update.effective_message.reply_text(  # type: ignore[union-attr]
@@ -1695,7 +1737,7 @@ class TelegramHandler:
             return
 
         try:
-            job_id = await self._sim_scheduler.submit_job(
+            job_id = await sim_scheduler.submit_job(
                 tool=old_job["tool"],
                 input_file=old_job["input_file"],
                 submitted_by=update.effective_chat.id,  # type: ignore[union-attr]
@@ -1713,7 +1755,11 @@ class TelegramHandler:
             )
 
     async def _sim_tools(self, update: Update, args: list[str]) -> None:
-        tools = self._sim_scheduler.get_tools()
+        sim_scheduler = await self._get_sim_scheduler(update)
+        if sim_scheduler is None:
+            return
+
+        tools = sim_scheduler.get_tools()
         if not tools:
             await update.effective_message.reply_text(  # type: ignore[union-attr]
                 "설정된 시뮬레이션 도구가 없습니다."
