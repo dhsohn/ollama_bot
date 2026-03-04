@@ -16,6 +16,6 @@ output:
   send_to_telegram: true
   save_to_file: "reports/feedback_analysis_{date}.md"
 retry:
-  max_attempts: 2
+  max_attempts: 1
   delay_seconds: 60
-timeout: 180
+timeout: 3600

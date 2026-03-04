@@ -193,12 +193,14 @@ class TestAutoScheduler:
             model_role: str | None = None,
             temperature: float | None = None,
             max_tokens: int | None = None,
+            timeout: int | None = None,
         ) -> str:
             captured["greeting"] = greeting
             captured["model"] = model
             captured["model_role"] = model_role
             captured["temperature"] = temperature
             captured["max_tokens"] = max_tokens
+            captured["timeout"] = timeout
             return "ok"
 
         scheduler.register_callable("with_model_args", my_func)
@@ -215,6 +217,7 @@ class TestAutoScheduler:
                 temperature=0.4,
                 max_tokens=700,
             ),
+            timeout=77,
         )
 
         result = await scheduler._run_action(auto)
@@ -224,6 +227,7 @@ class TestAutoScheduler:
         assert captured["model_role"] == "low_cost"
         assert captured["temperature"] == 0.4
         assert captured["max_tokens"] == 700
+        assert captured["timeout"] == 77
 
     @pytest.mark.asyncio
     async def test_command_action_is_disabled(self, scheduler: AutoScheduler) -> None:

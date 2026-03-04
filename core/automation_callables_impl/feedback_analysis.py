@@ -71,10 +71,12 @@ def build_feedback_analysis_callable(
         max_negative_samples: int = 15,
         max_positive_samples: int = 10,
         max_guidelines: int = 5,
+        max_auto_low_samples: int = 10,
         model: str | None = None,
         model_role: str | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        timeout: int | None = None,
     ) -> str:
         """사용자 피드백을 분석해 응답 품질 가이드라인을 갱신한다."""
         results: list[str] = []
@@ -91,7 +93,11 @@ def build_feedback_analysis_callable(
             auto_low: list[dict] | None = None
             if hasattr(feedback, "get_low_score_evaluations"):
                 try:
-                    auto_low = await feedback.get_low_score_evaluations(chat_id=chat_id, max_score=2, limit=10)
+                    auto_low = await feedback.get_low_score_evaluations(
+                        chat_id=chat_id,
+                        max_score=2,
+                        limit=max(1, int(max_auto_low_samples)),
+                    )
                 except Exception:
                     pass
 
@@ -108,6 +114,7 @@ def build_feedback_analysis_callable(
                 temperature=temperature,
                 model_override=model,
                 model_role=model_role,
+                timeout=timeout,
             )
 
             parsed = parse_json_array(raw)

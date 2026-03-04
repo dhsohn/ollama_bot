@@ -476,6 +476,7 @@ class AutoScheduler:
             optional_kwargs["temperature"] = action.temperature
         if action.max_tokens is not None:
             optional_kwargs["max_tokens"] = action.max_tokens
+        optional_kwargs["timeout"] = auto.timeout
 
         self._inject_callable_kwargs(func, call_kwargs, optional_kwargs)
 
