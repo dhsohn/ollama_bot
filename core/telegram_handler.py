@@ -1961,10 +1961,16 @@ class TelegramHandler:
     @staticmethod
     def _format_memory_gb(value_mb: object) -> str:
         """MB 값을 사용자 표시용 GB 문자열로 변환한다."""
-        try:
-            mb = max(0.0, float(value_mb))
-        except (TypeError, ValueError):
+        mb = 0.0
+        if isinstance(value_mb, bool):
             mb = 0.0
+        elif isinstance(value_mb, (int, float)):
+            mb = max(0.0, float(value_mb))
+        elif isinstance(value_mb, str):
+            try:
+                mb = max(0.0, float(value_mb.strip()))
+            except ValueError:
+                mb = 0.0
 
         gb = mb / 1024.0
         rounded = round(gb)
