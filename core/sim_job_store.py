@@ -158,6 +158,22 @@ class SimJobStore:
             await db.commit()
         return cursor.rowcount > 0
 
+    async def requeue_job(self, job_id: str) -> bool:
+        """retry_count를 변경하지 않고 상태만 'queued'로 되돌린다."""
+        db = self._require_db()
+        async with self._write_lock:
+            cursor = await db.execute(
+                """UPDATE sim_jobs
+                   SET status = 'queued',
+                       pid = NULL,
+                       exit_code = NULL,
+                       started_at = NULL
+                   WHERE job_id = ?""",
+                (job_id,),
+            )
+            await db.commit()
+        return cursor.rowcount > 0
+
     async def cancel_job(self, job_id: str) -> bool:
         """작업을 취소한다. pending/queued/running 상태에서만 가능."""
         db = self._require_db()

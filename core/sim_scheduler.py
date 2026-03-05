@@ -1003,15 +1003,8 @@ class SimJobScheduler:
                     pass
 
             if not alive:
-                if job["retry_count"] < job["max_retries"]:
-                    await self._store.increment_retry(job["job_id"])
-                    self._logger.info("sim_job_recovered_to_queue", job_id=job["job_id"])
-                else:
-                    await self._store.update_status(
-                        job["job_id"], "failed",
-                        error_message="재시작 후 orphan 상태, 재시도 횟수 소진",
-                    )
-                    self._logger.warning("sim_job_orphan_failed", job_id=job["job_id"])
+                await self._store.requeue_job(job["job_id"])
+                self._logger.info("sim_job_recovered_to_queue", job_id=job["job_id"])
 
         actual_running = await self._store.get_running_jobs()
         await self._resources.sync_from_db(actual_running)

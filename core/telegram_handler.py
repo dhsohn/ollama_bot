@@ -1806,7 +1806,7 @@ class TelegramHandler:
             return
 
         j = matched[0]
-        rows: list[tuple[str, str]] = [
+        rows = [
             ("도구", self._escape_html(j["tool"])),
             ("상태", str(j["status"])),
             ("입력", self._escape_html(j["input_file"])),
