@@ -1,14 +1,12 @@
 #!/usr/bin/env bash
-# ollama_bot 초기 설정 스크립트 (옵션: 실행까지 원클릭)
+# ollama_bot 초기 설정 스크립트 (WSL 네이티브)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 CONFIG_FILE="${PROJECT_ROOT}/config/config.yaml"
 RUN_AFTER_SETUP=0
-BUILD_FLAG=""
 INSTALL_BOOT_SERVICE=0
-SKIP_WINDOWS_FIX=0
 
 usage() {
     cat <<'EOF'
@@ -16,15 +14,14 @@ Usage: bash scripts/setup.sh [options]
 
 기본 동작:
   - .env 생성/확인
+  - .venv 확인
   - data/, kb/ 디렉토리 준비
   - retrieval 모델 상태 점검
 
 Options:
-  --run                  setup 후 run_bot.sh 실행 (원클릭)
-  --build                --run과 함께 사용. 이미지 강제 빌드
-  --skip-windows-fix     --run 시 Windows 네트워크 자동 설정 단계 건너뜀
-  --install-boot-service systemd 부팅 서비스 설치/활성화 (sudo 필요)
-  -h, --help             도움말
+  --run                    setup 후 run_bot.sh 실행
+  --install-boot-service   systemd 부팅 서비스 설치/활성화
+  -h, --help               도움말
 EOF
 }
 
@@ -32,14 +29,6 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --run)
             RUN_AFTER_SETUP=1
-            shift
-            ;;
-        --build)
-            BUILD_FLAG="--build"
-            shift
-            ;;
-        --skip-windows-fix)
-            SKIP_WINDOWS_FIX=1
             shift
             ;;
         --install-boot-service)
@@ -57,16 +46,6 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
-
-if [[ -n "${BUILD_FLAG}" && "${RUN_AFTER_SETUP}" != "1" ]]; then
-    echo "[setup.sh] ERROR: --build는 --run과 함께 사용해야 합니다." >&2
-    exit 1
-fi
-
-if [[ "${SKIP_WINDOWS_FIX}" == "1" && "${RUN_AFTER_SETUP}" != "1" ]]; then
-    echo "[setup.sh] ERROR: --skip-windows-fix는 --run과 함께 사용해야 합니다." >&2
-    exit 1
-fi
 
 extract_yaml_value() {
     local section="$1"
@@ -113,20 +92,22 @@ cd "${PROJECT_ROOT}"
 
 echo "=== ollama_bot setup ==="
 
-# Docker 확인
-command -v docker >/dev/null 2>&1 || { echo "오류: Docker가 필요합니다."; exit 1; }
-
 # .env 생성
 if [ ! -f .env ]; then
     cp .env.example .env
-    echo ".env 파일이 생성되었습니다."
+    echo ".env 파일이 생성되었습니다. 환경에 맞게 편집하세요."
 else
     echo ".env 파일이 이미 존재합니다."
 fi
 
+# venv 확인
+if [ ! -f .venv/bin/python ]; then
+    echo "WARNING: .venv이 없습니다."
+    echo "  python -m venv .venv && .venv/bin/pip install -r requirements.lock"
+fi
+
 # 데이터 디렉토리 생성
-mkdir -p data/conversations data/memory data/logs data/reports
-# 기본 RAG/DFT 지식베이스 디렉토리 생성
+mkdir -p data/conversations data/memory data/logs data/reports data/hf_cache/fastembed
 mkdir -p kb/orca_runs kb/orca_outputs
 
 lemonade_host="$(extract_yaml_value "lemonade" "host")"
@@ -158,32 +139,14 @@ echo ""
 echo "=== setup 완료 ==="
 echo "1. .env 파일을 환경에 맞게 편집하세요."
 echo "2. config/config.yaml의 lemonade/ollama host 및 모델값을 확인하세요."
-echo "3. ORCA 데이터 경로가 기본(./kb)이 아니면 .env의 HOST_KB_DIR를 수정하세요."
-echo "4. (로컬 Ollama 사용 시) ollama serve"
-echo "5. 실행: bash scripts/run_bot.sh"
-echo "6. 원클릭(설정+실행): bash scripts/setup.sh --run"
-echo "7. (선택) 부팅 자동 실행: sudo bash scripts/install_boot_service.sh"
+echo "3. 실행: bash scripts/run_bot.sh"
+echo "4. (선택) 부팅 자동 실행: bash scripts/install_boot_service.sh"
+
+if [[ "${INSTALL_BOOT_SERVICE}" == "1" ]]; then
+    echo "[setup.sh] boot service 설치"
+    bash "${PROJECT_ROOT}/scripts/install_boot_service.sh"
+fi
 
 if [[ "${RUN_AFTER_SETUP}" == "1" ]]; then
-    if [[ "${SKIP_WINDOWS_FIX}" == "0" ]]; then
-        echo "[setup.sh] step 1/2: Windows 네트워크 자동 설정(lemonade일 때만)"
-        bash "${PROJECT_ROOT}/scripts/configure_windows_lemonade.sh"
-    else
-        echo "[setup.sh] step 1/2: Windows 네트워크 자동 설정 건너뜀"
-    fi
-
-    if [[ "${INSTALL_BOOT_SERVICE}" == "1" ]]; then
-        echo "[setup.sh] boot service 설치"
-        sudo bash "${PROJECT_ROOT}/scripts/install_boot_service.sh"
-    fi
-
-    echo "[setup.sh] step 2/2: 컨테이너 실행"
-    if [[ -n "${BUILD_FLAG}" ]]; then
-        bash "${PROJECT_ROOT}/scripts/run_bot.sh" --build
-    else
-        bash "${PROJECT_ROOT}/scripts/run_bot.sh"
-    fi
-elif [[ "${INSTALL_BOOT_SERVICE}" == "1" ]]; then
-    echo "[setup.sh] boot service 설치"
-    sudo bash "${PROJECT_ROOT}/scripts/install_boot_service.sh"
+    bash "${PROJECT_ROOT}/scripts/run_bot.sh"
 fi

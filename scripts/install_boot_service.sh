@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# systemd user service 설치 스크립트.
-# sudo 불필요 — ~/.config/systemd/user/ 에 설치한다.
+# systemd 서비스 설치 스크립트.
+# - update-wsl-hosts.service: system-level (sudo 필요, /etc/hosts 수정)
+# - ollama-bot.service: user-level (sudo 불필요)
 #
 # 사용법:
 #   bash scripts/install_boot_service.sh
@@ -12,7 +13,28 @@ UNIT_DIR="${HOME}/.config/systemd/user"
 
 mkdir -p "${UNIT_DIR}"
 
-# ── ollama-bot.service ──
+# ── update-wsl-hosts.service (system-level, 부팅 시 homelab IP 갱신) ──
+SYSTEM_UNIT="/etc/systemd/system/update-wsl-hosts.service"
+echo "[install] update-wsl-hosts.service 설치 (sudo 필요)"
+sudo tee "${SYSTEM_UNIT}" > /dev/null <<EOF
+[Unit]
+Description=Update /etc/hosts with WSL gateway IP
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=${PROJECT_ROOT}/scripts/update_wsl_hosts.sh
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable update-wsl-hosts.service
+echo "[install] update-wsl-hosts.service 생성 완료"
+
+# ── ollama-bot.service (user-level) ──
 cat > "${UNIT_DIR}/ollama-bot.service" <<EOF
 [Unit]
 Description=ollama_bot Telegram Bot
@@ -46,10 +68,12 @@ echo ""
 echo "=== 설치 완료 ==="
 echo ""
 echo "서비스 시작:"
+echo "  sudo systemctl start update-wsl-hosts   # 즉시 hosts 갱신"
 echo "  systemctl --user start ollama-bot"
 echo ""
 echo "로그 확인:"
-echo "  journalctl --user -u ollama-bot -f"
+echo "  journalctl -u update-wsl-hosts           # hosts 갱신 로그"
+echo "  journalctl --user -u ollama-bot -f        # 봇 로그"
 echo ""
 echo "상태 확인:"
 echo "  systemctl --user status ollama-bot"
