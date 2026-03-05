@@ -10,7 +10,7 @@ bot:
   response_timeout: 300
 
 lemonade:
-  host: "http://localhost:8000"
+  host: "http://localhost:8020"
   api_key: ""
   default_model: "gpt-oss-20b-NPU"
   base_path: "/api/v1"

@@ -13,9 +13,11 @@ import inspect
 import os
 import random
 import signal
+import socket
 import sys
 from pathlib import Path
 from typing import Any, cast
+from urllib.parse import urlsplit, urlunsplit
 
 import aiosqlite
 from dotenv import load_dotenv
@@ -113,6 +115,158 @@ async def _open_sqlite_db(path: Path) -> aiosqlite.Connection:
     await db.execute("PRAGMA journal_mode=WAL")
     await db.commit()
     return db
+
+
+def _is_wsl_environment() -> bool:
+    """현재 런타임이 WSL인지 판별한다."""
+    if os.environ.get("WSL_DISTRO_NAME"):
+        return True
+    proc_version = Path("/proc/version")
+    try:
+        text = proc_version.read_text(encoding="utf-8", errors="ignore").lower()
+    except OSError:
+        return False
+    return "microsoft" in text or "wsl" in text
+
+
+def _normalize_host_token(raw: str) -> str:
+    token = raw.strip()
+    if not token:
+        return ""
+    if "://" in token:
+        parsed = urlsplit(token)
+        return (parsed.hostname or "").strip().lower()
+    if token.startswith("[") and "]" in token:
+        token = token[1:token.index("]")]
+    elif token.count(":") == 1 and "." in token:
+        token = token.split(":", 1)[0]
+    return token.strip().lower()
+
+
+def _iter_wsl_bridge_candidates() -> list[str]:
+    candidates: list[str] = []
+    for env_key in ("WINDOWS_HOST", "WINDOWS_HOST_IP", "WSL_HOST_IP"):
+        host = _normalize_host_token(os.environ.get(env_key, ""))
+        if host:
+            candidates.append(host)
+
+    resolv_conf = Path("/etc/resolv.conf")
+    try:
+        for line in resolv_conf.read_text(encoding="utf-8", errors="ignore").splitlines():
+            stripped = line.strip()
+            if not stripped.startswith("nameserver "):
+                continue
+            parts = stripped.split()
+            if len(parts) >= 2:
+                host = _normalize_host_token(parts[1])
+                if host:
+                    candidates.append(host)
+    except OSError:
+        pass
+
+    hosts_file = Path("/etc/hosts")
+    try:
+        for line in hosts_file.read_text(encoding="utf-8", errors="ignore").splitlines():
+            stripped = line.split("#", 1)[0].strip()
+            if not stripped:
+                continue
+            parts = stripped.split()
+            if len(parts) < 2:
+                continue
+            ip = _normalize_host_token(parts[0])
+            aliases = [_normalize_host_token(alias) for alias in parts[1:]]
+            if "homelab" in aliases:
+                if ip:
+                    candidates.append(ip)
+                candidates.append("homelab")
+            if "host.docker.internal" in aliases:
+                if ip:
+                    candidates.append(ip)
+                candidates.append("host.docker.internal")
+    except OSError:
+        pass
+
+    # 명시 alias도 후보에 포함한다.
+    candidates.extend(("homelab", "host.docker.internal"))
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        host = _normalize_host_token(candidate)
+        if not host or host in {"localhost", "127.0.0.1", "::1"}:
+            continue
+        if host in seen:
+            continue
+        seen.add(host)
+        deduped.append(host)
+    return deduped
+
+
+def _can_connect_tcp(host: str, port: int, *, timeout_seconds: float = 0.35) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=timeout_seconds):
+            return True
+    except OSError:
+        return False
+
+
+def _resolve_wsl_loopback_host(
+    *,
+    url: str,
+    service_name: str,
+    logger: Any,
+) -> str:
+    """WSL에서 loopback이 막힌 경우 Windows bridge host로 대체한다."""
+    parsed = urlsplit(url)
+    host = (parsed.hostname or "").strip().lower()
+    if host not in {"localhost", "127.0.0.1", "::1"}:
+        return url
+    if not _is_wsl_environment():
+        return url
+
+    port = parsed.port if parsed.port is not None else (443 if parsed.scheme == "https" else 80)
+    if _can_connect_tcp(host, port):
+        return url
+
+    candidates = _iter_wsl_bridge_candidates()
+    for candidate in candidates:
+        if not _can_connect_tcp(candidate, port):
+            continue
+        # IPv6 주소 netloc 표현식 보정
+        target_host = candidate
+        if ":" in target_host and not target_host.startswith("["):
+            target_host = f"[{target_host}]"
+
+        userinfo = ""
+        if parsed.username:
+            userinfo = parsed.username
+            if parsed.password:
+                userinfo += f":{parsed.password}"
+            userinfo += "@"
+
+        new_netloc = f"{userinfo}{target_host}"
+        if parsed.port is not None:
+            new_netloc = f"{new_netloc}:{parsed.port}"
+
+        rewritten = urlunsplit(
+            (parsed.scheme, new_netloc, parsed.path, parsed.query, parsed.fragment)
+        )
+        logger.warning(
+            "wsl_loopback_rewritten",
+            service=service_name,
+            original=url,
+            rewritten=rewritten,
+            reason="loopback_unreachable_from_wsl",
+        )
+        return rewritten
+
+    logger.warning(
+        "wsl_loopback_unreachable",
+        service=service_name,
+        target=url,
+        tried_candidates=candidates,
+    )
+    return url
 
 
 async def _memory_maintenance_loop(
@@ -296,6 +450,17 @@ async def _build_runtime(
                     logger.info("feedback_pruned", count=fb_pruned)
             except Exception as exc:
                 logger.error("feedback_prune_failed", error=str(exc))
+
+        config.lemonade.host = _resolve_wsl_loopback_host(
+            url=config.lemonade.host,
+            service_name="lemonade",
+            logger=logger,
+        )
+        config.ollama.host = _resolve_wsl_loopback_host(
+            url=config.ollama.host,
+            service_name="ollama",
+            logger=logger,
+        )
 
         llm_provider = "lemonade"
         llm = _create_llm_client(config)
