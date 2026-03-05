@@ -98,6 +98,21 @@ class SimJobScheduler:
     def _is_delegated_job(job: dict[str, Any]) -> bool:
         return SimExternalTracker.is_delegated_job(job)
 
+    def _find_ongoing_sim_pid(self, job: dict[str, Any]) -> int | None:
+        """wrapper 종료 후 실제 시뮬레이션이 계속 실행 중인지 lockfile로 확인한다."""
+        for dir_raw in (job.get("work_dir"), job.get("input_file")):
+            if not dir_raw:
+                continue
+            dir_path = Path(str(dir_raw)).expanduser()
+            if not dir_path.is_dir():
+                continue
+            for src in ("run.lock", "run_state.json"):
+                data = SimExternalTracker._load_json_file(dir_path / src)
+                pid = self._safe_int(data.get("pid"))
+                if pid and pid > 0 and self._is_pid_alive(pid):
+                    return pid
+        return None
+
     async def _list_tracked_delegated_jobs(self) -> list[dict[str, Any]]:
         """DB에서 위임 실행 중인 작업을 반환한다."""
         return await self._external_tracker.list_tracked_delegated_jobs()
@@ -513,6 +528,24 @@ class SimJobScheduler:
 
         job = await self._store.get_job(job_id)
         if exit_code == 0:
+            # wrapper가 먼저 종료되고 실제 시뮬레이션이 계속 실행 중인지 확인
+            if job:
+                await asyncio.sleep(0.5)  # lockfile 기록 대기
+                delegated_pid = self._find_ongoing_sim_pid(job)
+                if delegated_pid is not None:
+                    self._logger.info(
+                        "sim_job_delegated",
+                        job_id=job_id,
+                        wrapper_pid=proc.pid,
+                        delegated_pid=delegated_pid,
+                    )
+                    await self._store.update_status(
+                        job_id, "running",
+                        cli_command=f"delegated:{job.get('cli_command', '')}",
+                        pid=delegated_pid,
+                    )
+                    return
+
             await self._store.update_status(
                 job_id, "completed",
                 exit_code=exit_code,

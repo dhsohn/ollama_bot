@@ -184,6 +184,20 @@ class SimExternalTracker:
             return None
 
     @staticmethod
+    def _is_pid_alive(pid: int) -> bool:
+        if pid <= 0:
+            return False
+        try:
+            os.kill(pid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        except OSError:
+            return False
+
+    @staticmethod
     def is_delegated_job(job: dict[str, Any]) -> bool:
         cli = str(job.get("cli_command") or "")
         return cli.startswith("delegated:")
@@ -451,19 +465,22 @@ class SimExternalTracker:
         for job in tracked_jobs:
             pid = self._safe_int(job.get("pid"))
             if pid is not None and pid > 0:
-                live = live_by_pid.get(pid)
-                if live is not None:
-                    updates: dict[str, Any] = {}
-                    if not job.get("cli_command") and live.get("cli_command"):
-                        updates["cli_command"] = str(live.get("cli_command"))
-                    if not job.get("output_file") and live.get("output_file"):
-                        updates["output_file"] = str(live.get("output_file"))
-                    if updates:
-                        await self._store.update_status(
-                            str(job["job_id"]),
-                            "running",
-                            **updates,
-                        )
+                # get_external_running_jobs는 tracked PID를 제외하므로,
+                # 프로세스 생존 여부를 직접 확인한다.
+                if self._is_pid_alive(pid):
+                    live = live_by_pid.get(pid)
+                    if live is not None:
+                        updates: dict[str, Any] = {}
+                        if not job.get("cli_command") and live.get("cli_command"):
+                            updates["cli_command"] = str(live.get("cli_command"))
+                        if not job.get("output_file") and live.get("output_file"):
+                            updates["output_file"] = str(live.get("output_file"))
+                        if updates:
+                            await self._store.update_status(
+                                str(job["job_id"]),
+                                "running",
+                                **updates,
+                            )
                     continue
 
             inferred_status, inferred_error = self._infer_missing_delegated_terminal_state(job)
