@@ -18,7 +18,7 @@ from core.sim_scheduler import SimJobScheduler
 async def _build_scheduler(tmp_path: Path, tool: str) -> tuple[SimJobScheduler, SimJobStore]:
     store = SimJobStore()
     await store.initialize(str(tmp_path / "sim_jobs.db"))
-    resources = ResourceManager(total_cores=16, total_memory_mb=131072, max_concurrent=4)
+    resources = ResourceManager(max_concurrent=4)
     config = SimQueueConfig(
         enabled=True,
         tools={
@@ -43,11 +43,12 @@ async def test_submit_job_resolves_input_from_tool_env(tmp_path: Path, monkeypat
 
     scheduler, store = await _build_scheduler(tmp_path, tool)
     try:
-        job_id = await scheduler.submit_job(
+        result = await scheduler.submit_job(
             tool=tool,
             input_file="STRUC1",
             submitted_by=123,
         )
+        job_id = result.job_id
         job = await store.get_job(job_id)
         assert job is not None
         assert job["input_file"] == str(input_dir.resolve())
@@ -65,11 +66,12 @@ async def test_submit_job_resolves_input_from_global_env(tmp_path: Path, monkeyp
 
     scheduler, store = await _build_scheduler(tmp_path, tool)
     try:
-        job_id = await scheduler.submit_job(
+        result = await scheduler.submit_job(
             tool=tool,
             input_file="jobA",
             submitted_by=456,
         )
+        job_id = result.job_id
         job = await store.get_job(job_id)
         assert job is not None
         assert job["input_file"] == str(input_dir.resolve())
@@ -89,11 +91,12 @@ async def test_submit_job_queues_job_for_dispatch(
 
     scheduler, store = await _build_scheduler(tmp_path, tool)
     try:
-        job_id = await scheduler.submit_job(
+        result = await scheduler.submit_job(
             tool=tool,
             input_file="STRUC_EXT",
             submitted_by=123,
         )
+        job_id = result.job_id
         assert len(job_id) == 32
         job = await store.get_job(job_id)
         assert job is not None
@@ -115,7 +118,7 @@ async def test_launch_job_builds_absolute_output_path(
 
     store = SimJobStore()
     await store.initialize(str(tmp_path / "sim_jobs.db"))
-    resources = ResourceManager(total_cores=16, total_memory_mb=131072, max_concurrent=4)
+    resources = ResourceManager(max_concurrent=4)
     config = SimQueueConfig(
         enabled=True,
         job_work_dir="data/sim_jobs",
@@ -136,8 +139,6 @@ async def test_launch_job_builds_absolute_output_path(
         "job_id": "job-abs-out-1",
         "tool": "orca_auto",
         "input_file": str(input_dir),
-        "cores": 4,
-        "memory_mb": 16384,
     }
 
     captured: dict[str, str] = {}
@@ -187,7 +188,7 @@ async def test_detects_external_running_jobs_from_process_table(
     )
     store = SimJobStore()
     await store.initialize(str(tmp_path / "sim_jobs.db"))
-    resources = ResourceManager(total_cores=16, total_memory_mb=131072, max_concurrent=4)
+    resources = ResourceManager(max_concurrent=4)
     scheduler = SimJobScheduler(config=config, store=store, resources=resources)
 
     class _FakePsProcess:
@@ -195,9 +196,9 @@ async def test_detects_external_running_jobs_from_process_table(
 
         async def communicate(self) -> tuple[bytes, bytes]:
             lines = [
-                f"{os.getpid()} 10 python -m apps.ollama_bot.main",
-                "1001 120 /home/test/orca_auto/.venv/bin/python3 -m core.cli run-inp --reaction-dir /tmp/STRUC1",
-                "1002 30 crest /tmp/mol.xyz",
+                f"{os.getpid()} 1 10 python -m apps.ollama_bot.main",
+                "1001 1 120 /home/test/orca_auto/.venv/bin/python3 -m core.cli run-inp --reaction-dir /tmp/STRUC1",
+                "1002 1 30 crest /tmp/mol.xyz",
             ]
             return "\n".join(lines).encode(), b""
 
@@ -216,13 +217,8 @@ async def test_detects_external_running_jobs_from_process_table(
         assert jobs[0]["tool"] == "orca_auto"
         assert jobs[0]["input_file"] == "/tmp/STRUC1"
         assert "--reaction-dir /tmp/STRUC1" in jobs[0]["cli_command"]
-        assert jobs[0]["cores"] == 4
-        assert jobs[0]["memory_mb"] == 8192
-        assert jobs[0]["resource_source"] == "config_default"
         assert jobs[1]["job_id"] == "external-1002"
         assert jobs[1]["tool"] == "crest"
-        assert jobs[1]["cores"] == 4
-        assert jobs[1]["memory_mb"] == 8192
     finally:
         await store.close()
 
@@ -232,39 +228,24 @@ async def test_queue_status_includes_external_running_count(tmp_path: Path) -> N
     scheduler, store = await _build_scheduler(tmp_path, "orca_auto")
     scheduler.get_external_running_jobs = AsyncMock(  # type: ignore[method-assign]
         return_value=[
-            {"pid": 101, "cores": 4, "memory_mb": 8192},
-            {"pid": 102, "cores": 8, "memory_mb": 16384},
+            {"pid": 101},
+            {"pid": 102},
         ]
     )
     try:
         status = await scheduler.get_queue_status()
         assert status["external_running"] == 2
         assert status["running_total"] == 2
-        assert status["allocated_external_cores"] == 12
-        assert status["allocated_external_memory_mb"] == 24576
-        assert status["allocated_total_cores"] == 12
-        assert status["allocated_total_memory_mb"] == 24576
-        assert status["external_memory_rss_mb"] == 0
     finally:
         await store.close()
 
 
 @pytest.mark.asyncio
-async def test_dispatch_waits_when_external_jobs_exhaust_resources(
+async def test_dispatch_waits_when_slots_exhausted(
     tmp_path: Path,
 ) -> None:
     scheduler, store = await _build_scheduler(tmp_path, "orca_auto")
-    scheduler._config.total_cores = 16
-    scheduler._config.total_memory_mb = 131072
     scheduler._config.max_concurrent_jobs = 4
-
-    tool = scheduler._config.tools["orca_auto"]
-    tool.min_cores = 2
-    tool.default_cores = 4
-    tool.min_memory_mb = 16384
-    tool.default_memory_mb = 32768
-    tool.max_cores = 16
-    tool.max_memory_mb = 65536
 
     job_id = await store.insert_job(
         SimJob(
@@ -272,13 +253,11 @@ async def test_dispatch_waits_when_external_jobs_exhaust_resources(
             tool="orca_auto",
             input_file="/tmp/STRUC_EXT_BLOCK",
             submitted_by=1,
-            cores=4,
-            memory_mb=32768,
         )
     )
 
     scheduler.get_external_running_jobs = AsyncMock(  # type: ignore[method-assign]
-        return_value=[{"cores": 4, "memory_mb": 32768} for _ in range(4)]
+        return_value=[{"pid": i} for i in range(4)]
     )
     try:
         await scheduler._dispatch_pending_jobs()
@@ -290,22 +269,12 @@ async def test_dispatch_waits_when_external_jobs_exhaust_resources(
 
 
 @pytest.mark.asyncio
-async def test_dispatch_runs_when_external_jobs_leave_capacity(
+async def test_dispatch_runs_when_slots_available(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     scheduler, store = await _build_scheduler(tmp_path, "orca_auto")
-    scheduler._config.total_cores = 16
-    scheduler._config.total_memory_mb = 131072
     scheduler._config.max_concurrent_jobs = 4
-
-    tool = scheduler._config.tools["orca_auto"]
-    tool.min_cores = 2
-    tool.default_cores = 4
-    tool.min_memory_mb = 16384
-    tool.default_memory_mb = 32768
-    tool.max_cores = 16
-    tool.max_memory_mb = 65536
 
     input_dir = tmp_path / "orca_runs" / "STRUC_EXT_RUN"
     input_dir.mkdir(parents=True)
@@ -316,13 +285,11 @@ async def test_dispatch_runs_when_external_jobs_leave_capacity(
             tool="orca_auto",
             input_file=str(input_dir),
             submitted_by=1,
-            cores=4,
-            memory_mb=32768,
         )
     )
 
     scheduler.get_external_running_jobs = AsyncMock(  # type: ignore[method-assign]
-        return_value=[{"cores": 4, "memory_mb": 32768} for _ in range(2)]
+        return_value=[{"pid": i} for i in range(2)]
     )
     scheduler._prepare_orca_auto_runtime_config = lambda _exe: "/tmp/fake.yaml"  # type: ignore[method-assign]
 
@@ -347,167 +314,6 @@ async def test_dispatch_runs_when_external_jobs_leave_capacity(
         assert job["pid"] == 77777
         assert "echo" in job["cli_command"]
     finally:
-        await store.close()
-
-
-@pytest.mark.asyncio
-async def test_compute_dispatch_resources_scales_up_when_queue_is_shallow(
-    tmp_path: Path,
-) -> None:
-    scheduler, store = await _build_scheduler(tmp_path, "orca_auto")
-    scheduler._config.max_concurrent_jobs = 8
-    scheduler._config.total_cores = 16
-    scheduler._config.total_memory_mb = 131072
-    tool = scheduler._config.tools["orca_auto"]
-    tool.default_cores = 2
-    tool.default_memory_mb = 16384
-    tool.max_cores = 16
-    tool.max_memory_mb = 65536
-
-    try:
-        job = {"tool": "orca_auto", "cores": 2, "memory_mb": 16384}
-        cores, memory_mb = scheduler._compute_dispatch_resources(
-            job,
-            queued_count=1,
-            resource_status={
-                "running_jobs": 0,
-                "available_cores": 16,
-                "available_memory_mb": 131072,
-            },
-        )
-        assert cores == 16
-        assert memory_mb == 65536
-    finally:
-        await store.close()
-
-
-@pytest.mark.asyncio
-async def test_compute_dispatch_resources_keeps_baseline_when_backlog_is_high(
-    tmp_path: Path,
-) -> None:
-    scheduler, store = await _build_scheduler(tmp_path, "orca_auto")
-    scheduler._config.max_concurrent_jobs = 8
-    scheduler._config.total_cores = 16
-    scheduler._config.total_memory_mb = 131072
-    tool = scheduler._config.tools["orca_auto"]
-    tool.default_cores = 2
-    tool.default_memory_mb = 16384
-    tool.max_cores = 16
-    tool.max_memory_mb = 65536
-
-    try:
-        job = {"tool": "orca_auto", "cores": 2, "memory_mb": 16384}
-        cores, memory_mb = scheduler._compute_dispatch_resources(
-            job,
-            queued_count=5,
-            resource_status={
-                "running_jobs": 3,
-                "available_cores": 10,
-                "available_memory_mb": 65536,
-            },
-        )
-        assert cores == 2
-        assert memory_mb == 16384
-    finally:
-        await store.close()
-
-
-@pytest.mark.asyncio
-async def test_compute_dispatch_resources_can_scale_down_to_tool_min(
-    tmp_path: Path,
-) -> None:
-    scheduler, store = await _build_scheduler(tmp_path, "orca_auto")
-    scheduler._config.max_concurrent_jobs = 8
-    scheduler._config.total_cores = 8
-    scheduler._config.total_memory_mb = 65536
-    tool = scheduler._config.tools["orca_auto"]
-    tool.min_cores = 1
-    tool.default_cores = 2
-    tool.min_memory_mb = 8192
-    tool.default_memory_mb = 16384
-    tool.max_cores = 16
-    tool.max_memory_mb = 65536
-
-    try:
-        job = {"tool": "orca_auto", "cores": 2, "memory_mb": 16384}
-        cores, memory_mb = scheduler._compute_dispatch_resources(
-            job,
-            queued_count=8,
-            resource_status={
-                "running_jobs": 0,
-                "available_cores": 8,
-                "available_memory_mb": 65536,
-            },
-        )
-        assert cores == 1
-        assert memory_mb == 8192
-    finally:
-        await store.close()
-
-
-@pytest.mark.asyncio
-async def test_compute_dispatch_resources_returns_baseline_when_disabled(
-    tmp_path: Path,
-) -> None:
-    scheduler, store = await _build_scheduler(tmp_path, "orca_auto")
-    scheduler._config.adaptive_allocation_enabled = False
-    scheduler._config.max_concurrent_jobs = 8
-    scheduler._config.total_cores = 16
-    scheduler._config.total_memory_mb = 131072
-    tool = scheduler._config.tools["orca_auto"]
-    tool.default_cores = 2
-    tool.default_memory_mb = 16384
-    tool.max_cores = 16
-    tool.max_memory_mb = 65536
-
-    try:
-        job = {"tool": "orca_auto", "cores": 2, "memory_mb": 16384}
-        cores, memory_mb = scheduler._compute_dispatch_resources(
-            job,
-            queued_count=1,
-            resource_status={
-                "running_jobs": 0,
-                "available_cores": 16,
-                "available_memory_mb": 131072,
-            },
-        )
-        assert cores == 2
-        assert memory_mb == 16384
-    finally:
-        await store.close()
-
-
-@pytest.mark.asyncio
-async def test_submit_job_clamps_requested_resources_to_tool_min(
-    tmp_path: Path,
-) -> None:
-    scheduler, store = await _build_scheduler(tmp_path, "orca_auto")
-    tool = scheduler._config.tools["orca_auto"]
-    tool.min_cores = 2
-    tool.default_cores = 4
-    tool.max_cores = 16
-    tool.min_memory_mb = 8192
-    tool.default_memory_mb = 16384
-    tool.max_memory_mb = 65536
-
-    input_dir = tmp_path / "orca_runs" / "STRUCX"
-    input_dir.mkdir(parents=True)
-    os.environ["SIM_INPUT_DIR_ORCA_AUTO"] = str(input_dir.parent)
-
-    try:
-        job_id = await scheduler.submit_job(
-            tool="orca_auto",
-            input_file="STRUCX",
-            submitted_by=1,
-            cores=1,
-            memory_mb=4096,
-        )
-        job = await store.get_job(job_id)
-        assert job is not None
-        assert job["cores"] == 2
-        assert job["memory_mb"] == 8192
-    finally:
-        os.environ.pop("SIM_INPUT_DIR_ORCA_AUTO", None)
         await store.close()
 
 
@@ -642,8 +448,6 @@ async def test_detects_external_jobs_from_lock_files_when_ps_unavailable(
         assert jobs[0]["status"] == "running"
         assert jobs[0]["input_file"] == "/host/orca_runs/STRUC2"
         assert jobs[0]["source"] == "lockfile"
-        assert jobs[0]["cores"] == 4
-        assert jobs[0]["memory_mb"] == 8192
     finally:
         await store.close()
 
@@ -675,8 +479,6 @@ async def test_sync_external_job_states_marks_missing_job_completed(
             tool="orca_auto",
             input_file="/tmp/STRUC_SYNC",
             submitted_by=1,
-            cores=4,
-            memory_mb=16384,
         )
     )
     await store.update_status(
@@ -718,8 +520,6 @@ async def test_sync_external_job_states_marks_missing_job_failed_from_output(
             tool="orca_auto",
             input_file=str(input_dir),
             submitted_by=1,
-            cores=4,
-            memory_mb=16384,
         )
     )
     await store.update_status(
@@ -753,8 +553,6 @@ async def test_get_queue_status_includes_delegated_running_from_db(
             tool="orca_auto",
             input_file="/tmp/STRUC_STATUS",
             submitted_by=1,
-            cores=4,
-            memory_mb=32768,
         )
     )
     await store.update_status(
@@ -769,8 +567,6 @@ async def test_get_queue_status_includes_delegated_running_from_db(
         status = await scheduler.get_queue_status()
         assert status["external_running"] == 1
         assert status["running_total"] == 1
-        assert status["allocated_external_cores"] == 4
-        assert status["allocated_external_memory_mb"] == 32768
     finally:
         await store.close()
 
@@ -786,8 +582,6 @@ async def test_cancel_job_delegated_running_uses_external_cancel(
             tool="orca_auto",
             input_file="/tmp/STRUC_CANCEL",
             submitted_by=1,
-            cores=4,
-            memory_mb=32768,
         )
     )
     await store.update_status(
@@ -820,8 +614,6 @@ async def test_recover_orphaned_jobs_does_not_requeue_delegated_running(
             tool="orca_auto",
             input_file="/tmp/STRUC_RECOVER",
             submitted_by=1,
-            cores=4,
-            memory_mb=16384,
         )
     )
     await store.update_status(

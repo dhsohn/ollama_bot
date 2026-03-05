@@ -120,8 +120,8 @@ rag:
   enabled: true
   startup_index_enabled: true
   kb_dirs:
-    - "kb/orca_runs"
-    - "kb/orca_outputs"
+    - "/home/daehyupsohn/orca_runs"
+    - "/home/daehyupsohn/orca_outputs"
   max_file_size_mb: 5
   trigger_keywords:
     - "orca"
@@ -160,15 +160,11 @@ dft:
 
 sim_queue:
   enabled: true
-  total_cores: 16
-  total_memory_mb: 131072       # 128 GB
   max_concurrent_jobs: 4
   default_retry_count: 2
   max_retry_count: 5
   retry_delay_seconds: 30
   queue_check_interval_seconds: 5
-  adaptive_allocation_enabled: true
-  adaptive_memory_step_mb: 1024
   job_work_dir: "data/sim_jobs"
   tools:
     orca_auto:
@@ -176,27 +172,12 @@ sim_queue:
       executable: "orca_auto"
       cli_template: "{executable} run-inp --foreground --reaction-dir '{input_file}' > {output_file} 2>&1"
       command_prefix: ""
-      min_cores: 2
-      default_cores: 4
-      min_memory_mb: 16384
-      default_memory_mb: 32768
-      max_cores: 16
-      max_memory_mb: 65536
       output_extension: ".out"
-      env_vars:
-        OMP_NUM_THREADS: "{cores}"
     crest:
       enabled: true
       executable: "crest"
-      cli_template: "{executable} {input_file} --T {cores} > {output_file} 2>&1"
+      cli_template: "{executable} {input_file} --T 8 > {output_file} 2>&1"
       command_prefix: "conda run -n base"
-      min_cores: 4
-      default_cores: 8
-      min_memory_mb: 32768
-      default_memory_mb: 65536
-      max_cores: 16
-      max_memory_mb: 131072
       output_extension: ".out"
       env_vars:
-        OMP_NUM_THREADS: "{cores}"
         OMP_STACKSIZE: "1G"

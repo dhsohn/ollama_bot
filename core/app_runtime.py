@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import aiosqlite
+from dotenv import load_dotenv
 
 from core.async_utils import run_in_thread
 from core.auto_evaluator import AutoEvaluator
@@ -586,8 +587,6 @@ async def _build_runtime(
                 cleanup_stack.push_async_callback(sim_store.close)
 
                 sim_resources = ResourceManager(
-                    total_cores=config.sim_queue.total_cores,
-                    total_memory_mb=config.sim_queue.total_memory_mb,
                     max_concurrent=config.sim_queue.max_concurrent_jobs,
                 )
 
@@ -790,8 +789,16 @@ async def async_main(
             print(f"오류: {exc}", file=sys.stderr)
             sys.exit(1)
 
+    # .env 파일의 임의 환경변수(SIM_INPUT_DIR_* 등)를 os.environ에 로드한다.
+    env_files = _runtime_env_files()
+    if isinstance(env_files, str):
+        load_dotenv(env_files, override=False)
+    elif env_files:
+        for ef in env_files:
+            load_dotenv(ef, override=False)
+
     try:
-        config = load_config(env_file=_runtime_env_files())
+        config = load_config(env_file=env_files)
     except ValueError as exc:
         print(
             f"오류: 설정값이 잘못되었습니다. {exc}",

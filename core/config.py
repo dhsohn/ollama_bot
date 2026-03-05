@@ -304,70 +304,27 @@ class SimToolConfig(BaseModel):
     executable: str
     cli_template: str
     command_prefix: str = ""
-    min_cores: int = 1
-    default_cores: int = 4
-    min_memory_mb: int = 1024
-    default_memory_mb: int = 8192
-    max_cores: int = 16
-    max_memory_mb: int = 65536
     output_extension: str = ".out"
     env_vars: dict[str, str] = Field(default_factory=dict)
-
-    @field_validator("min_cores", "default_cores", "max_cores")
-    @classmethod
-    def validate_positive_cores(cls, value: int) -> int:
-        if value < 1:
-            raise ValueError("core count must be >= 1")
-        return value
-
-    @field_validator("min_memory_mb", "default_memory_mb", "max_memory_mb")
-    @classmethod
-    def validate_positive_memory(cls, value: int) -> int:
-        if value < 1:
-            raise ValueError("memory must be >= 1 MB")
-        return value
-
-    @model_validator(mode="after")
-    def validate_ranges(self) -> "SimToolConfig":
-        if self.min_cores > self.default_cores:
-            raise ValueError("min_cores must be <= default_cores")
-        if self.default_cores > self.max_cores:
-            raise ValueError("default_cores must be <= max_cores")
-        if self.min_memory_mb > self.default_memory_mb:
-            raise ValueError("min_memory_mb must be <= default_memory_mb")
-        if self.default_memory_mb > self.max_memory_mb:
-            raise ValueError("default_memory_mb must be <= max_memory_mb")
-        return self
 
 
 class SimQueueConfig(BaseModel):
     """시뮬레이션 작업 큐 설정."""
 
     enabled: bool = False
-    total_cores: int = 16
-    total_memory_mb: int = 131072
     max_concurrent_jobs: int = 4
     default_retry_count: int = 2
     max_retry_count: int = 5
     retry_delay_seconds: int = 30
     queue_check_interval_seconds: int = 5
-    adaptive_allocation_enabled: bool = True
-    adaptive_memory_step_mb: int = 1024
     job_work_dir: str = "data/sim_jobs"
     tools: dict[str, SimToolConfig] = Field(default_factory=dict)
 
-    @field_validator("total_cores", "max_concurrent_jobs", "adaptive_memory_step_mb")
+    @field_validator("max_concurrent_jobs")
     @classmethod
     def validate_positive_ints(cls, value: int) -> int:
         if value < 1:
-            raise ValueError("simulation queue numeric settings must be >= 1")
-        return value
-
-    @field_validator("total_memory_mb")
-    @classmethod
-    def validate_memory(cls, value: int) -> int:
-        if value < 1:
-            raise ValueError("total_memory_mb must be >= 1")
+            raise ValueError("max_concurrent_jobs must be >= 1")
         return value
 
 

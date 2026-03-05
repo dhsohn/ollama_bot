@@ -1499,8 +1499,7 @@ class TestSimInfoExternal:
         assert "54321" in reply
         assert "/tmp/STRUC2" in reply
         assert "run-inp" in reply
-        assert "8GB" in reply
-        assert "도구 기본값(추정)" in reply
+        assert "orca_auto" in reply
 
     @pytest.mark.asyncio
     async def test_sim_info_external_by_pid_prefix(
@@ -1537,7 +1536,7 @@ class TestSimInfoExternal:
         assert "98765" in reply
 
     @pytest.mark.asyncio
-    async def test_sim_status_shows_external_resource_breakdown(
+    async def test_sim_status_shows_slot_info(
         self,
         telegram_handler: TelegramHandler,
     ) -> None:
@@ -1548,17 +1547,6 @@ class TestSimInfoExternal:
                 "running": 0,
                 "completed": 2,
                 "failed": 1,
-                "total_cores": 16,
-                "allocated_cores": 0,
-                "allocated_external_cores": 12,
-                "allocated_total_cores": 12,
-                "total_memory_mb": 131072,
-                "allocated_memory_mb": 0,
-                "allocated_external_memory_mb": 24576,
-                "allocated_total_memory_mb": 24576,
-                "external_memory_rss_mb": 114,
-                "running_jobs": 0,
-                "running_total_jobs": 3,
                 "max_concurrent": 4,
                 "external_running": 3,
                 "running_total": 3,
@@ -1574,13 +1562,11 @@ class TestSimInfoExternal:
         await telegram_handler._sim_status(update, [])
 
         reply = message.reply_text.await_args[0][0]
-        assert "12/16 코어" in reply
-        assert "24GB/128GB" in reply
-        assert "감지 RSS 실측: 114 MB" in reply
-        assert "실행합계: 3" in reply
+        assert "3/4" in reply
+        assert "감지:3" in reply
 
     @pytest.mark.asyncio
-    async def test_sim_list_shows_external_resource_estimate(
+    async def test_sim_list_shows_external_jobs(
         self,
         telegram_handler: TelegramHandler,
     ) -> None:
@@ -1594,9 +1580,6 @@ class TestSimInfoExternal:
                 "pid": 12345,
                 "elapsed_seconds": 42,
                 "input_file": "/tmp/STRUC1",
-                "cores": 4,
-                "memory_mb": 8192,
-                "resource_source": "config_default",
             }]
         )
         telegram_handler.set_sim_scheduler(sim_scheduler)
@@ -1609,37 +1592,4 @@ class TestSimInfoExternal:
         await telegram_handler._sim_list(update, [])
 
         reply = message.reply_text.await_args[0][0]
-        assert "C4/M8GB" in reply
-        assert "PID:12345" in reply
-
-    @pytest.mark.asyncio
-    async def test_sim_list_marks_queued_resources_as_requested(
-        self,
-        telegram_handler: TelegramHandler,
-    ) -> None:
-        sim_scheduler = MagicMock()
-        sim_scheduler.list_jobs = AsyncMock(
-            return_value=[
-                {
-                    "job_id": "queued-job-1234",
-                    "tool": "orca_auto",
-                    "status": "queued",
-                    "cores": 4,
-                    "memory_mb": 32768,
-                    "label": "",
-                }
-            ]
-        )
-        sim_scheduler.get_external_running_jobs = AsyncMock(return_value=[])
-        telegram_handler.set_sim_scheduler(sim_scheduler)
-
-        message = MagicMock()
-        message.reply_text = AsyncMock()
-        update = MagicMock()
-        update.effective_message = message
-
-        await telegram_handler._sim_list(update, [])
-
-        reply = message.reply_text.await_args[0][0]
-        assert "C4/M32GB*" in reply
-        assert "시작 시 리소스 재계산" in reply
+        assert "42s" in reply

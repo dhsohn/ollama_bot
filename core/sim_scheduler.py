@@ -1,6 +1,6 @@
 """시뮬레이션 작업 스케줄러 — 큐에서 작업을 꺼내 subprocess로 실행한다.
 
-리소스 확인 → 디스패치 → 프로세스 모니터링 → 재시도/완료 처리를 수행하고,
+동시 실행 슬롯 확인 → 디스패치 → 프로세스 모니터링 → 재시도/완료 처리를 수행하고,
 텔레그램으로 상태 알림을 보낸다.
 """
 
@@ -21,6 +21,8 @@ import time
 
 import yaml
 
+from dataclasses import dataclass
+
 from core.config import SimQueueConfig
 from core.logging_setup import get_logger
 from core.sim_job_store import SimJob, SimJobStore
@@ -34,6 +36,13 @@ class _TelegramLike(Protocol):
     """send_message를 제공하는 최소 인터페이스."""
 
     async def send_message(self, chat_id: int, text: str) -> None: ...
+
+
+@dataclass(frozen=True)
+class SubmitResult:
+    """submit_job 반환값."""
+    job_id: str
+    cancelled_job_id: str | None = None
 
 
 class SimJobScheduler:
@@ -330,13 +339,6 @@ class SimJobScheduler:
             return "failed", f"실행 실패: {detail[:300]}"
         return None, None
 
-    def _tool_default_resources(self, tool_name: str) -> tuple[int, int]:
-        """도구 기본 리소스(코어/메모리)를 반환한다."""
-        tool = self._config.tools.get(tool_name)
-        if tool is None:
-            return 0, 0
-        return int(tool.default_cores), int(tool.default_memory_mb)
-
     def _scan_lockfile_external_jobs(
         self,
         *,
@@ -392,15 +394,12 @@ class SimJobScheduler:
                 else:
                     job_id = f"external-lock-{lock_dir.name}"
 
-                default_cores, default_memory = self._tool_default_resources(tool_name)
                 jobs.append(
                     {
                         "job_id": job_id,
                         "tool": tool_name,
                         "status": state_status or "running",
                         "priority": 0,
-                        "cores": default_cores,
-                        "memory_mb": default_memory,
                         "input_file": input_hint,
                         "output_file": None,
                         "submitted_by": 0,
@@ -415,14 +414,13 @@ class SimJobScheduler:
                         "label": "external",
                         "external": True,
                         "source": "lockfile",
-                        "resource_source": "config_default",
                     }
                 )
         return jobs
 
     def _build_external_detection_tokens(self) -> dict[str, list[str]]:
         """도구별 외부 프로세스 탐지 토큰 목록을 구성한다."""
-        placeholders = {"executable", "input_file", "output_file", "cores", "memory_mb"}
+        placeholders = {"executable", "input_file", "output_file"}
         token_map: dict[str, list[str]] = {}
 
         for tool_name, tool_config in self._config.tools.items():
@@ -673,195 +671,34 @@ class SimJobScheduler:
             except asyncio.TimeoutError:
                 pass
 
-    @staticmethod
-    def _round_down_step(value: int, step: int) -> int:
-        if value <= 0:
-            return 0
-        if step <= 1:
-            return value
-        if value < step:
-            return value
-        return max(1, (value // step) * step)
-
-    def _compute_dispatch_resources(
-        self,
-        job: dict[str, Any],
-        *,
-        queued_count: int,
-        resource_status: dict[str, Any],
-    ) -> tuple[int, int]:
-        """디스패치 직전 동적 리소스(코어/메모리)를 계산한다."""
-        tool_name = str(job.get("tool") or "")
-        tool_config = self._config.tools.get(tool_name)
-        job_cores = max(1, int(job.get("cores", 1)))
-        job_memory = max(1, int(job.get("memory_mb", 1)))
-        if tool_config is None:
-            return job_cores, job_memory
-
-        min_cores = min(
-            max(1, int(tool_config.min_cores)),
-            int(tool_config.max_cores),
-            int(self._config.total_cores),
-        )
-        min_memory = min(
-            max(1, int(tool_config.min_memory_mb)),
-            int(tool_config.max_memory_mb),
-            int(self._config.total_memory_mb),
-        )
-        preferred_cores = min(
-            max(job_cores, min_cores),
-            int(tool_config.max_cores),
-            int(self._config.total_cores),
-        )
-        preferred_memory = min(
-            max(job_memory, min_memory),
-            int(tool_config.max_memory_mb),
-            int(self._config.total_memory_mb),
-        )
-
-        if not self._config.adaptive_allocation_enabled:
-            return preferred_cores, preferred_memory
-
-        running_jobs = max(0, int(resource_status.get("running_jobs", 0)))
-        pending_jobs = max(1, int(queued_count))
-        target_parallelism = max(
-            1,
-            min(int(self._config.max_concurrent_jobs), running_jobs + pending_jobs),
-        )
-
-        fair_cores = max(1, int(self._config.total_cores) // target_parallelism)
-        fair_memory = max(1, int(self._config.total_memory_mb) // target_parallelism)
-
-        target_cores = min(
-            max(fair_cores, min_cores),
-            int(tool_config.max_cores),
-            int(self._config.total_cores),
-        )
-        target_memory = min(
-            max(fair_memory, min_memory),
-            int(tool_config.max_memory_mb),
-            int(self._config.total_memory_mb),
-        )
-
-        available_cores = max(0, int(resource_status.get("available_cores", 0)))
-        available_memory = max(0, int(resource_status.get("available_memory_mb", 0)))
-        if available_cores > 0:
-            target_cores = min(target_cores, available_cores)
-        if available_memory > 0:
-            target_memory = min(target_memory, available_memory)
-
-        target_memory = self._round_down_step(
-            target_memory,
-            int(self._config.adaptive_memory_step_mb),
-        )
-        target_memory = max(1, target_memory)
-
-        # 안전 하한 아래로는 내리지 않는다.
-        # 가용 리소스가 min 이하이면 can_allocate에서 대기한다.
-        target_cores = max(min_cores, target_cores)
-        target_memory = max(min_memory, target_memory)
-
-        # 실행 시작 시점을 기준으로 동적으로 증/감시키되,
-        # 제출 시 요청치(preferred)보다 낮게 내려갈 수 있도록 허용한다.
-        if target_cores == preferred_cores and target_memory == preferred_memory:
-            return preferred_cores, preferred_memory
-        return target_cores, target_memory
 
     async def _dispatch_pending_jobs(self) -> None:
         """대기 중인 작업을 큐 순서대로 하나씩 디스패치한다."""
-        queue_stats = await self._store.get_queue_stats()
-        queued_count = int(queue_stats.get("queued", 0))
-        if queued_count <= 0:
-            return
         candidates = await self._store.get_next_queued(limit=1)
         if not candidates:
             return
         job = candidates[0]
+
+        # 내부 실행 중 작업 수
         resource_status = await self._resources.get_status()
+        internal_running = int(resource_status.get("running_jobs", 0))
+
+        # 외부 실행 중 작업 수 (tracked + untracked)
         tracked_external_jobs = await self._list_tracked_delegated_jobs()
         tracked_external_pids = {
             int(j["pid"])
             for j in tracked_external_jobs
             if isinstance(j.get("pid"), int)
         }
-        tracked_external_cores = sum(int(j.get("cores", 0)) for j in tracked_external_jobs)
-        tracked_external_memory = sum(int(j.get("memory_mb", 0)) for j in tracked_external_jobs)
         external_jobs = await self.get_external_running_jobs()
-        untracked_external_jobs: list[dict[str, Any]] = []
-        for item in external_jobs:
-            pid_raw = item.get("pid")
-            pid: int | None = None
-            if pid_raw is not None:
-                try:
-                    pid = int(pid_raw)
-                except (TypeError, ValueError):
-                    pass
-            if pid is not None and pid in tracked_external_pids:
-                continue
-            untracked_external_jobs.append(item)
+        untracked_count = sum(
+            1 for item in external_jobs
+            if (pid := self._safe_int(item.get("pid"))) is not None
+            and pid not in tracked_external_pids
+        )
+        external_running = len(tracked_external_jobs) + untracked_count
+        running_now = internal_running + external_running
 
-        external_running = len(tracked_external_jobs) + len(untracked_external_jobs)
-        external_alloc_cores = tracked_external_cores + sum(
-            int(j.get("cores", 0)) for j in untracked_external_jobs
-        )
-        external_alloc_memory = tracked_external_memory + sum(
-            int(j.get("memory_mb", 0)) for j in untracked_external_jobs
-        )
-
-        allocated_cores = int(resource_status.get("allocated_cores", 0))
-        allocated_memory = int(resource_status.get("allocated_memory_mb", 0))
-        effective_status = dict(resource_status)
-        effective_status["running_jobs"] = int(resource_status.get("running_jobs", 0)) + external_running
-        effective_status["available_cores"] = max(
-            0,
-            int(self._config.total_cores) - allocated_cores - external_alloc_cores,
-        )
-        effective_status["available_memory_mb"] = max(
-            0,
-            int(self._config.total_memory_mb) - allocated_memory - external_alloc_memory,
-        )
-        dispatch_cores, dispatch_memory = self._compute_dispatch_resources(
-            job,
-            queued_count=queued_count,
-            resource_status=effective_status,
-        )
-        dispatch_job = dict(job)
-        dispatch_job["cores"] = dispatch_cores
-        dispatch_job["memory_mb"] = dispatch_memory
-        if (
-            int(job.get("cores", 0)) != dispatch_cores
-            or int(job.get("memory_mb", 0)) != dispatch_memory
-        ):
-            self._logger.info(
-                "sim_job_resources_adapted",
-                job_id=str(job.get("job_id") or ""),
-                tool=str(job.get("tool") or ""),
-                queued_count=queued_count,
-                running_jobs=int(effective_status.get("running_jobs", 0)),
-                cores_from=int(job.get("cores", 0)),
-                memory_from=int(job.get("memory_mb", 0)),
-                cores_to=dispatch_cores,
-                memory_to=dispatch_memory,
-            )
-
-        if (
-            dispatch_cores > int(effective_status.get("available_cores", 0))
-            or dispatch_memory > int(effective_status.get("available_memory_mb", 0))
-        ):
-            self._logger.info(
-                "sim_job_waiting_for_resources",
-                job_id=str(job.get("job_id") or ""),
-                tool=str(job.get("tool") or ""),
-                queued_count=queued_count,
-                running_jobs=int(effective_status.get("running_jobs", 0)),
-                available_cores=int(effective_status.get("available_cores", 0)),
-                available_memory_mb=int(effective_status.get("available_memory_mb", 0)),
-                required_cores=dispatch_cores,
-                required_memory_mb=dispatch_memory,
-            )
-            return
-
-        running_now = int(effective_status.get("running_jobs", 0))
         if running_now >= int(self._config.max_concurrent_jobs):
             self._logger.info(
                 "sim_job_waiting_for_slot",
@@ -870,7 +707,16 @@ class SimJobScheduler:
                 max_concurrent=int(self._config.max_concurrent_jobs),
             )
             return
-        await self._launch_job(dispatch_job)
+        await self._launch_job(job)
+
+    @staticmethod
+    def _safe_int(value: Any) -> int | None:
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
 
     @staticmethod
     def _resolve_path(raw: str) -> Path:
@@ -959,11 +805,8 @@ class SimJobScheduler:
         tool_name = job["tool"]
         tool_config = self._config.tools.get(tool_name)
 
-        if not await self._resources.allocate(job["cores"], job["memory_mb"]):
-            self._logger.info(
-                "sim_job_allocation_failed",
-                job_id=job_id, cores=job["cores"], memory_mb=job["memory_mb"],
-            )
+        if not await self._resources.acquire():
+            self._logger.info("sim_job_slot_unavailable", job_id=job_id)
             return
 
         if not tool_config or not tool_config.enabled:
@@ -971,7 +814,7 @@ class SimJobScheduler:
                 job_id, "failed",
                 error_message=f"알 수 없거나 비활성화된 도구: {tool_name}",
             )
-            await self._resources.release(job["cores"], job["memory_mb"])
+            await self._resources.release()
             return
 
         input_path = Path(job["input_file"]).expanduser().resolve()
@@ -987,25 +830,18 @@ class SimJobScheduler:
             executable=executable,
             input_file=job["input_file"],
             output_file=output_file,
-            cores=job["cores"],
-            memory_mb=job["memory_mb"],
         )
         if tool_config.command_prefix.strip():
             prefix = tool_config.command_prefix.format(
                 executable=executable,
                 input_file=job["input_file"],
                 output_file=output_file,
-                cores=job["cores"],
-                memory_mb=job["memory_mb"],
             )
             cmd = f"{prefix} {cmd}"
 
         env = dict(os.environ)
         for key, val_template in tool_config.env_vars.items():
-            env[key] = val_template.format(
-                cores=job["cores"],
-                memory_mb=job["memory_mb"],
-            )
+            env[key] = val_template
 
         if tool_name == "orca_auto":
             try:
@@ -1015,14 +851,10 @@ class SimJobScheduler:
                 await self._store.update_status(
                     job_id, "failed", error_message=str(exc),
                 )
-                await self._resources.release(job["cores"], job["memory_mb"])
+                await self._resources.release()
                 return
 
-        self._logger.info(
-            "sim_job_launching",
-            job_id=job_id, tool=tool_name, cmd=cmd,
-            cores=job["cores"], memory_mb=job["memory_mb"],
-        )
+        self._logger.info("sim_job_launching", job_id=job_id, tool=tool_name, cmd=cmd)
 
         try:
             proc = await asyncio.create_subprocess_shell(
@@ -1036,8 +868,6 @@ class SimJobScheduler:
             await self._store.update_status(
                 job_id, "running",
                 pid=proc.pid,
-                cores=job["cores"],
-                memory_mb=job["memory_mb"],
                 output_file=output_file,
                 work_dir=str(work_dir),
                 cli_command=cmd,
@@ -1046,7 +876,7 @@ class SimJobScheduler:
             await self._notify_job_started(job)
 
             task = asyncio.create_task(
-                self._monitor_process(job_id, proc, job),
+                self._monitor_process(job_id, proc),
                 name=f"sim_monitor_{job_id}",
             )
             self._monitor_tasks[job_id] = task
@@ -1056,13 +886,12 @@ class SimJobScheduler:
             await self._store.update_status(
                 job_id, "failed", error_message=str(exc),
             )
-            await self._resources.release(job["cores"], job["memory_mb"])
+            await self._resources.release()
 
     async def _monitor_process(
         self,
         job_id: str,
         proc: asyncio.subprocess.Process,
-        job: dict[str, Any],
     ) -> None:
         """프로세스 종료를 대기하고 성공/실패/재시도를 처리한다."""
         try:
@@ -1070,33 +899,35 @@ class SimJobScheduler:
         except asyncio.CancelledError:
             self._running_processes.pop(job_id, None)
             self._monitor_tasks.pop(job_id, None)
-            await self._resources.release(job["cores"], job["memory_mb"])
+            await self._resources.release()
             return
 
         self._running_processes.pop(job_id, None)
         self._monitor_tasks.pop(job_id, None)
-        await self._resources.release(job["cores"], job["memory_mb"])
+        await self._resources.release()
 
+        job = await self._store.get_job(job_id)
         if exit_code == 0:
             await self._store.update_status(
                 job_id, "completed",
                 exit_code=exit_code,
                 completed_at="CURRENT_TIMESTAMP",
             )
-            await self._notify_job_completed(job)
+            if job:
+                await self._notify_job_completed(job)
             await self._try_index_output(job_id)
         else:
-            current = await self._store.get_job(job_id)
-            if current and current["retry_count"] < current["max_retries"]:
-                retry_num = current["retry_count"] + 1
+            if job and job["retry_count"] < job["max_retries"]:
+                retry_num = job["retry_count"] + 1
                 self._logger.warning(
                     "sim_job_failed_will_retry",
                     job_id=job_id, exit_code=exit_code,
-                    retry=retry_num, max_retries=current["max_retries"],
+                    retry=retry_num, max_retries=job["max_retries"],
                 )
-                await asyncio.sleep(current["retry_delay_s"])
+                await asyncio.sleep(job["retry_delay_s"])
                 await self._store.increment_retry(job_id)
-                await self._notify_job_retrying(job, exit_code, retry_num)
+                if job:
+                    await self._notify_job_retrying(job, exit_code, retry_num)
             else:
                 await self._store.update_status(
                     job_id, "failed",
@@ -1104,7 +935,8 @@ class SimJobScheduler:
                     completed_at="CURRENT_TIMESTAMP",
                     error_message=f"프로세스 종료 코드: {exit_code}",
                 )
-                await self._notify_job_failed(job, exit_code)
+                if job:
+                    await self._notify_job_failed(job, exit_code)
 
     # ── 복구 ──
 
@@ -1173,7 +1005,7 @@ class SimJobScheduler:
         label = f" ({job.get('label')})" if job.get("label") else ""
         await self._notify(
             f"[SIM] 작업 {job['job_id'][:8]}{label} 시작\n"
-            f"도구: {job['tool']} | 코어: {job['cores']} | 메모리: {job['memory_mb']}MB"
+            f"도구: {job['tool']}"
         )
 
     async def _notify_job_completed(self, job: dict[str, Any]) -> None:
@@ -1215,12 +1047,10 @@ class SimJobScheduler:
         input_file: str,
         submitted_by: int,
         *,
-        cores: int | None = None,
-        memory_mb: int | None = None,
         priority: int = 100,
         max_retries: int | None = None,
         label: str = "",
-    ) -> str:
+    ) -> SubmitResult:
         """작업을 검증하고 큐에 등록한다."""
         tool_config = self._config.tools.get(tool)
         if not tool_config or not tool_config.enabled:
@@ -1228,41 +1058,51 @@ class SimJobScheduler:
 
         resolved_input = self._resolve_input_path(tool, input_file)
 
-        requested_cores = int(cores) if cores is not None else int(tool_config.default_cores)
-        effective_cores = min(
-            max(requested_cores, int(tool_config.min_cores)),
-            int(tool_config.max_cores),
-        )
-        requested_memory = (
-            int(memory_mb) if memory_mb is not None else int(tool_config.default_memory_mb)
-        )
-        effective_memory = min(
-            max(requested_memory, int(tool_config.min_memory_mb)),
-            int(tool_config.max_memory_mb),
-        )
+        cancelled_job_id: str | None = None
+        existing = await self._store.find_active_job_by_input(tool, str(resolved_input))
+        if existing:
+            ex_status = existing["status"]
+            ex_id = existing["job_id"]
+            if ex_status == "running":
+                raise ValueError(
+                    f"이미 동일한 입력으로 실행 중인 작업이 있습니다: "
+                    f"{ex_id[:8]}"
+                )
+            # queued 상태면 자동 취소 후 새 작업으로 교체
+            await self._store.cancel_job(ex_id)
+            cancelled_job_id = ex_id
+            self._logger.info(
+                "sim_job_duplicate_cancelled",
+                cancelled_job_id=ex_id, tool=tool,
+            )
+
+        # external 작업(ps/lockfile)과도 중복 검사
+        if not existing or existing["status"] != "running":
+            resolved_str = str(resolved_input)
+            for ext_job in await self.get_external_running_jobs():
+                ext_input = ext_job.get("input_file", "")
+                if not ext_input or ext_input == "-":
+                    continue
+                try:
+                    ext_resolved = str(Path(ext_input).resolve())
+                except OSError:
+                    ext_resolved = ext_input
+                if ext_resolved == resolved_str:
+                    raise ValueError(
+                        f"이미 동일한 입력으로 외부에서 실행 중인 작업이 있습니다: "
+                        f"{ext_job['job_id']}"
+                    )
+
         effective_retries = min(
             max_retries if max_retries is not None else self._config.default_retry_count,
             self._config.max_retry_count,
         )
-
-        if effective_cores > self._config.total_cores:
-            raise ValueError(
-                f"요청 코어 수({effective_cores})가 "
-                f"전체 가용량({self._config.total_cores})을 초과합니다."
-            )
-        if effective_memory > self._config.total_memory_mb:
-            raise ValueError(
-                f"요청 메모리({effective_memory}MB)가 "
-                f"전체 가용량({self._config.total_memory_mb}MB)을 초과합니다."
-            )
 
         job = SimJob(
             job_id=uuid.uuid4().hex,
             tool=tool,
             input_file=str(resolved_input),
             submitted_by=submitted_by,
-            cores=effective_cores,
-            memory_mb=effective_memory,
             priority=priority,
             max_retries=effective_retries,
             retry_delay_s=self._config.retry_delay_seconds,
@@ -1270,12 +1110,8 @@ class SimJobScheduler:
         )
 
         job_id = await self._store.insert_job(job)
-        self._logger.info(
-            "sim_job_submitted",
-            job_id=job_id, tool=tool,
-            cores=effective_cores, memory_mb=effective_memory,
-        )
-        return job_id
+        self._logger.info("sim_job_submitted", job_id=job_id, tool=tool)
+        return SubmitResult(job_id=job_id, cancelled_job_id=cancelled_job_id)
 
     async def cancel_job(self, job_id: str) -> bool:
         """작업을 취소한다. running이면 프로세스도 종료한다."""
@@ -1390,8 +1226,12 @@ class SimJobScheduler:
             await asyncio.sleep(0.1)
         return not self._is_pid_alive(pid)
 
+    async def clear_finished(self) -> int:
+        """완료/실패/취소된 작업을 DB에서 삭제한다."""
+        return await self._store.delete_finished_jobs()
+
     async def get_queue_status(self) -> dict[str, Any]:
-        """큐 통계 + 리소스 현황을 합쳐 반환한다."""
+        """큐 통계 + 실행 현황을 반환한다."""
         queue_stats = await self._store.get_queue_stats()
         resource_status = await self._resources.get_status()
         tracked_external_jobs = await self._list_tracked_delegated_jobs()
@@ -1400,53 +1240,21 @@ class SimJobScheduler:
             for j in tracked_external_jobs
             if isinstance(j.get("pid"), int)
         }
-        tracked_external_cores = sum(int(j.get("cores", 0)) for j in tracked_external_jobs)
-        tracked_external_memory_mb = sum(int(j.get("memory_mb", 0)) for j in tracked_external_jobs)
 
         external_jobs = await self.get_external_running_jobs()
-        untracked_external_jobs: list[dict[str, Any]] = []
-        for job in external_jobs:
-            pid_raw = job.get("pid")
-            pid: int | None = None
-            if pid_raw is not None:
-                try:
-                    pid = int(pid_raw)
-                except (TypeError, ValueError):
-                    pass
-            if pid is not None and pid in tracked_external_pids:
-                continue
-            untracked_external_jobs.append(job)
-
+        untracked_count = sum(
+            1 for job in external_jobs
+            if (pid := self._safe_int(job.get("pid"))) is not None
+            and pid not in tracked_external_pids
+        )
+        external_running = len(tracked_external_jobs) + untracked_count
         queue_running = int(queue_stats.get("running", 0))
-        external_running = len(tracked_external_jobs) + len(untracked_external_jobs)
-        allocated_external_cores = tracked_external_cores + sum(
-            int(j.get("cores", 0)) for j in untracked_external_jobs
-        )
-        allocated_external_memory_mb = tracked_external_memory_mb + sum(
-            int(j.get("memory_mb", 0)) for j in untracked_external_jobs
-        )
-        external_memory_rss_mb = sum(
-            int(j.get("memory_rss_mb", 0) or 0) for j in untracked_external_jobs
-        )
-        allocated_queue_cores = int(resource_status.get("allocated_cores", 0))
-        allocated_queue_memory_mb = int(resource_status.get("allocated_memory_mb", 0))
+
         return {
             **queue_stats,
             **resource_status,
             "external_running": external_running,
-            "running_total": queue_running + len(untracked_external_jobs),
-            "allocated_external_cores": allocated_external_cores,
-            "allocated_external_memory_mb": allocated_external_memory_mb,
-            "allocated_total_cores": allocated_queue_cores + allocated_external_cores,
-            "allocated_total_memory_mb": (
-                allocated_queue_memory_mb + allocated_external_memory_mb
-            ),
-            "external_memory_rss_mb": external_memory_rss_mb,
-            "running_total_jobs": (
-                int(resource_status.get("running_jobs", 0))
-                + len(tracked_external_jobs)
-                + len(untracked_external_jobs)
-            ),
+            "running_total": queue_running + untracked_count,
         }
 
     async def get_external_running_jobs(self) -> list[dict[str, Any]]:
@@ -1526,15 +1334,12 @@ class SimJobScheduler:
 
                         seen_external_pids.add(pid)
                         input_hint = self._extract_input_hint(command)
-                        default_cores, default_memory = self._tool_default_resources(tool_name)
                         external_jobs.append(
                             {
                                 "job_id": f"external-{pid}",
                                 "tool": tool_name,
                                 "status": "running",
                                 "priority": 0,
-                                "cores": default_cores,
-                                "memory_mb": default_memory,
                                 "input_file": input_hint,
                                 "output_file": None,
                                 "submitted_by": 0,
@@ -1549,7 +1354,6 @@ class SimJobScheduler:
                                 "label": "external",
                                 "external": True,
                                 "source": "process",
-                                "resource_source": "config_default",
                             }
                         )
 
@@ -1599,11 +1403,5 @@ class SimJobScheduler:
                 "enabled": tc.enabled,
                 "executable": tc.executable,
                 "command_prefix": tc.command_prefix,
-                "min_cores": tc.min_cores,
-                "default_cores": tc.default_cores,
-                "min_memory_mb": tc.min_memory_mb,
-                "default_memory_mb": tc.default_memory_mb,
-                "max_cores": tc.max_cores,
-                "max_memory_mb": tc.max_memory_mb,
             }
         return result

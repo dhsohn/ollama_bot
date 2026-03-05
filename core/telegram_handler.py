@@ -54,7 +54,7 @@ _TYPING_INTERVAL = 4.0
 # 스트리밍 안전 가드
 # 기본 첫 청크 대기 시간(120초)
 _STREAM_DEFAULT_FIRST_CHUNK_TIMEOUT_SECONDS = 120.0
-_STREAM_DEFAULT_CHUNK_TIMEOUT_SECONDS = 20.0
+_STREAM_DEFAULT_CHUNK_TIMEOUT_SECONDS = 45.0
 _STREAM_DEFAULT_MAX_SECONDS_CAP = 300.0
 # 추론/코딩/비전 첫 청크 대기 시간(10분)
 _STREAM_REASONING_FIRST_CHUNK_TIMEOUT_SECONDS = 600.0
@@ -64,6 +64,7 @@ _STREAM_LONG_TIMEOUT_INTENTS = {"complex", "code"}
 _STREAM_MAX_TOTAL_CHARS = 8_192
 _STREAM_MAX_REPEATED_CHUNKS = 30
 _STREAM_RENDER_WAIT_GRACE_SECONDS = 5.0
+_STREAM_RECOVERY_TIMEOUT_SECONDS = 120.0
 _CONTINUATION_TTL_SECONDS = 30 * 60
 _AUTO_CONTINUATION_MAX_TURNS = 3
 _CONTINUE_REQUEST_RE = re.compile(
@@ -934,10 +935,13 @@ class TelegramHandler:
                         error=str(rb_exc),
                     )
                 try:
-                    recovered_response = await self._engine.process_message(
-                        chat_id,
-                        text,
-                        images=images,
+                    recovered_response = await asyncio.wait_for(
+                        self._engine.process_message(
+                            chat_id,
+                            text,
+                            images=images,
+                        ),
+                        timeout=_STREAM_RECOVERY_TIMEOUT_SECONDS,
                     )
                 except Exception as exc:
                     self._logger.warning(
@@ -1492,6 +1496,7 @@ class TelegramHandler:
             "priority": self._sim_priority,
             "retry": self._sim_retry,
             "tools": self._sim_tools,
+            "clear": self._sim_clear,
         }
         handler = handlers.get(subcmd)
         if handler is None:
@@ -1511,7 +1516,7 @@ class TelegramHandler:
         return sim_scheduler
 
     async def _sim_submit(self, update: Update, args: list[str]) -> None:
-        """Usage: /sim submit <tool> <input_file> [--cores N] [--mem N] [--priority N] [--label TEXT]"""
+        """Usage: /sim submit <tool> <input_file> [--priority N] [--label TEXT]"""
         sim_scheduler = await self._get_sim_scheduler(update)
         if sim_scheduler is None:
             return
@@ -1519,32 +1524,18 @@ class TelegramHandler:
         if len(args) < 2:
             await update.effective_message.reply_text(  # type: ignore[union-attr]
                 "사용법: /sim submit <tool> <input_file> "
-                "[--cores N] [--mem N] [--priority N] [--label TEXT]"
+                "[--priority N] [--label TEXT]"
             )
             return
 
         tool = args[0]
         input_file = args[1]
-        cores: int | None = None
-        memory_mb: int | None = None
         priority = 100
         label = ""
 
         i = 2
         while i < len(args):
-            if args[i] == "--cores" and i + 1 < len(args):
-                try:
-                    cores = int(args[i + 1])
-                except ValueError:
-                    pass
-                i += 2
-            elif args[i] == "--mem" and i + 1 < len(args):
-                try:
-                    memory_mb = int(args[i + 1])
-                except ValueError:
-                    pass
-                i += 2
-            elif args[i] == "--priority" and i + 1 < len(args):
+            if args[i] == "--priority" and i + 1 < len(args):
                 try:
                     priority = int(args[i + 1])
                 except ValueError:
@@ -1557,24 +1548,45 @@ class TelegramHandler:
                 i += 1
 
         try:
-            job_id = await sim_scheduler.submit_job(
+            result = await sim_scheduler.submit_job(
                 tool=tool,
                 input_file=input_file,
                 submitted_by=update.effective_chat.id,  # type: ignore[union-attr]
-                cores=cores,
-                memory_mb=memory_mb,
                 priority=priority,
                 label=label,
             )
-            display_job_id = job_id if job_id.startswith("external-") else job_id[:8]
-            await update.effective_message.reply_text(  # type: ignore[union-attr]
-                f"작업 등록 완료: {display_job_id}\n"
-                f"도구: {tool} | 우선순위: {priority}"
-            )
+            display_job_id = result.job_id if result.job_id.startswith("external-") else result.job_id[:8]
+            msg = f"작업 등록 완료: {display_job_id}\n도구: {tool} | 우선순위: {priority}"
+            if result.cancelled_job_id:
+                msg += f"\n(기존 대기 작업 {result.cancelled_job_id[:8]} 자동 취소됨)"
+            await update.effective_message.reply_text(msg)  # type: ignore[union-attr]
         except (ValueError, FileNotFoundError) as exc:
             await update.effective_message.reply_text(  # type: ignore[union-attr]
                 f"등록 실패: {exc}"
             )
+
+    @staticmethod
+    def _sim_elapsed_text(job: dict[str, Any]) -> str:
+        """작업의 총 경과 시간을 사람이 읽기 좋은 형태로 반환한다."""
+        elapsed = int(job.get("elapsed_seconds", 0))
+        if not elapsed and job.get("started_at"):
+            from datetime import datetime, timezone
+            try:
+                started = datetime.fromisoformat(str(job["started_at"]))
+                if started.tzinfo is None:
+                    started = started.replace(tzinfo=timezone.utc)
+                elapsed = max(0, int((datetime.now(timezone.utc) - started).total_seconds()))
+            except (ValueError, TypeError):
+                elapsed = 0
+        if elapsed <= 0:
+            return "-"
+        h, rem = divmod(elapsed, 3600)
+        m, s = divmod(rem, 60)
+        if h:
+            return f"{h}h {m}m"
+        if m:
+            return f"{m}m {s}s"
+        return f"{s}s"
 
     async def _sim_list(self, update: Update, args: list[str]) -> None:
         sim_scheduler = await self._get_sim_scheduler(update)
@@ -1628,62 +1640,39 @@ class TelegramHandler:
 
         table_rows: list[str] = []
         for j in jobs:
-            label = self._escape_html(j.get("label") or "")
             status = str(j.get("status") or "")
-            cores = int(j.get("cores", 0))
-            memory = self._format_memory_gb(j.get("memory_mb", 0))
-            if status == "queued" and self._config.sim_queue.adaptive_allocation_enabled:
-                resource_text = f"C{cores}/M{memory}*"
-            else:
-                resource_text = f"C{cores}/M{memory}"
+            elapsed_text = self._sim_elapsed_text(j)
             table_rows.append(
                 f"{j['job_id'][:8]}  "
-                f"{self._escape_html(j['tool']):<6s} "
                 f"{status:<9s} "
-                f"{resource_text:<12s} "
-                f"{label}"
+                f"{elapsed_text}"
             )
 
         for j in external_jobs:
-            elapsed_seconds = int(j.get("elapsed_seconds", 0))
-            elapsed_minutes = elapsed_seconds // 60
-            elapsed_text = (
-                f"{elapsed_minutes}m" if elapsed_minutes > 0 else f"{elapsed_seconds}s"
-            )
             ext_status = str(j.get("status") or "running")
-            ext_cores = int(j.get("cores", 0))
-            ext_memory = int(j.get("memory_mb", 0))
-            rss_raw = j.get("memory_rss_mb", 0)
-            try:
-                ext_rss = max(0, int(float(rss_raw)))
-            except (TypeError, ValueError):
-                ext_rss = 0
-            mem_str = self._format_memory_gb(ext_memory)
-            if ext_rss > 0:
-                mem_str += f"(R:{ext_rss}M)"
-            resource_text = f"C{ext_cores}/M{mem_str}"
-            input_hint = self._escape_html(j.get("input_file") or "-")
+            elapsed_text = self._sim_elapsed_text(j)
             table_rows.append(
                 f"{j['job_id'][:8]}  "
-                f"{self._escape_html(j['tool']):<6s} "
                 f"{ext_status:<9s} "
-                f"{resource_text:<12s} "
-                f"PID:{j.get('pid', '?')} {elapsed_text}"
+                f"{elapsed_text}"
             )
 
-        header = "ID        도구    상태      리소스        비고"
+        header = "ID        상태      경과시간"
         sep = "─" * len(header)
         table = chr(10).join([header, sep] + table_rows)
-        if any(
-            str(j.get("status")) == "queued"
-            and self._config.sim_queue.adaptive_allocation_enabled
-            for j in jobs
-        ):
-            table += "\n\n* 시작 시 리소스 재계산"
 
         text = f"<b>시뮬레이션 작업 목록</b>\n\n<pre>{table}</pre>"
         await update.effective_message.reply_text(  # type: ignore[union-attr]
             text, parse_mode=ParseMode.HTML,
+        )
+
+    async def _sim_clear(self, update: Update, args: list[str]) -> None:
+        sim_scheduler = await self._get_sim_scheduler(update)
+        if sim_scheduler is None:
+            return
+        count = await sim_scheduler.clear_finished()
+        await update.effective_message.reply_text(  # type: ignore[union-attr]
+            f"완료/실패/취소 작업 {count}건 삭제됨."
         )
 
     async def _sim_status(self, update: Update, args: list[str]) -> None:
@@ -1693,72 +1682,34 @@ class TelegramHandler:
 
         status = await sim_scheduler.get_queue_status()
         queue_running = status.get("running", 0)
-        external_running = status.get("external_running", 0)
         running_total = status.get("running_total", queue_running)
         detected_running = max(0, int(running_total) - int(queue_running))
         running_detail = ""
         if detected_running:
             running_detail = f"  (감지:{detected_running})"
-        queue_alloc_cores = int(status.get("allocated_cores", 0))
-        external_alloc_cores = int(status.get("allocated_external_cores", 0))
-        total_alloc_cores = int(status.get("allocated_total_cores", queue_alloc_cores))
-        queue_alloc_memory = int(status.get("allocated_memory_mb", 0))
-        external_alloc_memory = int(status.get("allocated_external_memory_mb", 0))
-        total_alloc_memory = int(status.get("allocated_total_memory_mb", queue_alloc_memory))
-        external_rss_memory = int(status.get("external_memory_rss_mb", 0))
-        running_jobs_queue = int(status.get("running_jobs", 0))
-        running_jobs_total = int(status.get("running_total_jobs", running_jobs_queue))
 
         # 큐 상태 표
-        q_rows = [
+        q_rows: list[tuple[str, str]] = [
             ("상태", "건수"),
             ("─" * 10, "─" * 6),
             ("대기", str(status.get("queued", 0))),
             ("실행 중", f"{running_total}{running_detail}"),
-            ("완료", str(status.get("completed", 0))),
-            ("실패", str(status.get("failed", 0))),
         ]
+        completed = int(status.get("completed", 0))
+        failed = int(status.get("failed", 0))
+        if completed:
+            q_rows.append(("완료", str(completed)))
+        if failed:
+            q_rows.append(("실패", str(failed)))
         q_table = chr(10).join(f"{r[0]:<10s} {r[1]}" for r in q_rows)
 
-        # 리소스 표
-        total_cores = status.get("total_cores", 0)
-        total_mem = self._format_memory_gb(status.get("total_memory_mb", 0))
-        r_rows = [
-            ("리소스", "사용/전체"),
-            ("─" * 10, "─" * 12),
-            (
-                "CPU",
-                f"{total_alloc_cores}/{total_cores} 코어",
-            ),
-            (
-                "메모리(할당)",
-                f"{self._format_memory_gb(total_alloc_memory)}/{total_mem}",
-            ),
-        ]
-        r_table = chr(10).join(f"{r[0]:<12s} {r[1]}" for r in r_rows)
-
-        rss_line = ""
-        if external_running:
-            rss_line = f"\n감지 RSS 실측: {external_rss_memory} MB"
-
-        detected_detail = ""
-        if detected_running:
-            detected_detail = (
-                f"\n감지 실행: {detected_running}건 "
-                f"(CPU {external_alloc_cores}, MEM {self._format_memory_gb(external_alloc_memory)})"
-            )
-
-        overall_running = int(status.get("running_total", running_jobs_total))
         footer = (
-            f"동시실행: {overall_running} | 최대: {status.get('max_concurrent', 0)} "
-            f"| 실행합계: {running_jobs_total}"
+            f"동시실행: {running_total}/{status.get('max_concurrent', 0)}"
         )
 
         text = (
             f"<b>시뮬레이션 큐 현황</b>\n\n"
-            f"<pre>{q_table}</pre>\n\n"
-            f"<b>리소스</b>\n\n"
-            f"<pre>{r_table}{rss_line}{detected_detail}\n\n{footer}</pre>"
+            f"<pre>{q_table}\n\n{footer}</pre>"
         )
         await update.effective_message.reply_text(  # type: ignore[union-attr]
             text, parse_mode=ParseMode.HTML,
@@ -1813,19 +1764,8 @@ class TelegramHandler:
                     ("PID", str(ext.get("pid", "-"))),
                     ("경과", elapsed_text),
                     ("입력", self._escape_html(str(ext.get("input_file") or "-"))),
-                    ("코어", str(int(ext.get("cores", 0)))),
-                    ("메모리(할당)", self._format_memory_gb(ext.get("memory_mb", 0))),
                     ("타임스탬프", "감지 프로세스라 추적 불가"),
                 ]
-                rss_raw = ext.get("memory_rss_mb", 0)
-                try:
-                    ext_rss = max(0, int(float(rss_raw)))
-                except (TypeError, ValueError):
-                    ext_rss = 0
-                if ext_rss > 0:
-                    rows.append(("메모리(RSS)", f"{ext_rss}MB"))
-                if ext.get("resource_source") == "config_default":
-                    rows.append(("리소스 근거", "도구 기본값(추정)"))
                 if cmd:
                     rows.append(("명령", self._escape_html(cmd)))
 
@@ -1850,8 +1790,6 @@ class TelegramHandler:
             ("도구", self._escape_html(j["tool"])),
             ("상태", str(j["status"])),
             ("입력", self._escape_html(j["input_file"])),
-            ("코어", str(j["cores"])),
-            ("메모리", self._format_memory_gb(j.get("memory_mb", 0))),
             ("우선순위", str(j["priority"])),
             ("재시도", f"{j['retry_count']}/{j['max_retries']}"),
             ("제출", str(j["submitted_at"] or "-")),
@@ -2003,18 +1941,17 @@ class TelegramHandler:
             return
 
         try:
-            job_id = await sim_scheduler.submit_job(
+            result = await sim_scheduler.submit_job(
                 tool=old_job["tool"],
                 input_file=old_job["input_file"],
                 submitted_by=update.effective_chat.id,  # type: ignore[union-attr]
-                cores=old_job["cores"],
-                memory_mb=old_job["memory_mb"],
                 priority=old_job["priority"],
                 label=old_job.get("label", ""),
             )
-            await update.effective_message.reply_text(  # type: ignore[union-attr]
-                f"재시도 등록: {job_id[:8]} (원본: {old_job['job_id'][:8]})"
-            )
+            msg = f"재시도 등록: {result.job_id[:8]} (원본: {old_job['job_id'][:8]})"
+            if result.cancelled_job_id:
+                msg += f"\n(기존 대기 작업 {result.cancelled_job_id[:8]} 자동 취소됨)"
+            await update.effective_message.reply_text(msg)  # type: ignore[union-attr]
         except (ValueError, FileNotFoundError) as exc:
             await update.effective_message.reply_text(  # type: ignore[union-attr]
                 f"재시도 실패: {exc}"
@@ -2036,7 +1973,6 @@ class TelegramHandler:
         header = f"{'도구':<{name_w}s}  상태    실행파일"
         sep = "─" * max(len(header), 40)
         table_lines = [header, sep]
-        detail_lines: list[str] = []
         for name, info in tools.items():
             status = "활성" if info["enabled"] else "비활성"
             table_lines.append(
@@ -2044,20 +1980,9 @@ class TelegramHandler:
                 f"{status:<6s}  "
                 f"{self._escape_html(info['executable'])}"
             )
-            min_r = f"C{info['min_cores']}/M{self._format_memory_gb(info['min_memory_mb'])}"
-            def_r = f"C{info['default_cores']}/M{self._format_memory_gb(info['default_memory_mb'])}"
-            max_r = f"C{info['max_cores']}/M{self._format_memory_gb(info['max_memory_mb'])}"
-            detail_lines.append(
-                f"  {self._escape_html(name)}: "
-                f"최소 {min_r} / 기본 {def_r} / 최대 {max_r}"
-            )
 
         table = chr(10).join(table_lines)
-        details = chr(10).join(detail_lines)
-        text = (
-            f"<b>시뮬레이션 도구 목록</b>\n\n"
-            f"<pre>{table}\n\n리소스 프로필\n{details}</pre>"
-        )
+        text = f"<b>시뮬레이션 도구 목록</b>\n\n<pre>{table}</pre>"
         await update.effective_message.reply_text(  # type: ignore[union-attr]
             text, parse_mode=ParseMode.HTML,
         )

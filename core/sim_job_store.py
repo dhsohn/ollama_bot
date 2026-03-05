@@ -1,6 +1,6 @@
 """시뮬레이션 작업 큐 — SQLite 영속 계층.
 
-작업 상태, 리소스 요청, 재시도 카운트 등을 관리한다.
+작업 상태, 재시도 카운트 등을 관리한다.
 """
 
 from __future__ import annotations
@@ -21,8 +21,8 @@ CREATE TABLE IF NOT EXISTS sim_jobs (
     tool          TEXT    NOT NULL,
     status        TEXT    NOT NULL DEFAULT 'queued',
     priority      INTEGER NOT NULL DEFAULT 100,
-    cores         INTEGER NOT NULL,
-    memory_mb     INTEGER NOT NULL,
+    cores         INTEGER NOT NULL DEFAULT 0,
+    memory_mb     INTEGER NOT NULL DEFAULT 0,
     input_file    TEXT    NOT NULL,
     output_file   TEXT,
     work_dir      TEXT,
@@ -55,8 +55,6 @@ class SimJob:
     tool: str
     input_file: str
     submitted_by: int
-    cores: int
-    memory_mb: int
     priority: int = 100
     max_retries: int = 2
     retry_delay_s: int = 30
@@ -101,10 +99,10 @@ class SimJobStore:
                 """INSERT INTO sim_jobs
                    (job_id, tool, status, priority, cores, memory_mb,
                     input_file, submitted_by, max_retries, retry_delay_s, label)
-                   VALUES (?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, 'queued', ?, 0, 0, ?, ?, ?, ?, ?)""",
                 (
                     job.job_id, job.tool, job.priority,
-                    job.cores, job.memory_mb, job.input_file,
+                    job.input_file,
                     job.submitted_by, job.max_retries, job.retry_delay_s,
                     job.label,
                 ),
@@ -122,7 +120,7 @@ class SimJobStore:
         allowed_fields = {
             "pid", "exit_code", "error_message", "output_file",
             "work_dir", "cli_command", "started_at", "completed_at",
-            "priority", "cores", "memory_mb",
+            "priority",
         }
         for key, value in kwargs.items():
             if key not in allowed_fields:
@@ -254,6 +252,33 @@ class SimJobStore:
         ) as cursor:
             rows = await cursor.fetchall()
             return [dict(r) for r in rows]
+
+    async def find_active_job_by_input(
+        self, tool: str, input_file: str,
+    ) -> dict[str, Any] | None:
+        """같은 tool+input_file로 queued/running 상태인 작업을 반환한다."""
+        db = self._require_db()
+        async with db.execute(
+            """SELECT * FROM sim_jobs
+               WHERE tool = ? AND input_file = ? AND status IN ('queued', 'running')
+               LIMIT 1""",
+            (tool, input_file),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+    async def delete_finished_jobs(self) -> int:
+        """completed/failed/cancelled 상태의 작업을 모두 삭제한다. 삭제된 건수를 반환."""
+        db = self._require_db()
+        async with self._write_lock:
+            cursor = await db.execute(
+                "DELETE FROM sim_jobs WHERE status IN ('completed', 'failed', 'cancelled')"
+            )
+            await db.commit()
+        count = cursor.rowcount
+        if count:
+            self._logger.info("sim_jobs_cleared", count=count)
+        return count
 
     async def get_queue_stats(self) -> dict[str, Any]:
         """상태별 작업 수를 반환한다."""
