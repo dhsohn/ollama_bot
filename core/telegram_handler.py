@@ -1598,11 +1598,8 @@ class TelegramHandler:
             jobs = [
                 j for j in await sim_scheduler.list_jobs(limit=50)
                 if (
-                    (
-                        str(j.get("status")) == "running"
-                        and str(j.get("cli_command") or "").startswith("delegated:")
-                    )
-                    or str(j.get("status")) == "running_external"
+                    str(j.get("status")) == "running"
+                    and str(j.get("cli_command") or "").startswith("delegated:")
                 )
             ]
         else:
@@ -1615,11 +1612,8 @@ class TelegramHandler:
                 for j in jobs
                 if isinstance(j.get("pid"), int)
                 and (
-                    (
-                        str(j.get("status")) == "running"
-                        and str(j.get("cli_command") or "").startswith("delegated:")
-                    )
-                    or str(j.get("status")) == "running_external"
+                    str(j.get("status")) == "running"
+                    and str(j.get("cli_command") or "").startswith("delegated:")
                 )
             }
             if tracked_external_pids:

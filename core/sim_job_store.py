@@ -12,17 +12,16 @@ from typing import Any
 
 import aiosqlite
 
+from core.db_migrations import MigrationRunner, MigrationStep
 from core.logging_setup import get_logger
 
-_SCHEMA_SQL = """\
+_SIM_JOBS_TABLE_SQL = """\
 CREATE TABLE IF NOT EXISTS sim_jobs (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     job_id        TEXT    NOT NULL UNIQUE,
     tool          TEXT    NOT NULL,
     status        TEXT    NOT NULL DEFAULT 'queued',
     priority      INTEGER NOT NULL DEFAULT 100,
-    cores         INTEGER NOT NULL DEFAULT 0,
-    memory_mb     INTEGER NOT NULL DEFAULT 0,
     input_file    TEXT    NOT NULL,
     output_file   TEXT,
     work_dir      TEXT,
@@ -39,12 +38,110 @@ CREATE TABLE IF NOT EXISTS sim_jobs (
     error_message TEXT,
     label         TEXT    DEFAULT ''
 );
+"""
 
+_SIM_JOBS_INDEX_SQL = """\
 CREATE INDEX IF NOT EXISTS idx_sim_jobs_status    ON sim_jobs(status);
 CREATE INDEX IF NOT EXISTS idx_sim_jobs_priority  ON sim_jobs(priority, submitted_at);
 CREATE INDEX IF NOT EXISTS idx_sim_jobs_tool      ON sim_jobs(tool);
 CREATE INDEX IF NOT EXISTS idx_sim_jobs_submitted ON sim_jobs(submitted_by);
 """
+
+
+async def _table_exists(db: aiosqlite.Connection, table: str) -> bool:
+    async with db.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ? LIMIT 1",
+        (table,),
+    ) as cursor:
+        return await cursor.fetchone() is not None
+
+
+async def _table_has_column(
+    db: aiosqlite.Connection,
+    table: str,
+    column: str,
+) -> bool:
+    async with db.execute(f"PRAGMA table_info({table})") as cursor:
+        rows = await cursor.fetchall()
+    return any(str(row[1]) == column for row in rows)
+
+
+async def _apply_sim_queue_v1(db: aiosqlite.Connection) -> None:
+    await db.executescript(_SIM_JOBS_TABLE_SQL)
+    await db.executescript(_SIM_JOBS_INDEX_SQL)
+
+
+async def _apply_sim_queue_v2(db: aiosqlite.Connection) -> None:
+    if not await _table_exists(db, "sim_jobs"):
+        return
+
+    await db.execute(
+        """
+        UPDATE sim_jobs
+        SET status = 'running',
+            cli_command = CASE
+                WHEN cli_command LIKE 'delegated:%' THEN cli_command
+                WHEN pid IS NOT NULL THEN 'delegated:external-' || CAST(pid AS TEXT)
+                ELSE 'delegated:external'
+            END
+        WHERE status = 'running_external'
+        """
+    )
+
+    has_cores = await _table_has_column(db, "sim_jobs", "cores")
+    has_memory = await _table_has_column(db, "sim_jobs", "memory_mb")
+    if not (has_cores or has_memory):
+        return
+
+    await db.execute("DROP TABLE IF EXISTS sim_jobs__migrated")
+    await db.executescript(
+        """
+        CREATE TABLE sim_jobs__migrated (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id        TEXT    NOT NULL UNIQUE,
+            tool          TEXT    NOT NULL,
+            status        TEXT    NOT NULL DEFAULT 'queued',
+            priority      INTEGER NOT NULL DEFAULT 100,
+            input_file    TEXT    NOT NULL,
+            output_file   TEXT,
+            work_dir      TEXT,
+            cli_command   TEXT,
+            submitted_by  INTEGER NOT NULL,
+            submitted_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            started_at    TIMESTAMP,
+            completed_at  TIMESTAMP,
+            pid           INTEGER,
+            exit_code     INTEGER,
+            retry_count   INTEGER NOT NULL DEFAULT 0,
+            max_retries   INTEGER NOT NULL DEFAULT 2,
+            retry_delay_s INTEGER NOT NULL DEFAULT 30,
+            error_message TEXT,
+            label         TEXT    DEFAULT ''
+        );
+        """
+    )
+
+    await db.execute(
+        """
+        INSERT INTO sim_jobs__migrated (
+            id, job_id, tool, status, priority,
+            input_file, output_file, work_dir, cli_command,
+            submitted_by, submitted_at, started_at, completed_at,
+            pid, exit_code, retry_count, max_retries, retry_delay_s,
+            error_message, label
+        )
+        SELECT
+            id, job_id, tool, status, priority,
+            input_file, output_file, work_dir, cli_command,
+            submitted_by, submitted_at, started_at, completed_at,
+            pid, exit_code, retry_count, max_retries, retry_delay_s,
+            error_message, label
+        FROM sim_jobs
+        """
+    )
+    await db.execute("DROP TABLE sim_jobs")
+    await db.execute("ALTER TABLE sim_jobs__migrated RENAME TO sim_jobs")
+    await db.executescript(_SIM_JOBS_INDEX_SQL)
 
 
 @dataclass
@@ -75,8 +172,14 @@ class SimJobStore:
         self._db = await aiosqlite.connect(db_path)
         self._db.row_factory = aiosqlite.Row
         await self._db.execute("PRAGMA journal_mode=WAL")
-        await self._db.executescript(_SCHEMA_SQL)
-        await self._db.commit()
+        runner = MigrationRunner(self._db, self._logger, db_label="sim_queue")
+        await runner.run(
+            [
+                MigrationStep(201, _apply_sim_queue_v1, "create_sim_jobs_table"),
+                MigrationStep(202, _apply_sim_queue_v2, "normalize_legacy_running_external_and_drop_unused_columns"),
+            ],
+            backup_tables={"sim_jobs"},
+        )
         self._logger.info("sim_job_store_initialized", db_path=db_path)
 
     async def close(self) -> None:
@@ -97,9 +200,9 @@ class SimJobStore:
         async with self._write_lock:
             await db.execute(
                 """INSERT INTO sim_jobs
-                   (job_id, tool, status, priority, cores, memory_mb,
+                   (job_id, tool, status, priority,
                     input_file, submitted_by, max_retries, retry_delay_s, label)
-                   VALUES (?, ?, 'queued', ?, 0, 0, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, 'queued', ?, ?, ?, ?, ?, ?)""",
                 (
                     job.job_id, job.tool, job.priority,
                     job.input_file,

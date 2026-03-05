@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # systemd 서비스 설치 스크립트.
-# - update-wsl-hosts.service: system-level (sudo 필요, /etc/hosts 수정)
+# - update-wsl-hosts.service: system-level (sudo 필요, /etc/hosts 별칭 갱신)
 # - ollama-bot.service: user-level (sudo 불필요)
 #
 # 사용법:
@@ -13,7 +13,7 @@ UNIT_DIR="${HOME}/.config/systemd/user"
 
 mkdir -p "${UNIT_DIR}"
 
-# ── update-wsl-hosts.service (system-level, 부팅 시 homelab IP 갱신) ──
+# ── update-wsl-hosts.service (system-level, 부팅 시 별칭 IP 갱신) ──
 SYSTEM_UNIT="/etc/systemd/system/update-wsl-hosts.service"
 echo "[install] update-wsl-hosts.service 설치 (sudo 필요)"
 sudo tee "${SYSTEM_UNIT}" > /dev/null <<EOF

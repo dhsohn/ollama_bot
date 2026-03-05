@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import signal
 from pathlib import Path
@@ -206,7 +207,7 @@ async def test_detects_external_running_jobs_from_process_table(
         return _FakePsProcess()
 
     monkeypatch.setattr(
-        "core.sim_scheduler.asyncio.create_subprocess_exec",
+        "core.sim_external_tracker.asyncio.create_subprocess_exec",
         _fake_create_subprocess_exec,
     )
 
@@ -436,7 +437,7 @@ async def test_detects_external_jobs_from_lock_files_when_ps_unavailable(
         raise FileNotFoundError
 
     monkeypatch.setattr(
-        "core.sim_scheduler.asyncio.create_subprocess_exec",
+        "core.sim_external_tracker.asyncio.create_subprocess_exec",
         _raise_missing_ps,
     )
 
@@ -632,4 +633,118 @@ async def test_recover_orphaned_jobs_does_not_requeue_delegated_running(
         assert job["status"] == "running"
         scheduler._resources.sync_from_db.assert_awaited_once_with([])
     finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_stop_terminates_running_process_before_monitor_cancel(
+    tmp_path: Path,
+) -> None:
+    scheduler, store = await _build_scheduler(tmp_path, "orca_auto")
+    await scheduler._resources.acquire()
+
+    class _BlockingProc:
+        def __init__(self) -> None:
+            self.terminate_called = False
+            self.kill_called = False
+            self._done = asyncio.Event()
+
+        def terminate(self) -> None:
+            self.terminate_called = True
+            self._done.set()
+
+        def kill(self) -> None:
+            self.kill_called = True
+            self._done.set()
+
+        async def wait(self) -> int:
+            await self._done.wait()
+            return -15
+
+    job_id = "job-stop-order-1"
+    proc = _BlockingProc()
+    monitor_task = asyncio.create_task(scheduler._monitor_process(job_id, proc))
+    scheduler._running_processes[job_id] = proc  # type: ignore[assignment]
+    scheduler._monitor_tasks[job_id] = monitor_task
+    await asyncio.sleep(0)
+
+    try:
+        await scheduler.stop()
+        assert proc.terminate_called is True or proc.kill_called is True
+        status = await scheduler._resources.get_status()
+        assert status["running_jobs"] == 0
+    finally:
+        if not monitor_task.done():
+            monitor_task.cancel()
+            await asyncio.gather(monitor_task, return_exceptions=True)
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_cancel_job_releases_slot_only_once_when_monitor_cancelled(
+    tmp_path: Path,
+) -> None:
+    scheduler, store = await _build_scheduler(tmp_path, "orca_auto")
+    await scheduler._resources.acquire()
+    release_count = 0
+    original_release = scheduler._resources.release
+
+    async def _counting_release() -> None:
+        nonlocal release_count
+        release_count += 1
+        await original_release()
+
+    scheduler._resources.release = _counting_release  # type: ignore[method-assign]
+
+    class _RaceProc:
+        def __init__(self) -> None:
+            self.wait_calls = 0
+            self.terminate_called = False
+            self.kill_called = False
+
+        def terminate(self) -> None:
+            self.terminate_called = True
+
+        def kill(self) -> None:
+            self.kill_called = True
+
+        async def wait(self) -> int:
+            self.wait_calls += 1
+            if self.wait_calls == 1:
+                await asyncio.Future()
+            return -15
+
+    job_id = await store.insert_job(
+        SimJob(
+            job_id="job-cancel-release-1",
+            tool="orca_auto",
+            input_file="/tmp/STRUC_CANCEL_RELEASE",
+            submitted_by=1,
+        )
+    )
+    await store.update_status(
+        job_id,
+        "running",
+        pid=22222,
+        started_at="2026-03-05 00:00:00",
+    )
+
+    proc = _RaceProc()
+    monitor_task = asyncio.create_task(scheduler._monitor_process(job_id, proc))
+    scheduler._running_processes[job_id] = proc  # type: ignore[assignment]
+    scheduler._monitor_tasks[job_id] = monitor_task
+    await asyncio.sleep(0)
+
+    try:
+        success = await scheduler.cancel_job(job_id)
+        assert success is True
+        assert release_count == 1
+        assert monitor_task.done()
+        job = await store.get_job(job_id)
+        assert job is not None
+        assert job["status"] == "cancelled"
+    finally:
+        if not monitor_task.done():
+            monitor_task.cancel()
+            await asyncio.gather(monitor_task, return_exceptions=True)
         await store.close()

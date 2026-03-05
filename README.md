@@ -1,6 +1,6 @@
 # ollama_bot
 
-WSL2 homelab용 텔레그램 private-chat 봇. Dual-Provider 아키텍처 기반.
+WSL2/리눅스 환경용 텔레그램 private-chat 봇. Dual-Provider 아키텍처 기반.
 
 - **Lemonade Server**: LLM 응답 (`gpt-oss-20b-NPU`)
 - **Ollama Server**: 임베딩/리랭킹 (`Qwen3-Embedding-0.6B`, `bge-reranker-v2-m3`)
@@ -35,11 +35,12 @@ SIM_INPUT_DIR_ORCA_AUTO=kb/orca_runs
 
 - `ALLOWED_TELEGRAM_USERS`: 숫자 Chat ID (쉼표 구분). placeholder 상태면 시작 시 종료됨.
 - `SIM_INPUT_DIR_ORCA_AUTO`: `/sim submit orca_auto mj1` → `kb/orca_runs/mj1` 으로 해석
+- `strict_startup`: optional 컴포넌트 초기화 실패 시 즉시 종료 여부 (`false` 기본)
 - 런타임 설정은 `config/config.yaml` 에서 관리
 
 ### LLM 백엔드
 
-Windows 호스트에서 두 서버 실행:
+로컬/원격 환경에서 두 서버 실행:
 
 | 서버 | 포트 | 역할 |
 |---|---|---|
@@ -113,7 +114,7 @@ ollama_bot/
 | `scripts/run_bot.sh` | 봇 실행 (포그라운드) |
 | `scripts/setup.sh` | 초기 설정 (`.env`, 디렉터리, 모델 점검) |
 | `scripts/install_boot_service.sh` | systemd 서비스 설치 (봇 + hosts 갱신) |
-| `scripts/update_wsl_hosts.sh` | WSL 게이트웨이 IP → `/etc/hosts` 갱신 |
+| `scripts/update_wsl_hosts.sh` | WSL 게이트웨이 IP → `/etc/hosts` 별칭 갱신 (`HOSTNAME_ALIAS` 지원) |
 | `scripts/healthcheck.sh` | 헬스체크 |
 | `scripts/soak_monitor.sh` | 장시간 안정성 모니터링 (systemd) |
 | `scripts/check_requirements_lock.sh` | 의존성 잠금 파일 검사 |

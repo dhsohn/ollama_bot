@@ -7,6 +7,7 @@ CONFIG_FILE="${PROJECT_ROOT}/config/config.yaml"
 
 RULE_NAME="${RULE_NAME:-Lemonade WSL}"
 CONNECT_ADDRESS="${CONNECT_ADDRESS:-127.0.0.1}"
+LEMONADE_HOST_OVERRIDE="${LEMONADE_HOST_OVERRIDE:-}"
 NO_PORT_PROXY=0
 
 usage() {
@@ -15,6 +16,7 @@ Usage: bash scripts/configure_windows_lemonade.sh [--no-port-proxy]
 
 Windows 방화벽/portproxy를 자동 설정한다.
 - 관리자 권한이 아니면 UAC를 통해 자동 상승을 요청한다.
+- LEMONADE_HOST_OVERRIDE 환경변수로 대상 host를 강제할 수 있다.
 EOF
 }
 
@@ -61,8 +63,12 @@ lemonade_host="$(
   ' "${CONFIG_FILE}"
 )"
 
+if [[ -n "${LEMONADE_HOST_OVERRIDE}" ]]; then
+  lemonade_host="${LEMONADE_HOST_OVERRIDE}"
+fi
+
 if [[ -z "${lemonade_host}" ]]; then
-  lemonade_host="http://windows-host:8000"
+  lemonade_host="http://localhost:8000"
 fi
 
 lemonade_port="8000"

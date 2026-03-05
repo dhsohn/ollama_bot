@@ -1,6 +1,7 @@
 # ollama_bot 전역 설정
 log_level: "INFO"
 data_dir: "data"
+strict_startup: false
 
 bot:
   name: "ollama_bot"
@@ -9,7 +10,7 @@ bot:
   response_timeout: 300
 
 lemonade:
-  host: "http://homelab:8000"
+  host: "http://localhost:8000"
   api_key: ""
   default_model: "gpt-oss-20b-NPU"
   base_path: "/api/v1"
@@ -112,7 +113,7 @@ context_compressor:
 # ── Dual-Provider: Ollama(retrieval) + Lemonade(chat) ──
 
 ollama:
-  host: "http://homelab:11434"
+  host: "http://localhost:11434"
   embedding_model: "dengcao/Qwen3-Embedding-0.6B:Q8_0"
   reranker_model: "dengcao/bge-reranker-v2-m3:latest"
 
@@ -120,8 +121,8 @@ rag:
   enabled: true
   startup_index_enabled: true
   kb_dirs:
-    - "/home/daehyupsohn/orca_runs"
-    - "/home/daehyupsohn/orca_outputs"
+    - "kb/orca_runs"
+    - "kb/orca_outputs"
   max_file_size_mb: 5
   trigger_keywords:
     - "orca"

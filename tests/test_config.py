@@ -428,3 +428,32 @@ def test_rag_kb_dirs_loaded_from_yaml(tmp_path: Path) -> None:
     settings = load_config(config_path=str(config_path), env_file=str(env_path))
     assert settings.rag.enabled is True
     assert settings.rag.kb_dirs == ["/app/orca_runs", "/app/orca_outputs"]
+
+
+def test_strict_startup_default_false(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    env_path = tmp_path / ".env"
+    _write_minimal_yaml(config_path)
+    env_path.write_text(
+        "TELEGRAM_BOT_TOKEN=test_token\nALLOWED_TELEGRAM_USERS=111",
+        encoding="utf-8",
+    )
+
+    settings = load_config(config_path=str(config_path), env_file=str(env_path))
+    assert settings.strict_startup is False
+
+
+def test_strict_startup_loaded_from_yaml(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    env_path = tmp_path / ".env"
+    config_path.write_text(
+        "strict_startup: true\n",
+        encoding="utf-8",
+    )
+    env_path.write_text(
+        "TELEGRAM_BOT_TOKEN=test_token\nALLOWED_TELEGRAM_USERS=111",
+        encoding="utf-8",
+    )
+
+    settings = load_config(config_path=str(config_path), env_file=str(env_path))
+    assert settings.strict_startup is True

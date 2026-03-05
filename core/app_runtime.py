@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import AsyncExitStack
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import inspect
 import os
 import random
@@ -66,6 +66,7 @@ class RuntimeState:
     semantic_cache: Any = None  # SemanticCache | None
     rag_startup_index_task: asyncio.Task[Any] | None = None
     sim_scheduler: Any = None  # SimJobScheduler | None
+    degraded_components: list[dict[str, str]] = field(default_factory=list)
 
 
 def _runtime_env_files() -> str | tuple[str, ...] | None:
@@ -202,12 +203,65 @@ def _validate_required_settings(config: AppSettings, logger: Any) -> None:
         )
 
 
+def _record_degraded_component(
+    logger: Any,
+    degraded_components: list[dict[str, str]],
+    *,
+    component: str,
+    error: str,
+) -> None:
+    error_text = error.strip() or "unknown_error"
+    degraded_components.append({"component": component, "error": error_text})
+    logger.warning(
+        "startup_component_degraded",
+        component=component,
+        error=error_text,
+    )
+
+
+def _handle_optional_component_failure(
+    config: AppSettings,
+    logger: Any,
+    degraded_components: list[dict[str, str]],
+    *,
+    component: str,
+    error: Exception,
+) -> None:
+    error_text = str(error).strip() or type(error).__name__
+    _record_degraded_component(
+        logger,
+        degraded_components,
+        component=component,
+        error=error_text,
+    )
+    if config.strict_startup:
+        raise StartupError(
+            "오류: strict_startup=true로 설정되어 선택 컴포넌트 초기화 실패 시 시작을 중단합니다.\n"
+            f"- component: {component}\n"
+            f"- reason: {error_text}"
+        )
+
+
+def _log_degraded_startup_summary(
+    logger: Any,
+    degraded_components: list[dict[str, str]],
+) -> None:
+    if not degraded_components:
+        return
+    logger.warning(
+        "startup_degraded_summary",
+        degraded_count=len(degraded_components),
+        degraded_components=degraded_components,
+    )
+
+
 async def _build_runtime(
     config: AppSettings,
     logger: Any,
 ) -> RuntimeState:
     """의존성 순서대로 모듈을 초기화하고 런타임 상태를 반환한다."""
     cleanup_stack = AsyncExitStack()
+    degraded_components: list[dict[str, str]] = []
     try:
         security = SecurityManager(config.security)
         logger.info(
@@ -313,7 +367,13 @@ async def _build_runtime(
             except Exception as exc:
                 if cache_db is not None:
                     await cache_db.close()
-                logger.warning("semantic_cache_init_failed", error=str(exc))
+                _handle_optional_component_failure(
+                    config,
+                    logger,
+                    degraded_components,
+                    component="semantic_cache",
+                    error=exc,
+                )
                 semantic_cache = None
 
         if config.intent_router.enabled:
@@ -338,7 +398,13 @@ async def _build_runtime(
                     routes=intent_router.routes_count,
                 )
             except Exception as exc:
-                logger.warning("intent_router_init_failed", error=str(exc))
+                _handle_optional_component_failure(
+                    config,
+                    logger,
+                    degraded_components,
+                    component="intent_router",
+                    error=exc,
+                )
                 intent_router = None
 
         if config.context_compressor.enabled:
@@ -371,10 +437,12 @@ async def _build_runtime(
                     reranker_model=config.ollama.reranker_model,
                 )
             except Exception as exc:
-                logger.warning(
-                    "retrieval_client_init_failed",
-                    host=config.ollama.host,
-                    error=str(exc),
+                _handle_optional_component_failure(
+                    config,
+                    logger,
+                    degraded_components,
+                    component="retrieval_client",
+                    error=exc,
                 )
                 retrieval_client = None
 
@@ -395,7 +463,13 @@ async def _build_runtime(
                 )
                 await model_registry.initialize()
             except Exception as exc:
-                logger.warning("model_registry_init_failed", error=str(exc))
+                _handle_optional_component_failure(
+                    config,
+                    logger,
+                    degraded_components,
+                    component="model_registry",
+                    error=exc,
+                )
                 model_registry = None
 
         # 기본 모델(gpt-oss-20b-NPU) 선로드 — 상주 보장
@@ -411,13 +485,20 @@ async def _build_runtime(
                     await maybe_result
                 logger.info("default_model_preloaded", model=default_model)
             except Exception as exc:
-                logger.warning(
-                    "default_model_preload_failed",
-                    model=default_model,
-                    error=str(exc),
+                _handle_optional_component_failure(
+                    config,
+                    logger,
+                    degraded_components,
+                    component="default_model_preload",
+                    error=exc,
                 )
 
         # RAG 파이프라인 초기화 (Ollama retrieval 클라이언트 사용)
+        if config.rag.enabled and retrieval_client is None:
+            logger.warning(
+                "rag_pipeline_disabled",
+                reason="retrieval_client_unavailable",
+            )
         if config.rag.enabled and retrieval_client is not None:
             try:
                 from core.rag.context_builder import RAGContextBuilder
@@ -511,7 +592,14 @@ async def _build_runtime(
                     if model_registry is not None:
                         try:
                             reranker_available = model_registry.is_available("reranker")
-                        except Exception:
+                        except Exception as exc:
+                            _handle_optional_component_failure(
+                                config,
+                                logger,
+                                degraded_components,
+                                component="rag_reranker_availability",
+                                error=exc,
+                            )
                             reranker_available = False
                     if reranker_available:
                         reranker = RAGReranker(
@@ -529,7 +617,13 @@ async def _build_runtime(
                     reranker=reranker is not None,
                 )
             except Exception as exc:
-                logger.warning("rag_pipeline_init_failed", error=str(exc))
+                _handle_optional_component_failure(
+                    config,
+                    logger,
+                    degraded_components,
+                    component="rag_pipeline",
+                    error=exc,
+                )
                 rag_pipeline = None
 
         # ── DFT 인덱스 초기화 ──
@@ -566,7 +660,13 @@ async def _build_runtime(
 
                 logger.info("dft_index_initialized")
             except Exception as exc:
-                logger.warning("dft_index_init_failed", error=str(exc))
+                _handle_optional_component_failure(
+                    config,
+                    logger,
+                    degraded_components,
+                    component="dft_index",
+                    error=exc,
+                )
                 dft_index = None
                 dft_query_engine = None
 
@@ -599,7 +699,13 @@ async def _build_runtime(
                 sim_scheduler.set_allowed_users(config.security.allowed_users)
                 logger.info("sim_scheduler_initialized")
             except Exception as exc:
-                logger.warning("sim_scheduler_init_failed", error=str(exc))
+                _handle_optional_component_failure(
+                    config,
+                    logger,
+                    degraded_components,
+                    component="sim_scheduler",
+                    error=exc,
+                )
                 sim_scheduler = None
 
         engine = Engine(
@@ -689,6 +795,7 @@ async def _build_runtime(
             )
 
         app = await telegram.initialize()
+        _log_degraded_startup_summary(logger, degraded_components)
 
         return RuntimeState(
             config=config,
@@ -706,6 +813,7 @@ async def _build_runtime(
             semantic_cache=semantic_cache,
             rag_startup_index_task=rag_startup_index_task,
             sim_scheduler=sim_scheduler,
+            degraded_components=degraded_components,
         )
     except Exception:
         await cleanup_stack.aclose()
@@ -882,6 +990,8 @@ async def async_main(
                 model=_model_for_provider(runtime.config),
                 skills=runtime.skill_count,
                 automations=runtime.auto_count,
+                degraded_count=len(runtime.degraded_components),
+                degraded_components=runtime.degraded_components or None,
             )
 
             await app.updater.start_polling(

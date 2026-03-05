@@ -333,6 +333,7 @@ class AppSettings(BaseModel):
 
     telegram_bot_token: str = ""
     allowed_telegram_users: str = ""
+    strict_startup: bool = False
     log_level: str = "INFO"
     data_dir: str = "data"
 
