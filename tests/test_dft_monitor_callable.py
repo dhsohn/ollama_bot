@@ -9,7 +9,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from core.automation_callables_impl.dft_monitor import build_dft_monitor_callable
+from core.automation_callables_impl.dft_monitor import (
+    build_dft_monitor_callable,
+    _extract_comment,
+)
 
 
 _COMPLETED_OUT = "\n".join([
@@ -456,3 +459,40 @@ async def test_running_ts_neb_irc_include_ai_comment(
     assert "<i>" in result
     dft_index.upsert_single.assert_not_awaited()
     mock_engine.process_prompt.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# _extract_comment 사고 과정 필터링 테스트
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        # 정상 한줄 코멘트 → 그대로 반환
+        ("에너지가 단조 감소 중입니다.", "에너지가 단조 감소 중입니다."),
+        # 사고 과정 + 코멘트 → 사고 과정 건너뛰기
+        (
+            "분석: dE가 감소하고 있으므로\n에너지가 단조 감소 중입니다.",
+            "에너지가 단조 감소 중입니다.",
+        ),
+        # 여러 줄 사고 과정 → 마지막 비-사고 줄
+        (
+            "먼저 데이터를 살펴보면\n확인 결과\n수렴이 안정적으로 진행 중입니다.",
+            "수렴이 안정적으로 진행 중입니다.",
+        ),
+        # 영어 사고 과정 접두어
+        (
+            "Let me analyze the data.\nThe optimization is converging well.",
+            "The optimization is converging well.",
+        ),
+        # 빈 응답
+        ("", ""),
+        ("  \n  ", ""),
+        # 사고 과정만 있는 경우 → 마지막 줄 반환 (최선)
+        ("분석: 데이터 확인\n검토: 수렴 패턴", "검토: 수렴 패턴"),
+    ],
+)
+def test_extract_comment_filters_thinking(raw: str, expected: str) -> None:
+    """_extract_comment가 사고 과정을 필터링하고 최종 코멘트를 추출한다."""
+    assert _extract_comment(raw) == expected

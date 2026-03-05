@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from html import escape as _h
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,28 @@ from core.dft_discovery import discover_orca_targets
 from core.orca_parser import OptProgress, parse_opt_progress, parse_orca_output
 
 _RUNNING_PROGRESS_CALC_TYPES = ("opt", "ts", "neb", "irc")
+
+_DFT_SYSTEM_PROMPT = (
+    "당신은 양자화학 DFT 계산 모니터링 전문가입니다.\n"
+    "주어진 ORCA 계산 데이터만을 근거로 한 문장 코멘트를 작성합니다.\n"
+    "규칙:\n"
+    "- 반드시 주어진 데이터에 직접 근거한 내용만 작성하세요.\n"
+    "- 날짜, 시간, 요일 등 데이터에 없는 정보를 절대 언급하지 마세요.\n"
+    "- 사고 과정, 분석 과정, 추론 과정을 출력하지 마세요.\n"
+    "- 최종 코멘트 한 문장만 출력하세요."
+)
+
+# 사고 과정 유출을 감지하는 패턴들
+_THINKING_PREFIXES = re.compile(
+    r"^("
+    r"(분석|해석|판단|검토|확인|관찰|결론|요약|정리|평가)[\s:]"
+    r"|let me|okay|alright|well|so,?\s"
+    r"|먼저|우선|일단|그런데|따라서|그러므로|결론적으로"
+    r"|step\s*\d+\s*[:\-]"
+    r"|1[\.\)]\s"
+    r")",
+    re.IGNORECASE,
+)
 
 
 def build_dft_monitor_callable(
@@ -371,6 +394,20 @@ def _format_running_snapshot(result: Any, source_path: str) -> str:
     )
 
 
+def _extract_comment(raw: str) -> str:
+    """LLM 응답에서 사고 과정을 제거하고 최종 코멘트 한 줄을 추출한다."""
+    lines = [ln.strip() for ln in raw.strip().splitlines() if ln.strip()]
+    if not lines:
+        return ""
+
+    # 마지막 줄이 보통 최종 코멘트 — 첫 줄이 사고 과정이면 뒤에서 찾는다.
+    # 사고 과정이 아닌 첫 번째 줄을 우선, 없으면 마지막 줄 사용.
+    for line in lines:
+        if not _THINKING_PREFIXES.match(line):
+            return line
+    return lines[-1]
+
+
 async def _get_ai_comment(
     progress: OptProgress,
     engine: Any | None,
@@ -395,10 +432,9 @@ async def _get_ai_comment(
             model_role=model_role,
             temperature=temperature if temperature is not None else 0.3,
             max_tokens=max_tokens if max_tokens is not None else 150,
+            system_prompt_override=_DFT_SYSTEM_PROMPT,
         )
-        # 첫 줄만 사용 (한 문장 코멘트)
-        comment = raw.strip().split("\n")[0].strip()
-        return comment
+        return _extract_comment(raw)
     except Exception as exc:
         logger.warning("dft_monitor_ai_comment_failed", error=str(exc))
         return ""
@@ -426,8 +462,9 @@ async def _get_ai_comment_for_running(
             model_role=model_role,
             temperature=temperature if temperature is not None else 0.3,
             max_tokens=max_tokens if max_tokens is not None else 150,
+            system_prompt_override=_DFT_SYSTEM_PROMPT,
         )
-        return raw.strip().split("\n")[0].strip()
+        return _extract_comment(raw)
     except Exception as exc:
         logger.warning("dft_monitor_ai_comment_failed", error=str(exc))
         return ""
@@ -448,10 +485,11 @@ def _build_analysis_prompt(progress: OptProgress) -> str:
         )
 
     return (
-        "아래 ORCA 구조 최적화 진행 데이터를 보고 사용자에게 전달할 한국어 한 문장 코멘트를 작성하세요.\n"
+        "아래 ORCA 구조 최적화 데이터를 보고 한국어 한 문장 코멘트를 작성하세요.\n"
         "수렴 패턴(monotonic/oscillating/plateau/diverging), "
         "예상 남은 스텝, 주의사항을 포함하세요.\n"
-        "분석 과정이나 사고 과정 없이 최종 코멘트 한 문장만 바로 출력하세요.\n\n"
+        "주의: 날짜/시간/요일을 언급하지 마세요. 데이터에 없는 내용을 추측하지 마세요.\n"
+        "코멘트 한 문장만 바로 출력하세요.\n\n"
         f"분자: {progress.formula or 'unknown'}\n"
         f"메서드: {progress.method}/{progress.basis_set}\n"
         f"총 {len(progress.steps)} 스텝\n\n"
@@ -470,9 +508,10 @@ def _build_running_analysis_prompt(result: Any, source_path: str) -> str:
         else "N/A"
     )
     return (
-        "아래 ORCA 진행 중 계산 정보를 보고 사용자에게 전달할 한국어 한 문장 코멘트를 작성하세요.\n"
+        "아래 ORCA 진행 중 계산 정보를 보고 한국어 한 문장 코멘트를 작성하세요.\n"
         "현재 상태 요약과 다음 확인 포인트를 포함하세요.\n"
-        "분석 과정이나 사고 과정 없이 최종 코멘트 한 문장만 바로 출력하세요.\n\n"
+        "주의: 날짜/시간/요일을 언급하지 마세요. 데이터에 없는 내용을 추측하지 마세요.\n"
+        "코멘트 한 문장만 바로 출력하세요.\n\n"
         f"분자: {result.formula or 'unknown'}\n"
         f"계산 유형: {result.calc_type or 'unknown'}\n"
         f"메서드: {method_basis}\n"

@@ -2305,9 +2305,11 @@ class Engine:
         model_override: str | None = None,
         model_role: str | None = None,
         timeout: int | None = None,
+        system_prompt_override: str | None = None,
     ) -> str:
         """단순 프롬프트를 LLM에 전달한다 (auto_scheduler의 prompt 타입용)."""
-        system_prompt = self._inject_language_policy(self._system_prompt)
+        base = system_prompt_override if system_prompt_override is not None else self._system_prompt
+        system_prompt = self._inject_language_policy(base)
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt},
