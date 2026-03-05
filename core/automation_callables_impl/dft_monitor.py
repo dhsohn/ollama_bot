@@ -20,25 +20,62 @@ _RUNNING_PROGRESS_CALC_TYPES = ("opt", "ts", "neb", "irc")
 
 _DFT_SYSTEM_PROMPT = (
     "당신은 양자화학 DFT 계산 모니터링 전문가입니다.\n"
-    "주어진 ORCA 계산 데이터만을 근거로 한 문장 코멘트를 작성합니다.\n"
+    "주어진 ORCA 계산 데이터만을 근거로 한국어 한 문장 코멘트를 작성합니다.\n"
     "규칙:\n"
     "- 반드시 주어진 데이터에 직접 근거한 내용만 작성하세요.\n"
     "- 날짜, 시간, 요일 등 데이터에 없는 정보를 절대 언급하지 마세요.\n"
-    "- 사고 과정, 분석 과정, 추론 과정을 출력하지 마세요.\n"
-    "- 최종 코멘트 한 문장만 출력하세요."
+    "- 사고 과정, 분석 과정, 추론 과정을 절대 출력하지 마세요.\n"
+    "- 영어·중국어 등 한국어 이외의 언어로 사고하거나 출력하지 마세요.\n"
+    "- 프롬프트 내용을 반복하거나 인용하지 마세요.\n"
+    "- 최종 코멘트 한국어 한 문장만 즉시 출력하세요. 다른 텍스트는 일절 금지합니다."
 )
 
-# 사고 과정 유출을 감지하는 패턴들
+# 사고 과정 유출을 감지하는 패턴들 — 줄 시작 기준
 _THINKING_PREFIXES = re.compile(
     r"^("
     r"(분석|해석|판단|검토|확인|관찰|결론|요약|정리|평가)[\s:]"
     r"|let me|okay|alright|well|so,?\s"
+    r"|the user|they want|they say|they ask"
+    r"|we need|we have|we must|we should|we can|we don'?t"
+    r"|i need|i should|i will|i'?ll|i'?m going"
+    r"|actually|probably|basically|essentially|note:"
+    r"|this (seems?|means?|is|looks?|requires?)"
+    r"|but we|but the|but i|since |because "
+    r"|here'?s|there'?s|now |means "
     r"|먼저|우선|일단|그런데|따라서|그러므로|결론적으로"
+    r"|首先|让我|好的|那么|因此|所以|然后|接下来|需要|根据"
+    r"|分析一下|总结|综上|用户|我们|看起来|这[是意表说]"
+    r"|第[一二三四五六七八九十]\s*[步,、:：]"
     r"|step\s*\d+\s*[:\-]"
     r"|1[\.\)]\s"
     r")",
     re.IGNORECASE,
 )
+
+# 줄 내부 어디서든 사고 과정 유출을 감지하는 패턴 (영어·중국어 메타 추론)
+_META_REASONING_RE = re.compile(
+    r"("
+    # 영어
+    r"the user (says?|wants?|asks?|provides?|mentions?)"
+    r"|they want|they say|they ask"
+    r"|we need to|we have to|we must|we should|we don'?t know"
+    r"|comment in korean|comment about|produce a comment"
+    r"|data includes|given data|limited data"
+    r"|include .{0,30}(summary|check\s*point|포인트)"
+    r"|not? mention"
+    r"|from (?:the )?data"
+    # 중국어
+    r"|用户(说|要求|想要|提到|提供|询问)"
+    r"|我们需要|需要生成|需要写|需要包含|根据数据|根据给定"
+    r"|这[意表说]味着|看起来|似乎|大概|可能需要"
+    r"|韩[语文]评论|写一[个句]|生成评论|输出评论"
+    r"|没有提到|数据中没有|从数据[中来看]"
+    r")",
+    re.IGNORECASE,
+)
+
+# 코멘트 한 줄 최대 글자수 — 초과 시 사고 과정으로 판정
+_MAX_COMMENT_LENGTH = 200
 
 
 def build_dft_monitor_callable(
@@ -394,18 +431,28 @@ def _format_running_snapshot(result: Any, source_path: str) -> str:
     )
 
 
+def _is_thinking_line(line: str) -> bool:
+    """줄이 사고 과정/메타 추론인지 판정한다."""
+    if _THINKING_PREFIXES.match(line):
+        return True
+    if _META_REASONING_RE.search(line):
+        return True
+    if len(line) > _MAX_COMMENT_LENGTH:
+        return True
+    return False
+
+
 def _extract_comment(raw: str) -> str:
     """LLM 응답에서 사고 과정을 제거하고 최종 코멘트 한 줄을 추출한다."""
     lines = [ln.strip() for ln in raw.strip().splitlines() if ln.strip()]
     if not lines:
         return ""
 
-    # 마지막 줄이 보통 최종 코멘트 — 첫 줄이 사고 과정이면 뒤에서 찾는다.
-    # 사고 과정이 아닌 첫 번째 줄을 우선, 없으면 마지막 줄 사용.
+    # 사고 과정이 아닌 첫 번째 줄을 반환, 모두 사고 과정이면 빈 문자열.
     for line in lines:
-        if not _THINKING_PREFIXES.match(line):
+        if not _is_thinking_line(line):
             return line
-    return lines[-1]
+    return ""
 
 
 async def _get_ai_comment(

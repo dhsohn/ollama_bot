@@ -12,6 +12,7 @@ import pytest
 from core.automation_callables_impl.dft_monitor import (
     build_dft_monitor_callable,
     _extract_comment,
+    _is_thinking_line,
 )
 
 
@@ -489,10 +490,61 @@ async def test_running_ts_neb_irc_include_ai_comment(
         # 빈 응답
         ("", ""),
         ("  \n  ", ""),
-        # 사고 과정만 있는 경우 → 마지막 줄 반환 (최선)
-        ("분석: 데이터 확인\n검토: 수렴 패턴", "검토: 수렴 패턴"),
+        # 사고 과정만 있는 경우 → 빈 문자열 반환 (사고 유출 방지)
+        ("분석: 데이터 확인\n검토: 수렴 패턴", ""),
+        # 영어 메타 추론 유출 → 빈 문자열 반환
+        (
+            'The user says: "아래 ORCA" They want a comment in Korean.',
+            "",
+        ),
+        (
+            "We need to produce a comment based on the given data.\n"
+            "수렴이 안정적으로 진행 중입니다.",
+            "수렴이 안정적으로 진행 중입니다.",
+        ),
+        # 중국어 사고 과정 + 한국어 코멘트 → 사고 과정 건너뛰기
+        (
+            "首先分析一下数据，能量在下降\n에너지가 안정적으로 수렴 중입니다.",
+            "에너지가 안정적으로 수렴 중입니다.",
+        ),
+        # 중국어 사고 과정만 → 빈 문자열
+        ("用户要求写一个韩语评论。根据数据来看计算正在进行。", ""),
+        # 200자 초과 긴 줄 → 사고 과정으로 판정, 빈 문자열 반환
+        ("A" * 201, ""),
+        # 200자 이내 정상 코멘트 → 유지
+        ("wB97X-D3/def2-TZVP 수준의 구조 최적화가 진행 중이며, 에너지가 안정화되고 있습니다.", "wB97X-D3/def2-TZVP 수준의 구조 최적화가 진행 중이며, 에너지가 안정화되고 있습니다."),
     ],
 )
 def test_extract_comment_filters_thinking(raw: str, expected: str) -> None:
     """_extract_comment가 사고 과정을 필터링하고 최종 코멘트를 추출한다."""
     assert _extract_comment(raw) == expected
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        # 영어 메타 추론 감지
+        ('The user says: "코멘트를 작성하세요"', True),
+        ("They want a comment in Korean about the data.", True),
+        ("We need to produce a comment based on the given data.", True),
+        ("We don't know next check point from data.", True),
+        ("Probably just mention that the calculation is running.", True),
+        ("This seems to be missing data.", True),
+        # 중국어 사고 과정 접두어
+        ("首先分析一下数据", True),
+        ("让我看看这个计算结果", True),
+        ("用户要求写一个韩语评论", True),
+        ("我们需要根据数据生成评论", True),
+        ("根据给定的ORCA数据来看", True),
+        ("这意味着优化正在进行中", True),
+        # 한국어 사고 과정 접두어
+        ("분석: dE가 감소하고 있으므로", True),
+        ("먼저 데이터를 살펴보면", True),
+        # 정상 코멘트 → False
+        ("에너지가 단조 감소 중입니다.", False),
+        ("wB97X-D3 수준에서 구조 최적화가 진행 중입니다.", False),
+    ],
+)
+def test_is_thinking_line(line: str, expected: bool) -> None:
+    """_is_thinking_line이 사고 과정 줄을 정확히 감지한다."""
+    assert _is_thinking_line(line) == expected
