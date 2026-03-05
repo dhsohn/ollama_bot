@@ -1466,7 +1466,7 @@ class SimJobScheduler:
                 proc = await asyncio.create_subprocess_exec(
                     "ps",
                     "-eo",
-                    "pid=,etimes=,args=",
+                    "pid=,ppid=,etimes=,args=",
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )
@@ -1483,20 +1483,39 @@ class SimJobScheduler:
                         stderr=stderr.decode(errors="ignore").strip(),
                     )
                 else:
+                    # tracked PID의 자손을 제외하기 위해 PPID 맵을 구축
+                    ppid_map: dict[int, int] = {}
+                    parsed_lines: list[tuple[int, int, str]] = []
                     for raw_line in stdout.decode(errors="ignore").splitlines():
                         line = raw_line.strip()
                         if not line:
                             continue
-
-                        match = re.match(r"^(?P<pid>\d+)\s+(?P<elapsed>\d+)\s+(?P<cmd>.+)$", line)
-                        if not match:
+                        m = re.match(
+                            r"^(?P<pid>\d+)\s+(?P<ppid>\d+)\s+(?P<elapsed>\d+)\s+(?P<cmd>.+)$",
+                            line,
+                        )
+                        if not m:
                             continue
+                        p, pp = int(m.group("pid")), int(m.group("ppid"))
+                        ppid_map[p] = pp
+                        parsed_lines.append((p, int(m.group("elapsed")), m.group("cmd").strip()))
 
-                        pid = int(match.group("pid"))
+                    def _is_descendant_of_tracked(pid: int) -> bool:
+                        visited: set[int] = set()
+                        cur = pid
+                        while cur in ppid_map and cur not in visited:
+                            visited.add(cur)
+                            cur = ppid_map[cur]
+                            if cur in tracked_pids:
+                                return True
+                        return False
+
+                    for pid, elapsed_seconds, command in parsed_lines:
                         if pid == current_pid or pid in tracked_pids:
                             continue
+                        if _is_descendant_of_tracked(pid):
+                            continue
 
-                        command = match.group("cmd").strip()
                         # shell 프로세스는 경로에 도구명이 포함될 수 있으므로 제외
                         cmd_base = command.split()[0] if command else ""
                         if cmd_base.endswith(("bash", "sh", "zsh", "fish", "dash")):
@@ -1506,7 +1525,6 @@ class SimJobScheduler:
                             continue
 
                         seen_external_pids.add(pid)
-                        elapsed_seconds = int(match.group("elapsed"))
                         input_hint = self._extract_input_hint(command)
                         default_cores, default_memory = self._tool_default_resources(tool_name)
                         external_jobs.append(
