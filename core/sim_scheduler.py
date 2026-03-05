@@ -959,6 +959,13 @@ class SimJobScheduler:
         tool_name = job["tool"]
         tool_config = self._config.tools.get(tool_name)
 
+        if not await self._resources.allocate(job["cores"], job["memory_mb"]):
+            self._logger.info(
+                "sim_job_allocation_failed",
+                job_id=job_id, cores=job["cores"], memory_mb=job["memory_mb"],
+            )
+            return
+
         if not tool_config or not tool_config.enabled:
             await self._store.update_status(
                 job_id, "failed",
@@ -1490,6 +1497,10 @@ class SimJobScheduler:
                             continue
 
                         command = match.group("cmd").strip()
+                        # shell 프로세스는 경로에 도구명이 포함될 수 있으므로 제외
+                        cmd_base = command.split()[0] if command else ""
+                        if cmd_base.endswith(("bash", "sh", "zsh", "fish", "dash")):
+                            continue
                         tool_name = self._match_tool_from_command(command, token_map)
                         if tool_name is None:
                             continue
