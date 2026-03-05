@@ -48,8 +48,6 @@ services:
       ORCA_AUTO_RUN_INP_BACKGROUND: "0"
       ORCA_AUTO_ORCA_EXECUTABLE: "${ORCA_AUTO_ORCA_EXECUTABLE:-/app/host/orca_bin/orca}"
       SIM_OUTPUT_DIR_ORCA_AUTO: "/app/kb/orca_outputs"
-      ORCA_AUTO_TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN}"
-      ORCA_AUTO_TELEGRAM_CHAT_ID: "${ALLOWED_TELEGRAM_USERS}"
     entrypoint:
       - python
       - scripts/sim_host_agent.py
