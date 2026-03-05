@@ -724,6 +724,51 @@ async def test_sync_external_job_states_marks_missing_job_completed(
 
 
 @pytest.mark.asyncio
+async def test_sync_external_job_states_marks_missing_job_failed_from_output(
+    tmp_path: Path,
+) -> None:
+    scheduler, store = await _build_scheduler(tmp_path, "orca_auto")
+    input_dir = tmp_path / "orca_runs" / "mj1"
+    input_dir.mkdir(parents=True)
+    output_file = input_dir / "mj1.out"
+    output_file.write_text(
+        "2026-03-05 05:53:38,956 [ERROR] core.commands.run_inp: "
+        "Reaction directory must be under allowed root: /home/daehyupsohn/orca_runs. "
+        "got=/app/kb/orca_runs/mj1\n",
+        encoding="utf-8",
+    )
+
+    job_id = await store.insert_job(
+        SimJob(
+            job_id="job-external-sync-fail-1",
+            tool="orca_auto",
+            input_file=str(input_dir),
+            submitted_by=1,
+            cores=4,
+            memory_mb=16384,
+        )
+    )
+    await store.update_status(
+        job_id,
+        "running",
+        pid=33333,
+        started_at="2026-03-05 00:00:00",
+        cli_command="delegated:external-33333",
+        output_file=str(output_file),
+    )
+    scheduler.get_external_running_jobs = AsyncMock(return_value=[])  # type: ignore[method-assign]
+    try:
+        await scheduler._sync_external_job_states()
+        job = await store.get_job(job_id)
+        assert job is not None
+        assert job["status"] == "failed"
+        assert "외부 실행 실패" in str(job["error_message"])
+        assert "allowed root" in str(job["error_message"]).lower()
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
 async def test_get_queue_status_includes_delegated_running_from_db(
     tmp_path: Path,
 ) -> None:
@@ -820,5 +865,39 @@ async def test_recover_orphaned_jobs_does_not_requeue_delegated_running(
         assert job is not None
         assert job["status"] == "running"
         scheduler._resources.sync_from_db.assert_awaited_once_with([])
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_to_agent_input_path_strips_container_prefix(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SIM_INPUT_DIR_ORCA_AUTO 접두사를 제거해 상대 경로를 반환한다."""
+    monkeypatch.setenv("SIM_INPUT_DIR_ORCA_AUTO", "/app/kb/orca_runs")
+    scheduler, store = await _build_scheduler(tmp_path, "orca_auto")
+    try:
+        # 단순 경로
+        assert scheduler._to_agent_input_path("orca_auto", "/app/kb/orca_runs/mj1") == "mj1"
+        # 중첩 경로
+        assert scheduler._to_agent_input_path("orca_auto", "/app/kb/orca_runs/proj/mj1") == "proj/mj1"
+        # 매칭 안 되면 원본 반환
+        assert scheduler._to_agent_input_path("orca_auto", "/other/path/mj1") == "/other/path/mj1"
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_to_agent_input_path_falls_back_to_global_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """도구별 환경변수가 없으면 SIM_INPUT_DIR로 폴백한다."""
+    monkeypatch.delenv("SIM_INPUT_DIR_ORCA_AUTO", raising=False)
+    monkeypatch.setenv("SIM_INPUT_DIR", "/app/kb/sim_inputs")
+    scheduler, store = await _build_scheduler(tmp_path, "orca_auto")
+    try:
+        assert scheduler._to_agent_input_path("orca_auto", "/app/kb/sim_inputs/mj1") == "mj1"
     finally:
         await store.close()

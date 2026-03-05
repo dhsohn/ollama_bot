@@ -258,6 +258,88 @@ class SimJobScheduler:
             return 0
         return max(0, int(datetime.now(timezone.utc).timestamp() - mtime))
 
+    @staticmethod
+    def _tail_text(path: Path, *, max_lines: int = 30, max_chars: int = 2000) -> str:
+        try:
+            lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+        except OSError:
+            return ""
+        if max_lines > 0:
+            lines = lines[-max_lines:]
+        text = "\n".join(lines).strip()
+        if len(text) > max_chars:
+            text = text[-max_chars:]
+        return text
+
+    def _expected_output_file(self, job: dict[str, Any]) -> str | None:
+        tool_name = str(job.get("tool") or "")
+        input_raw = str(job.get("input_file") or "").strip()
+        if not input_raw:
+            return None
+        output_ext = ".out"
+        tool_cfg = self._config.tools.get(tool_name)
+        if tool_cfg and tool_cfg.output_extension:
+            output_ext = tool_cfg.output_extension
+
+        input_path = Path(input_raw).expanduser()
+        if input_path.is_dir():
+            return str((input_path / (input_path.stem + output_ext)).resolve())
+        if input_path.suffix:
+            return str(input_path.with_suffix(output_ext).resolve())
+        return str((input_path / (input_path.name + output_ext)).resolve())
+
+    def _infer_missing_delegated_terminal_state(
+        self,
+        job: dict[str, Any],
+    ) -> tuple[str | None, str | None]:
+        """실행 목록에서 사라진 위임 작업의 종료 상태를 추론한다."""
+        input_raw = str(job.get("input_file") or "").strip()
+        if input_raw:
+            run_state = self._load_json_file(Path(input_raw).expanduser() / "run_state.json")
+            raw_status = str(run_state.get("status") or "").strip().lower()
+            if raw_status in {"failed", "error", "cancelled", "aborted"}:
+                detail = (
+                    str(run_state.get("error") or "")
+                    or str(run_state.get("message") or "")
+                    or str(run_state.get("failure_reason") or "")
+                    or "외부 작업 실패"
+                )
+                return "failed", detail[:300]
+            if raw_status in {"completed", "success", "done"}:
+                return "completed", None
+
+        output_raw = str(job.get("output_file") or "").strip()
+        if not output_raw:
+            expected_output = self._expected_output_file(job)
+            if expected_output:
+                output_raw = expected_output
+        if not output_raw:
+            return None, None
+
+        output_path = Path(output_raw).expanduser()
+        if not output_path.exists():
+            return None, None
+
+        tail = self._tail_text(output_path)
+        if not tail:
+            return None, None
+        tail_lower = tail.lower()
+        error_tokens = (
+            "[error]",
+            "traceback",
+            "exception",
+            "failed",
+            "not found",
+            "permission denied",
+            "must be under allowed root",
+        )
+        if any(token in tail_lower for token in error_tokens):
+            last_line = next((line.strip() for line in reversed(tail.splitlines()) if line.strip()), "")
+            detail = last_line or tail
+            detail = detail.replace("\n", " ").strip()
+            return "failed", f"외부 실행 실패: {detail[:300]}"
+        return None, None
+
     def _tool_default_resources(self, tool_name: str) -> tuple[int, int]:
         """도구 기본 리소스(코어/메모리)를 반환한다."""
         tool = self._config.tools.get(tool_name)
@@ -649,6 +731,28 @@ class SimJobScheduler:
                         )
                     continue
 
+            inferred_status, inferred_error = self._infer_missing_delegated_terminal_state(job)
+            if inferred_status == "failed":
+                error_msg = inferred_error or "외부 실행 실패"
+                await self._store.update_status(
+                    str(job["job_id"]),
+                    "failed",
+                    completed_at="CURRENT_TIMESTAMP",
+                    error_message=error_msg,
+                    pid=None,
+                )
+                await self._notify_delegated_job_failed(job, error_msg)
+                continue
+            if inferred_status == "completed":
+                await self._store.update_status(
+                    str(job["job_id"]),
+                    "completed",
+                    completed_at="CURRENT_TIMESTAMP",
+                    pid=None,
+                )
+                await self._notify_job_completed(job)
+                continue
+
             started_raw = job.get("started_at")
             started_dt = self._parse_iso_datetime(
                 str(started_raw) if started_raw is not None else None,
@@ -665,6 +769,7 @@ class SimJobScheduler:
                 error_message="외부 작업 종료 감지 (성공/실패 미확인)",
                 pid=None,
             )
+            await self._notify_job_completed(job)
 
     async def _submit_external_job_via_agent(
         self,
@@ -783,6 +888,27 @@ class SimJobScheduler:
         if tried:
             hint += f" (확인한 후보: {', '.join(tried)})"
         raise FileNotFoundError(hint)
+
+    def _to_agent_input_path(self, tool: str, resolved_input: str) -> str:
+        """컨테이너 해석 경로 → 호스트 에이전트용 상대 경로로 변환한다.
+
+        SIM_INPUT_DIR_<TOOL> 등의 접두사를 제거해 호스트 에이전트가
+        자체 환경에서 다시 해석할 수 있도록 한다.
+        """
+        resolved = Path(resolved_input)
+        suffix = self._tool_env_suffix(tool)
+        for key in [f"SIM_INPUT_DIR_{suffix}", "SIM_INPUT_DIR"]:
+            root_raw = os.environ.get(key, "").strip()
+            if not root_raw:
+                continue
+            root = Path(root_raw).expanduser()
+            if not root.is_absolute():
+                root = (Path.cwd() / root).resolve()
+            try:
+                return str(resolved.relative_to(root))
+            except ValueError:
+                continue
+        return resolved_input
 
     # ── 의존성 주입 ──
 
@@ -1052,7 +1178,9 @@ class SimJobScheduler:
         try:
             external_job_id = await self._submit_external_job_via_agent(
                 tool=str(job["tool"]),
-                input_file=str(job["input_file"]),
+                input_file=self._to_agent_input_path(
+                    str(job["tool"]), str(job["input_file"]),
+                ),
                 submitted_by=int(job["submitted_by"]),
                 cores=int(job["cores"]),
                 memory_mb=int(job["memory_mb"]),
@@ -1085,6 +1213,9 @@ class SimJobScheduler:
             "cores": int(job["cores"]),
             "memory_mb": int(job["memory_mb"]),
         }
+        expected_output = self._expected_output_file(job)
+        if expected_output:
+            update_kwargs["output_file"] = expected_output
         if pid is not None:
             update_kwargs["pid"] = pid
         await self._store.update_status(
@@ -1314,6 +1445,15 @@ class SimJobScheduler:
         label = f" ({job.get('label')})" if job.get("label") else ""
         await self._notify(
             f"[SIM] 작업 {job['job_id'][:8]}{label} 완료"
+        )
+
+    async def _notify_delegated_job_failed(
+        self, job: dict[str, Any], error_message: str,
+    ) -> None:
+        label = f" ({job.get('label')})" if job.get("label") else ""
+        await self._notify(
+            f"[SIM] 작업 {job['job_id'][:8]}{label} 실패\n"
+            f"{error_message}"
         )
 
     async def _notify_job_failed(self, job: dict[str, Any], exit_code: int) -> None:

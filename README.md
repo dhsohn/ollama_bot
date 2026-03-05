@@ -134,13 +134,15 @@ TELEGRAM_BOT_TOKEN=...
 ALLOWED_TELEGRAM_USERS=123456789
 HOST_KB_DIR=./kb
 SIM_INPUT_DIR_ORCA_AUTO=/app/kb/orca_runs
+ORCA_HOST_DIR=/home/daehyupsohn/opt/orca
 SIM_EXTERNAL_AGENT_TOKEN=<긴_랜덤_토큰>
 ```
 
 - `ALLOWED_TELEGRAM_USERS`는 **숫자 Chat ID CSV**만 허용됩니다.
 - placeholder(`your_telegram_chat_id_here`) 상태면 시작 시 fail-fast로 종료됩니다.
 - `HOST_KB_DIR`는 docker compose 볼륨 마운트용 경로입니다. (앱 런타임 설정은 아님)
-  - 기본 compose는 `${HOST_KB_DIR}/orca_runs`와 `${HOST_KB_DIR}/orca_auto`를 `sim_host_agent`에 마운트합니다.
+  - 기본 compose는 `${HOST_KB_DIR}/orca_runs`, `${HOST_KB_DIR}/orca_outputs`, `${HOST_KB_DIR}/orca_auto`를 `sim_host_agent`에 마운트합니다.
+- `ORCA_HOST_DIR`는 host ORCA 실행 파일 디렉터리입니다. (기본 `/home/daehyupsohn/opt/orca`)
 - `/sim submit <tool> <이름>` shorthand를 쓰려면 `SIM_INPUT_DIR_<TOOL>` 또는 `SIM_INPUT_DIR`를 설정하세요.
   - 예: `SIM_INPUT_DIR_ORCA_AUTO=/app/kb/orca_runs`이면 `/sim submit orca_auto STRUC1` → `/app/kb/orca_runs/STRUC1`
 - `SIM_EXTERNAL_AGENT_TOKEN`은 `sim_host_agent` 인증 토큰입니다. 충분히 긴 랜덤 문자열을 사용하세요.

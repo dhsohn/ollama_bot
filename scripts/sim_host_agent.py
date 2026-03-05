@@ -239,6 +239,81 @@ def _resolve_submit_input_path(
     raise FileNotFoundError(hint)
 
 
+def _prepare_orca_auto_runtime_config(executable: str) -> str:
+    """orca_auto 실행용 임시 설정 파일을 생성한다.
+
+    host 절대경로 기반 기본 설정을 container 실행 경로(/app/kb, /app/host/...)로
+    치환해 run-inp 경로 검증 실패를 방지한다.
+    """
+    exe_path = _resolve_path(executable)
+    repo_root = exe_path.parent.parent
+    source_cfg = repo_root / "config" / "orca_auto.yaml"
+    if not source_cfg.exists():
+        raise ValueError(f"orca_auto_config_not_found:{source_cfg}")
+
+    try:
+        payload = yaml.safe_load(source_cfg.read_text(encoding="utf-8")) or {}
+    except OSError as exc:
+        raise ValueError(f"orca_auto_config_read_failed:{exc}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError(f"orca_auto_config_invalid:{source_cfg}")
+
+    runtime = payload.get("runtime")
+    if not isinstance(runtime, dict):
+        runtime = {}
+        payload["runtime"] = runtime
+
+    allowed_root_raw = os.environ.get("SIM_INPUT_DIR_ORCA_AUTO", "").strip()
+    if not allowed_root_raw:
+        allowed_root_raw = os.environ.get("SIM_INPUT_DIR", "").strip() or "/app/kb/orca_runs"
+    organized_root_raw = os.environ.get("SIM_OUTPUT_DIR_ORCA_AUTO", "").strip()
+    if not organized_root_raw:
+        organized_root_raw = os.environ.get("SIM_OUTPUT_DIR", "").strip() or "/app/kb/orca_outputs"
+
+    allowed_root = _resolve_path(allowed_root_raw)
+    organized_root = _resolve_path(organized_root_raw)
+    if not allowed_root.is_dir():
+        raise ValueError(f"allowed_root_not_found:{allowed_root}")
+    organized_root.mkdir(parents=True, exist_ok=True)
+    runtime["allowed_root"] = str(allowed_root)
+    runtime["organized_root"] = str(organized_root)
+
+    paths = payload.get("paths")
+    if not isinstance(paths, dict):
+        paths = {}
+        payload["paths"] = paths
+
+    override_orca = os.environ.get("ORCA_AUTO_ORCA_EXECUTABLE", "").strip()
+    resolved_orca: Path | None = None
+    if override_orca:
+        resolved_orca = _resolve_path(override_orca)
+    else:
+        existing_orca = str(paths.get("orca_executable") or "").strip()
+        if existing_orca:
+            candidate = _resolve_path(existing_orca)
+            if candidate.exists():
+                resolved_orca = candidate
+        if resolved_orca is None:
+            fallback = Path("/app/host/orca_bin/orca")
+            if fallback.exists():
+                resolved_orca = fallback
+
+    if resolved_orca is None or not resolved_orca.exists():
+        raise ValueError("orca_executable_not_found")
+    if not os.access(resolved_orca, os.X_OK):
+        raise ValueError(f"orca_executable_not_executable:{resolved_orca}")
+    paths["orca_executable"] = str(resolved_orca)
+
+    tmp_dir = Path("/tmp/sim_host_agent")
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    tmp_cfg = tmp_dir / f"orca_auto_runtime_{int(time.time() * 1000)}_{os.getpid()}.yaml"
+    tmp_cfg.write_text(
+        yaml.safe_dump(payload, sort_keys=False, allow_unicode=False),
+        encoding="utf-8",
+    )
+    return str(tmp_cfg)
+
+
 def submit_external_job(config_path: Path, payload: dict[str, Any]) -> dict[str, Any]:
     tool = str(payload.get("tool") or "").strip()
     if not tool:
@@ -339,6 +414,9 @@ def submit_external_job(config_path: Path, payload: dict[str, Any]) -> dict[str,
             if not isinstance(key, str):
                 continue
             env[key] = str(template).format(cores=cores, memory_mb=memory_mb)
+
+    if tool == "orca_auto":
+        env["ORCA_AUTO_CONFIG"] = _prepare_orca_auto_runtime_config(executable)
 
     proc = subprocess.Popen(
         cmd,
