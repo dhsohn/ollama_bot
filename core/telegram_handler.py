@@ -1750,9 +1750,8 @@ class TelegramHandler:
 
         overall_running = int(status.get("running_total", running_jobs_total))
         footer = (
-            f"동시실행(큐): {running_jobs_queue}/{status.get('max_concurrent', 0)} "
-            f"| 실행합계: {running_jobs_total}\n"
-            f"동시실행: {overall_running} | 실행합계: {running_jobs_total}"
+            f"동시실행: {overall_running} | 최대: {status.get('max_concurrent', 0)} "
+            f"| 실행합계: {running_jobs_total}"
         )
 
         text = (
