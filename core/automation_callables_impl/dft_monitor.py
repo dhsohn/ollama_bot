@@ -19,21 +19,15 @@ from core.orca_parser import OptProgress, parse_opt_progress, parse_orca_output
 _RUNNING_PROGRESS_CALC_TYPES = ("opt", "ts", "neb", "irc")
 
 _DFT_SYSTEM_PROMPT = (
-    "당신은 양자화학 DFT 계산 모니터링 전문가입니다.\n"
-    "주어진 ORCA 계산 데이터만을 근거로 한국어 한 문장 코멘트를 작성합니다.\n"
-    "규칙:\n"
-    "- 반드시 주어진 데이터에 직접 근거한 내용만 작성하세요.\n"
-    "- 날짜, 시간, 요일 등 데이터에 없는 정보를 절대 언급하지 마세요.\n"
-    "- 사고 과정, 분석 과정, 추론 과정을 절대 출력하지 마세요.\n"
-    "- 영어·중국어 등 한국어 이외의 언어로 사고하거나 출력하지 마세요.\n"
-    "- 프롬프트 내용을 반복하거나 인용하지 마세요.\n"
-    "- 최종 코멘트 한국어 한 문장만 즉시 출력하세요. 다른 텍스트는 일절 금지합니다."
+    "ORCA DFT 계산 모니터링 전문가. "
+    "데이터를 보고 한국어 한 문장 코멘트만 출력하라. "
+    "설명·분석·사고과정 없이 코멘트 한 줄만."
 )
 
 # 사고 과정 유출을 감지하는 패턴들 — 줄 시작 기준
 _THINKING_PREFIXES = re.compile(
     r"^("
-    r"(분석|해석|판단|검토|확인|관찰|결론|요약|정리|평가)[\s:]"
+    r"(분석|해석|판단|검토|확인|관찰|결론|요약|정리|평가)\s*([:：]|결과|해보|하면)"
     r"|let me|okay|alright|well|so,?\s"
     r"|the user|they want|they say|they ask"
     r"|we need|we have|we must|we should|we can|we don'?t"
@@ -531,16 +525,15 @@ def _build_analysis_prompt(progress: OptProgress) -> str:
             f"dE={de_str}, MaxGrad={mg_str}, Conv={conv_str}"
         )
 
+    # 소형 모델 토큰 절약: 최근 5 스텝만 전달
+    recent_data = data_lines[-5:] if len(data_lines) > 5 else data_lines
+
     return (
-        "아래 ORCA 구조 최적화 데이터를 보고 한국어 한 문장 코멘트를 작성하세요.\n"
-        "수렴 패턴(monotonic/oscillating/plateau/diverging), "
-        "예상 남은 스텝, 주의사항을 포함하세요.\n"
-        "주의: 날짜/시간/요일을 언급하지 마세요. 데이터에 없는 내용을 추측하지 마세요.\n"
-        "코멘트 한 문장만 바로 출력하세요.\n\n"
-        f"분자: {progress.formula or 'unknown'}\n"
-        f"메서드: {progress.method}/{progress.basis_set}\n"
-        f"총 {len(progress.steps)} 스텝\n\n"
-        + "\n".join(data_lines)
+        f"분자: {progress.formula or 'unknown'}, "
+        f"메서드: {progress.method}/{progress.basis_set}, "
+        f"총 {len(progress.steps)} 스텝\n"
+        + "\n".join(recent_data)
+        + "\n\n수렴 상태와 주의사항을 한국어 한 문장으로 코멘트하라."
     )
 
 
@@ -555,15 +548,11 @@ def _build_running_analysis_prompt(result: Any, source_path: str) -> str:
         else "N/A"
     )
     return (
-        "아래 ORCA 진행 중 계산 정보를 보고 한국어 한 문장 코멘트를 작성하세요.\n"
-        "현재 상태 요약과 다음 확인 포인트를 포함하세요.\n"
-        "주의: 날짜/시간/요일을 언급하지 마세요. 데이터에 없는 내용을 추측하지 마세요.\n"
-        "코멘트 한 문장만 바로 출력하세요.\n\n"
-        f"분자: {result.formula or 'unknown'}\n"
-        f"계산 유형: {result.calc_type or 'unknown'}\n"
-        f"메서드: {method_basis}\n"
-        f"에너지: {energy_str}\n"
-        f"경로: {_short_path(source_path)}"
+        f"분자: {result.formula or 'unknown'}, "
+        f"계산: {result.calc_type or 'unknown'}, "
+        f"메서드: {method_basis}, "
+        f"에너지: {energy_str}\n\n"
+        f"현재 상태를 한국어 한 문장으로 코멘트하라."
     )
 
 

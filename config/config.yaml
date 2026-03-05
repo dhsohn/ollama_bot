@@ -121,8 +121,7 @@ rag:
   enabled: true
   startup_index_enabled: true
   kb_dirs:
-    - "kb/orca_runs"
-    - "kb/orca_outputs"
+    - "/home/daehyupsohn/orca_runs"
   max_file_size_mb: 5
   trigger_keywords:
     - "orca"

@@ -72,6 +72,7 @@ class SimJobScheduler:
         self._monitor_tasks: dict[str, asyncio.Task[None]] = {}
         self._scheduler_task: asyncio.Task[None] | None = None
         self._stop_event = asyncio.Event()
+        self._known_external_ids: set[str] = set()
 
     @staticmethod
     def _tool_env_suffix(tool: str) -> str:
@@ -107,6 +108,29 @@ class SimJobScheduler:
             notify_completed=self._notify_job_completed,
             notify_failed=self._notify_delegated_job_failed,
         )
+
+    async def _check_new_external_jobs(self) -> None:
+        """새로 감지된 외부 실행 작업이 있으면 텔레그램으로 알림을 보낸다."""
+        external_jobs = await self.get_external_running_jobs()
+        current_ids = {job["job_id"] for job in external_jobs}
+
+        # 사라진 작업은 추적 해제
+        self._known_external_ids &= current_ids
+
+        for job in external_jobs:
+            job_id = job["job_id"]
+            if job_id in self._known_external_ids:
+                continue
+            self._known_external_ids.add(job_id)
+            tool = job.get("tool", "unknown")
+            input_file = job.get("input_file", "-")
+            source = job.get("source", "")
+            source_label = "lockfile" if source == "lockfile" else "process"
+            await self._notify(
+                f"[SIM] 외부 시뮬레이션 감지 ({source_label})\n"
+                f"도구: {tool}\n"
+                f"입력: {input_file}"
+            )
 
     @staticmethod
     def _safe_int(value: Any) -> int | None:
@@ -233,6 +257,7 @@ class SimJobScheduler:
         while not self._stop_event.is_set():
             try:
                 await self._sync_external_job_states()
+                await self._check_new_external_jobs()
                 await self._dispatch_pending_jobs()
             except Exception as exc:
                 self._logger.error("sim_scheduler_loop_error", error=str(exc))
@@ -362,11 +387,15 @@ class SimJobScheduler:
             return
 
         if not tool_config or not tool_config.enabled:
+            error_msg = f"알 수 없거나 비활성화된 도구: {tool_name}"
             await self._store.update_status(
                 job_id, "failed",
-                error_message=f"알 수 없거나 비활성화된 도구: {tool_name}",
+                error_message=error_msg,
             )
             await self._resources.release()
+            await self._notify(
+                f"[SIM] 작업 {job_id[:8]} 실패\n{error_msg}"
+            )
             return
 
         input_path = Path(job["input_file"]).expanduser().resolve()
@@ -404,6 +433,9 @@ class SimJobScheduler:
                     job_id, "failed", error_message=str(exc),
                 )
                 await self._resources.release()
+                await self._notify(
+                    f"[SIM] 작업 {job_id[:8]} 실패\n{exc}"
+                )
                 return
 
         self._logger.info("sim_job_launching", job_id=job_id, tool=tool_name, cmd=cmd)
@@ -439,6 +471,9 @@ class SimJobScheduler:
                 job_id, "failed", error_message=str(exc),
             )
             await self._resources.release()
+            await self._notify(
+                f"[SIM] 작업 {job_id[:8]} 실행 실패\n{exc}"
+            )
 
     async def _monitor_process(
         self,
