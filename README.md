@@ -108,7 +108,6 @@ SIM_EXTERNAL_AGENT_TOKEN=<긴_랜덤_토큰>
 - placeholder(`your_telegram_chat_id_here`) 상태면 시작 시 fail-fast로 종료됩니다.
 - `/sim submit <tool> <이름>` shorthand를 쓰려면 `SIM_INPUT_DIR_<TOOL>` 또는 `SIM_INPUT_DIR`를 설정하세요.
   - 예: `SIM_INPUT_DIR_ORCA_AUTO=kb/orca_runs`이면 `/sim submit orca_auto mj1` → `kb/orca_runs/mj1`
-- `SIM_EXTERNAL_AGENT_TOKEN`은 `sim_host_agent` 인증 토큰입니다. 충분히 긴 랜덤 문자열을 사용하세요.
 - 런타임 일반 설정(model/host/log/data_dir 등)은 `config/config.yaml`에서 관리합니다.
 
 ### 3) LLM 백엔드 준비 (Dual-Provider)
@@ -155,21 +154,18 @@ journalctl --user -u ollama-bot -f
 상태 확인:
 
 ```bash
-systemctl --user status ollama-bot sim-host-agent
+systemctl --user status ollama-bot
 ```
 
 ### 시뮬레이션 실행 경로
 
-`/sim submit|list|status|info|cancel`은 모두 `sim_host_agent`를 통해 실행/조회/취소됩니다.
+`/sim submit|list|status|info|cancel`은 봇이 직접 subprocess로 실행/조회/취소합니다.
 
-- `ollama_bot`: 큐/텔레그램 인터페이스 담당
-- `sim_host_agent`: host에서 실제 시뮬레이션 실행과 제어 담당
-- 인증: `SIM_EXTERNAL_AGENT_TOKEN` Bearer 토큰 필수
 - 취소 가드: 감지된 시뮬레이션 작업만 종료 허용 (임의 PID 차단)
 
 ## 실행 정책/제약
 
-- 시뮬레이션 작업은 **host agent 단일 실행 경로**를 사용합니다. (`ollama_bot` 내부에서 직접 실행하지 않음)
+- 시뮬레이션 작업은 봇이 직접 subprocess로 실행합니다.
 - 실행은 `bash scripts/run_bot.sh`를 사용하세요.
 - 텔레그램은 private chat(1:1)만 처리합니다. 그룹/채널 메시지는 거절됩니다.
 
@@ -346,7 +342,6 @@ ollama:
 |---|---|
 | `scripts/configure_windows_lemonade.sh` | Lemonade용 Windows 방화벽/portproxy 자동 설정 |
 | `scripts/run_bot.sh` | 봇 실행 |
-| `scripts/run_host_agent.sh` | 시뮬레이션 호스트 에이전트 실행 |
 | `scripts/install_boot_service.sh` | systemd user service 설치 (부팅 시 자동 시작) |
 | `scripts/healthcheck.sh` | 헬스체크 |
 | `scripts/soak_monitor.sh` | 장시간 안정성 모니터링 |

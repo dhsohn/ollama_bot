@@ -353,11 +353,6 @@ class SimQueueConfig(BaseModel):
     queue_check_interval_seconds: int = 5
     adaptive_allocation_enabled: bool = True
     adaptive_memory_step_mb: int = 1024
-    # Deprecated: 시뮬레이션 실행은 host agent 단일 경로로 동작한다.
-    external_agent_enabled: bool = True
-    external_agent_base_url: str = "http://localhost:18081"
-    external_agent_timeout_seconds: float = 3.0
-    external_agent_token_env: str = "SIM_EXTERNAL_AGENT_TOKEN"
     job_work_dir: str = "data/sim_jobs"
     tools: dict[str, SimToolConfig] = Field(default_factory=dict)
 
@@ -373,13 +368,6 @@ class SimQueueConfig(BaseModel):
     def validate_memory(cls, value: int) -> int:
         if value < 1:
             raise ValueError("total_memory_mb must be >= 1")
-        return value
-
-    @field_validator("external_agent_timeout_seconds")
-    @classmethod
-    def validate_external_agent_timeout(cls, value: float) -> float:
-        if value <= 0:
-            raise ValueError("external_agent_timeout_seconds must be > 0")
         return value
 
 

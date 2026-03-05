@@ -35,30 +35,9 @@ EOF
 
 echo "[install] ollama-bot.service 생성 완료"
 
-# ── sim-host-agent.service ──
-cat > "${UNIT_DIR}/sim-host-agent.service" <<EOF
-[Unit]
-Description=Simulation Host Agent
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=exec
-WorkingDirectory=${PROJECT_ROOT}
-EnvironmentFile=${PROJECT_ROOT}/.env
-ExecStart=${PROJECT_ROOT}/scripts/run_host_agent.sh
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=default.target
-EOF
-
-echo "[install] sim-host-agent.service 생성 완료"
-
 # ── 활성화 ──
 systemctl --user daemon-reload
-systemctl --user enable ollama-bot.service sim-host-agent.service
+systemctl --user enable ollama-bot.service
 
 # 부팅 시 로그인 없이도 서비스 시작
 loginctl enable-linger "$(whoami)" 2>/dev/null || true
@@ -68,11 +47,9 @@ echo "=== 설치 완료 ==="
 echo ""
 echo "서비스 시작:"
 echo "  systemctl --user start ollama-bot"
-echo "  systemctl --user start sim-host-agent"
 echo ""
 echo "로그 확인:"
 echo "  journalctl --user -u ollama-bot -f"
-echo "  journalctl --user -u sim-host-agent -f"
 echo ""
 echo "상태 확인:"
-echo "  systemctl --user status ollama-bot sim-host-agent"
+echo "  systemctl --user status ollama-bot"

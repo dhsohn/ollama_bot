@@ -16,7 +16,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
-import httpx
+import time
+
+import yaml
 
 from core.config import SimQueueConfig
 from core.logging_setup import get_logger
@@ -209,19 +211,6 @@ class SimJobScheduler:
         if dt.tzinfo is None:
             return dt.replace(tzinfo=timezone.utc)
         return dt.astimezone(timezone.utc)
-
-    @staticmethod
-    def _extract_pid_from_external_job_id(job_id: str) -> int | None:
-        if not job_id.startswith("external-"):
-            return None
-        pid_text = job_id.split("-", 1)[1].strip()
-        try:
-            pid = int(pid_text)
-        except (TypeError, ValueError):
-            return None
-        if pid <= 0:
-            return None
-        return pid
 
     @staticmethod
     def _is_delegated_job(job: dict[str, Any]) -> bool:
@@ -491,203 +480,6 @@ class SimJobScheduler:
 
         return best_tool
 
-    def _external_agent_headers(self) -> dict[str, str]:
-        headers = {"Accept": "application/json"}
-        token_env = self._config.external_agent_token_env.strip()
-        if not token_env:
-            return headers
-        token = os.environ.get(token_env, "").strip()
-        if token:
-            headers["Authorization"] = f"Bearer {token}"
-        return headers
-
-    def _normalize_external_job_from_agent(self, item: dict[str, Any]) -> dict[str, Any]:
-        job_id_raw = str(item.get("job_id") or "").strip()
-        pid_raw = item.get("pid")
-        pid: int | None = None
-        if isinstance(pid_raw, int):
-            pid = pid_raw
-        else:
-            try:
-                if pid_raw is not None:
-                    pid = int(str(pid_raw))
-            except (TypeError, ValueError):
-                pid = None
-
-        if not job_id_raw:
-            if pid is not None and pid > 0:
-                job_id_raw = f"external-{pid}"
-            else:
-                job_id_raw = "external-agent-unknown"
-
-        tool_name = str(item.get("tool") or "external")
-        status = str(item.get("status") or "running")
-        input_file = str(item.get("input_file") or "-")
-        cli_command = str(item.get("cli_command") or "")
-
-        default_cores, default_memory = self._tool_default_resources(tool_name)
-
-        cores_raw = item.get("cores", default_cores)
-        memory_raw = item.get("memory_mb", default_memory)
-        try:
-            cores = max(0, int(cores_raw))
-        except (TypeError, ValueError):
-            cores = default_cores
-        try:
-            memory_mb = max(0, int(memory_raw))
-        except (TypeError, ValueError):
-            memory_mb = default_memory
-        rss_raw = item.get("memory_rss_mb", 0)
-        try:
-            memory_rss_mb = max(0, int(float(rss_raw)))
-        except (TypeError, ValueError):
-            memory_rss_mb = 0
-        cpu_raw = item.get("cpu_percent", 0.0)
-        try:
-            cpu_percent: float | None = round(max(0.0, float(cpu_raw)), 2)
-        except (TypeError, ValueError):
-            cpu_percent = None
-        resource_source = str(item.get("resource_source") or "agent")
-        # Backward compatibility:
-        # old agent encoded RSS into memory_mb with `agent_runtime`.
-        if resource_source == "agent_runtime" and memory_rss_mb > 0 and memory_mb == memory_rss_mb:
-            memory_mb = default_memory
-            resource_source = "config_default"
-
-        elapsed_raw = item.get("elapsed_seconds", 0)
-        try:
-            elapsed_seconds = max(0, int(elapsed_raw))
-        except (TypeError, ValueError):
-            elapsed_seconds = 0
-        retry_raw = item.get("retry_count", 0)
-        max_retry_raw = item.get("max_retries", 0)
-        try:
-            retry_count = max(0, int(retry_raw))
-        except (TypeError, ValueError):
-            retry_count = 0
-        try:
-            max_retries = max(0, int(max_retry_raw))
-        except (TypeError, ValueError):
-            max_retries = 0
-
-        return {
-            "job_id": job_id_raw,
-            "tool": tool_name,
-            "status": status,
-            "priority": 0,
-            "cores": cores,
-            "memory_mb": memory_mb,
-            "input_file": input_file,
-            "output_file": item.get("output_file"),
-            "submitted_by": 0,
-            "submitted_at": item.get("submitted_at"),
-            "started_at": item.get("started_at"),
-            "completed_at": item.get("completed_at"),
-            "pid": pid,
-            "elapsed_seconds": elapsed_seconds,
-            "cli_command": cli_command,
-            "retry_count": retry_count,
-            "max_retries": max_retries,
-            "label": str(item.get("label") or "external"),
-            "external": True,
-            "source": "agent",
-            "resource_source": resource_source,
-            "cpu_percent": cpu_percent,
-            "memory_rss_mb": memory_rss_mb,
-        }
-
-    async def _fetch_external_jobs_from_agent(self) -> list[dict[str, Any]] | None:
-        """외부 에이전트에서 외부 작업 목록을 조회한다.
-
-        반환:
-        - list: 성공적으로 조회(빈 목록 포함)
-        - None: 통신 오류로 조회 실패
-        """
-        base_url = self._config.external_agent_base_url.strip().rstrip("/")
-        if not base_url:
-            return None
-
-        url = f"{base_url}/v1/sim/external/jobs"
-        headers = self._external_agent_headers()
-        timeout = max(0.1, float(self._config.external_agent_timeout_seconds))
-        try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                response = await client.get(url, headers=headers)
-        except Exception as exc:
-            self._logger.warning("sim_external_agent_fetch_failed", error=str(exc), url=url)
-            return None
-
-        if response.status_code != 200:
-            self._logger.warning(
-                "sim_external_agent_fetch_failed",
-                url=url,
-                status_code=response.status_code,
-                body=response.text[:200],
-            )
-            return None
-
-        try:
-            payload = response.json()
-        except ValueError as exc:
-            self._logger.warning("sim_external_agent_fetch_failed", error=str(exc), url=url)
-            return None
-
-        if not isinstance(payload, dict):
-            return []
-        jobs_payload = payload.get("jobs")
-        if not isinstance(jobs_payload, list):
-            return []
-
-        jobs: list[dict[str, Any]] = []
-        for item in jobs_payload:
-            if not isinstance(item, dict):
-                continue
-            jobs.append(self._normalize_external_job_from_agent(item))
-
-        jobs.sort(key=lambda job: int(job.get("elapsed_seconds", 0)), reverse=True)
-        return jobs
-
-    async def _cancel_external_job_via_agent(self, pid: int) -> bool | None:
-        """외부 에이전트를 통해 외부 작업 취소를 시도한다.
-
-        반환:
-        - bool: 에이전트 응답 성공
-        - None: 통신 오류로 판단 불가
-        """
-        base_url = self._config.external_agent_base_url.strip().rstrip("/")
-        if not base_url:
-            return None
-
-        url = f"{base_url}/v1/sim/external/cancel"
-        headers = self._external_agent_headers()
-        headers["Content-Type"] = "application/json"
-        timeout = max(0.1, float(self._config.external_agent_timeout_seconds))
-
-        try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                response = await client.post(
-                    url, headers=headers, json={"pid": int(pid)},
-                )
-        except Exception as exc:
-            self._logger.warning("sim_external_agent_cancel_failed", error=str(exc), url=url, pid=pid)
-            return None
-
-        if response.status_code in (200, 409, 404):
-            try:
-                payload = response.json()
-            except ValueError:
-                return response.status_code == 200
-            return bool(payload.get("cancelled", False))
-
-        self._logger.warning(
-            "sim_external_agent_cancel_failed",
-            url=url,
-            pid=pid,
-            status_code=response.status_code,
-            body=response.text[:200],
-        )
-        return False
-
     async def _sync_external_job_states(self) -> None:
         """DB의 위임 실행 작업을 외부 에이전트 조회 결과로 동기화한다."""
         tracked_jobs = await self._list_tracked_delegated_jobs()
@@ -771,84 +563,6 @@ class SimJobScheduler:
             )
             await self._notify_job_completed(job)
 
-    async def _submit_external_job_via_agent(
-        self,
-        *,
-        tool: str,
-        input_file: str,
-        submitted_by: int,
-        cores: int,
-        memory_mb: int,
-        priority: int,
-        max_retries: int,
-        retry_delay_s: int,
-        label: str,
-    ) -> str:
-        """외부 에이전트를 통해 작업 submit을 위임한다."""
-        base_url = self._config.external_agent_base_url.strip().rstrip("/")
-        if not base_url:
-            raise ValueError("external_agent_base_url 설정이 비어 있습니다.")
-
-        url = f"{base_url}/v1/sim/external/submit"
-        headers = self._external_agent_headers()
-        headers["Content-Type"] = "application/json"
-        timeout = max(0.1, float(self._config.external_agent_timeout_seconds))
-        payload: dict[str, Any] = {
-            "tool": tool,
-            "input_file": input_file,
-            "submitted_by": submitted_by,
-            "cores": cores,
-            "memory_mb": memory_mb,
-            "priority": priority,
-            "max_retries": max_retries,
-            "retry_delay_s": retry_delay_s,
-            "label": label,
-        }
-
-        try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                response = await client.post(url, headers=headers, json=payload)
-        except Exception as exc:
-            raise ValueError(f"외부 에이전트 submit 호출 실패: {exc}") from exc
-
-        if response.status_code not in (200, 201, 202):
-            detail = response.text.strip()
-            if len(detail) > 300:
-                detail = f"{detail[:300]}..."
-            self._logger.warning(
-                "sim_external_agent_submit_failed",
-                url=url,
-                status_code=response.status_code,
-                body=response.text[:200],
-            )
-            raise ValueError(
-                f"외부 에이전트 submit 실패({response.status_code}): "
-                f"{detail or '응답 본문 없음'}"
-            )
-
-        try:
-            response_payload = response.json()
-        except ValueError as exc:
-            raise ValueError(f"외부 에이전트 submit 응답 파싱 실패: {exc}") from exc
-
-        if not isinstance(response_payload, dict):
-            raise ValueError("외부 에이전트 submit 응답 형식이 올바르지 않습니다.")
-
-        job_id_raw = str(response_payload.get("job_id") or "").strip()
-        if not job_id_raw:
-            pid_raw = response_payload.get("pid")
-            try:
-                pid = int(pid_raw)
-            except (TypeError, ValueError):
-                pid = None
-            if pid is not None and pid > 0:
-                job_id_raw = f"external-{pid}"
-
-        if not job_id_raw:
-            raise ValueError("외부 에이전트 submit 응답에 job_id가 없습니다.")
-
-        return job_id_raw
-
     def _resolve_input_path(self, tool: str, input_file: str) -> Path:
         """입력 경로를 실제 경로로 해석한다.
 
@@ -888,27 +602,6 @@ class SimJobScheduler:
         if tried:
             hint += f" (확인한 후보: {', '.join(tried)})"
         raise FileNotFoundError(hint)
-
-    def _to_agent_input_path(self, tool: str, resolved_input: str) -> str:
-        """컨테이너 해석 경로 → 호스트 에이전트용 상대 경로로 변환한다.
-
-        SIM_INPUT_DIR_<TOOL> 등의 접두사를 제거해 호스트 에이전트가
-        자체 환경에서 다시 해석할 수 있도록 한다.
-        """
-        resolved = Path(resolved_input)
-        suffix = self._tool_env_suffix(tool)
-        for key in [f"SIM_INPUT_DIR_{suffix}", "SIM_INPUT_DIR"]:
-            root_raw = os.environ.get(key, "").strip()
-            if not root_raw:
-                continue
-            root = Path(root_raw).expanduser()
-            if not root.is_absolute():
-                root = (Path.cwd() / root).resolve()
-            try:
-                return str(resolved.relative_to(root))
-            except ValueError:
-                continue
-        return resolved_input
 
     # ── 의존성 주입 ──
 
@@ -1170,68 +863,84 @@ class SimJobScheduler:
                 max_concurrent=int(self._config.max_concurrent_jobs),
             )
             return
-        await self._delegate_job(dispatch_job)
+        await self._launch_job(dispatch_job)
 
-    async def _delegate_job(self, job: dict[str, Any]) -> None:
-        """큐 작업을 host agent 실행으로 위임하고 running 상태로 전환한다."""
-        job_id = str(job["job_id"])
+    @staticmethod
+    def _resolve_path(raw: str) -> Path:
+        p = Path(raw).expanduser()
+        if not p.is_absolute():
+            p = (Path.cwd() / p).resolve()
+        return p
+
+    def _prepare_orca_auto_runtime_config(self, executable: str) -> str:
+        """orca_auto 실행용 임시 설정 파일을 생성한다."""
+        exe_path = self._resolve_path(executable)
+        repo_root = exe_path.parent.parent
+        source_cfg = repo_root / "config" / "orca_auto.yaml"
+        if not source_cfg.exists():
+            raise ValueError(f"orca_auto_config_not_found:{source_cfg}")
+
         try:
-            external_job_id = await self._submit_external_job_via_agent(
-                tool=str(job["tool"]),
-                input_file=self._to_agent_input_path(
-                    str(job["tool"]), str(job["input_file"]),
-                ),
-                submitted_by=int(job["submitted_by"]),
-                cores=int(job["cores"]),
-                memory_mb=int(job["memory_mb"]),
-                priority=int(job["priority"]),
-                max_retries=int(job.get("max_retries", self._config.default_retry_count)),
-                retry_delay_s=int(job.get("retry_delay_s", self._config.retry_delay_seconds)),
-                label=str(job.get("label") or ""),
-            )
-        except (TypeError, ValueError) as exc:
-            self._logger.error(
-                "sim_job_delegate_failed",
-                job_id=job_id,
-                error=str(exc),
-            )
-            await self._store.update_status(
-                job_id,
-                "failed",
-                completed_at="CURRENT_TIMESTAMP",
-                error_message=str(exc),
-            )
-            await self._notify(
-                f"[SIM] 작업 {job_id[:8]} 위임 실패\n{exc}"
-            )
-            return
+            payload = yaml.safe_load(source_cfg.read_text(encoding="utf-8")) or {}
+        except OSError as exc:
+            raise ValueError(f"orca_auto_config_read_failed:{exc}") from exc
+        if not isinstance(payload, dict):
+            raise ValueError(f"orca_auto_config_invalid:{source_cfg}")
 
-        pid = self._extract_pid_from_external_job_id(external_job_id)
-        update_kwargs: dict[str, Any] = {
-            "started_at": "CURRENT_TIMESTAMP",
-            "cli_command": f"delegated:{external_job_id}",
-            "cores": int(job["cores"]),
-            "memory_mb": int(job["memory_mb"]),
-        }
-        expected_output = self._expected_output_file(job)
-        if expected_output:
-            update_kwargs["output_file"] = expected_output
-        if pid is not None:
-            update_kwargs["pid"] = pid
-        await self._store.update_status(
-            job_id,
-            "running",
-            **update_kwargs,
+        runtime = payload.get("runtime")
+        if not isinstance(runtime, dict):
+            runtime = {}
+            payload["runtime"] = runtime
+
+        allowed_root_raw = os.environ.get("SIM_INPUT_DIR_ORCA_AUTO", "").strip()
+        if not allowed_root_raw:
+            allowed_root_raw = os.environ.get("SIM_INPUT_DIR", "").strip() or "kb/orca_runs"
+        organized_root_raw = os.environ.get("SIM_OUTPUT_DIR_ORCA_AUTO", "").strip()
+        if not organized_root_raw:
+            organized_root_raw = os.environ.get("SIM_OUTPUT_DIR", "").strip() or "kb/orca_outputs"
+
+        allowed_root = self._resolve_path(allowed_root_raw)
+        organized_root = self._resolve_path(organized_root_raw)
+        if not allowed_root.is_dir():
+            raise ValueError(f"allowed_root_not_found:{allowed_root}")
+        organized_root.mkdir(parents=True, exist_ok=True)
+        runtime["allowed_root"] = str(allowed_root)
+        runtime["organized_root"] = str(organized_root)
+
+        paths = payload.get("paths")
+        if not isinstance(paths, dict):
+            paths = {}
+            payload["paths"] = paths
+
+        override_orca = os.environ.get("ORCA_AUTO_ORCA_EXECUTABLE", "").strip()
+        resolved_orca: Path | None = None
+        if override_orca:
+            resolved_orca = self._resolve_path(override_orca)
+        else:
+            existing_orca = str(paths.get("orca_executable") or "").strip()
+            if existing_orca:
+                candidate = self._resolve_path(existing_orca)
+                if candidate.exists():
+                    resolved_orca = candidate
+            if resolved_orca is None:
+                fallback = Path.home() / "opt" / "orca" / "orca"
+                if fallback.exists():
+                    resolved_orca = fallback
+
+        if resolved_orca is None or not resolved_orca.exists():
+            raise ValueError("orca_executable_not_found")
+        if not os.access(resolved_orca, os.X_OK):
+            raise ValueError(f"orca_executable_not_executable:{resolved_orca}")
+        paths["orca_executable"] = str(resolved_orca)
+
+        tmp_dir = Path("/tmp/sim_scheduler")
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        tmp_cfg = tmp_dir / f"orca_auto_runtime_{int(time.time() * 1000)}_{os.getpid()}.yaml"
+        tmp_cfg.write_text(
+            yaml.safe_dump(payload, sort_keys=False, allow_unicode=False),
+            encoding="utf-8",
         )
-        self._logger.info(
-            "sim_job_delegated",
-            job_id=job_id,
-            external_job_id=external_job_id,
-            tool=str(job["tool"]),
-            cores=int(job["cores"]),
-            memory_mb=int(job["memory_mb"]),
-        )
-        await self._notify_job_started(job)
+        return str(tmp_cfg)
 
     async def _launch_job(self, job: dict[str, Any]) -> None:
         """CLI 커맨드를 빌드하고 subprocess를 실행한다."""
@@ -1247,15 +956,12 @@ class SimJobScheduler:
             await self._resources.release(job["cores"], job["memory_mb"])
             return
 
-        base_work_dir = Path(self._config.job_work_dir).expanduser()
-        if not base_work_dir.is_absolute():
-            base_work_dir = (Path.cwd() / base_work_dir).resolve()
-        work_dir = (base_work_dir / job_id).resolve()
-        work_dir.mkdir(parents=True, exist_ok=True)
-
-        input_path = Path(job["input_file"])
+        input_path = Path(job["input_file"]).expanduser().resolve()
+        work_dir = input_path if input_path.is_dir() else input_path.parent
         output_file = str((work_dir / (input_path.stem + tool_config.output_extension)).resolve())
-        executable = tool_config.executable
+
+        exe_env_key = f"SIM_TOOL_EXECUTABLE_{self._tool_env_suffix(tool_name)}"
+        executable = os.environ.get(exe_env_key, "").strip() or tool_config.executable
         if executable.startswith(("~", ".", "/")):
             executable = str(Path(executable).expanduser().resolve())
 
@@ -1282,6 +988,17 @@ class SimJobScheduler:
                 cores=job["cores"],
                 memory_mb=job["memory_mb"],
             )
+
+        if tool_name == "orca_auto":
+            try:
+                env["ORCA_AUTO_CONFIG"] = self._prepare_orca_auto_runtime_config(executable)
+            except ValueError as exc:
+                self._logger.warning("sim_orca_auto_config_failed", error=str(exc))
+                await self._store.update_status(
+                    job_id, "failed", error_message=str(exc),
+                )
+                await self._resources.release(job["cores"], job["memory_mb"])
+                return
 
         self._logger.info(
             "sim_job_launching",
@@ -1486,7 +1203,7 @@ class SimJobScheduler:
         max_retries: int | None = None,
         label: str = "",
     ) -> str:
-        """작업을 검증하고 큐에 등록한다. 실제 실행은 host agent로 위임된다."""
+        """작업을 검증하고 큐에 등록한다."""
         tool_config = self._config.tools.get(tool)
         if not tool_config or not tool_config.enabled:
             raise ValueError(f"알 수 없거나 비활성화된 도구: {tool}")
@@ -1606,11 +1323,6 @@ class SimJobScheduler:
         if matched_job is None:
             return False
 
-        agent_cancel_result = await self._cancel_external_job_via_agent(pid)
-        if agent_cancel_result is not None:
-            return agent_cancel_result
-
-        # PID namespace가 다르면 kill(0)으로도 보이지 않는다.
         if not self._is_pid_alive(pid):
             self._logger.info(
                 "sim_external_cancel_unreachable_pid",
@@ -1717,10 +1429,6 @@ class SimJobScheduler:
 
     async def get_external_running_jobs(self) -> list[dict[str, Any]]:
         """큐 DB에 없는 실행 중 외부 시뮬레이션 프로세스를 탐지한다."""
-        agent_jobs = await self._fetch_external_jobs_from_agent()
-        if agent_jobs is not None:
-            return agent_jobs
-
         token_map = self._build_external_detection_tokens()
         tracked_running = await self._store.get_running_jobs()
         tracked_pids = {

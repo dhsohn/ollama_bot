@@ -78,7 +78,7 @@ async def test_submit_job_resolves_input_from_global_env(tmp_path: Path, monkeyp
 
 
 @pytest.mark.asyncio
-async def test_submit_job_queues_job_for_host_agent_dispatch(
+async def test_submit_job_queues_job_for_dispatch(
     tmp_path: Path,
 ) -> None:
     tool = "orca_auto"
@@ -88,9 +88,6 @@ async def test_submit_job_queues_job_for_host_agent_dispatch(
     os.environ["SIM_INPUT_DIR_ORCA_AUTO"] = str(base_dir)
 
     scheduler, store = await _build_scheduler(tmp_path, tool)
-    scheduler._submit_external_job_via_agent = AsyncMock(  # type: ignore[method-assign]
-        return_value="external-12345"
-    )
     try:
         job_id = await scheduler.submit_job(
             tool=tool,
@@ -98,7 +95,6 @@ async def test_submit_job_queues_job_for_host_agent_dispatch(
             submitted_by=123,
         )
         assert len(job_id) == 32
-        scheduler._submit_external_job_via_agent.assert_not_awaited()
         job = await store.get_job(job_id)
         assert job is not None
         assert job["status"] == "queued"
@@ -133,6 +129,7 @@ async def test_launch_job_builds_absolute_output_path(
         },
     )
     scheduler = SimJobScheduler(config=config, store=store, resources=resources)
+    scheduler._prepare_orca_auto_runtime_config = lambda _exe: "/tmp/fake.yaml"  # type: ignore[method-assign]
     input_dir = tmp_path / "orca_runs" / "mj1"
     input_dir.mkdir(parents=True)
     job = {
@@ -160,7 +157,7 @@ async def test_launch_job_builds_absolute_output_path(
 
     try:
         await scheduler._launch_job(job)
-        expected_work_dir = (tmp_path / "data" / "sim_jobs" / job["job_id"]).resolve()
+        expected_work_dir = input_dir.resolve()
         expected_output = (expected_work_dir / "mj1.out").resolve()
         assert captured["cwd"] == str(expected_work_dir)
         assert str(expected_output) in captured["cmd"]
@@ -295,6 +292,7 @@ async def test_dispatch_waits_when_external_jobs_exhaust_resources(
 @pytest.mark.asyncio
 async def test_dispatch_runs_when_external_jobs_leave_capacity(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     scheduler, store = await _build_scheduler(tmp_path, "orca_auto")
     scheduler._config.total_cores = 16
@@ -309,11 +307,14 @@ async def test_dispatch_runs_when_external_jobs_leave_capacity(
     tool.max_cores = 16
     tool.max_memory_mb = 65536
 
+    input_dir = tmp_path / "orca_runs" / "STRUC_EXT_RUN"
+    input_dir.mkdir(parents=True)
+
     job_id = await store.insert_job(
         SimJob(
             job_id="job-ext-run-1",
             tool="orca_auto",
-            input_file="/tmp/STRUC_EXT_RUN",
+            input_file=str(input_dir),
             submitted_by=1,
             cores=4,
             memory_mb=32768,
@@ -323,17 +324,28 @@ async def test_dispatch_runs_when_external_jobs_leave_capacity(
     scheduler.get_external_running_jobs = AsyncMock(  # type: ignore[method-assign]
         return_value=[{"cores": 4, "memory_mb": 32768} for _ in range(2)]
     )
-    scheduler._submit_external_job_via_agent = AsyncMock(  # type: ignore[method-assign]
-        return_value="external-77777"
+    scheduler._prepare_orca_auto_runtime_config = lambda _exe: "/tmp/fake.yaml"  # type: ignore[method-assign]
+
+    class _FakeProc:
+        pid = 77777
+
+    async def _fake_create_subprocess_shell(
+        cmd: str, **kwargs: object,
+    ) -> _FakeProc:
+        return _FakeProc()
+
+    monkeypatch.setattr(
+        "core.sim_scheduler.asyncio.create_subprocess_shell",
+        _fake_create_subprocess_shell,
     )
+
     try:
         await scheduler._dispatch_pending_jobs()
         job = await store.get_job(job_id)
         assert job is not None
         assert job["status"] == "running"
         assert job["pid"] == 77777
-        assert job["cli_command"] == "delegated:external-77777"
-        scheduler._submit_external_job_via_agent.assert_awaited_once()
+        assert "echo" in job["cli_command"]
     finally:
         await store.close()
 
@@ -653,44 +665,6 @@ async def test_cancel_external_job_returns_false_for_unreachable_lockfile_pid(
 
 
 @pytest.mark.asyncio
-async def test_get_external_running_jobs_uses_agent_when_available(
-    tmp_path: Path,
-) -> None:
-    scheduler, store = await _build_scheduler(tmp_path, "orca_auto")
-    scheduler._fetch_external_jobs_from_agent = AsyncMock(  # type: ignore[method-assign]
-        return_value=[{"job_id": "external-88888", "pid": 88888}]
-    )
-    scheduler._scan_lockfile_external_jobs = lambda **_kwargs: [  # type: ignore[method-assign]
-        {"job_id": "external-99999", "pid": 99999}
-    ]
-    try:
-        jobs = await scheduler.get_external_running_jobs()
-        assert len(jobs) == 1
-        assert jobs[0]["job_id"] == "external-88888"
-    finally:
-        await store.close()
-
-
-@pytest.mark.asyncio
-async def test_cancel_external_job_uses_agent_path_when_available(
-    tmp_path: Path,
-) -> None:
-    scheduler, store = await _build_scheduler(tmp_path, "orca_auto")
-    scheduler.get_external_running_jobs = AsyncMock(  # type: ignore[method-assign]
-        return_value=[{"pid": 24680, "source": "agent"}]
-    )
-    scheduler._cancel_external_job_via_agent = AsyncMock(  # type: ignore[method-assign]
-        return_value=True
-    )
-    scheduler._is_pid_alive = lambda _pid: False  # type: ignore[method-assign]
-    try:
-        success = await scheduler.cancel_external_job(24680)
-        assert success is True
-    finally:
-        await store.close()
-
-
-@pytest.mark.asyncio
 async def test_sync_external_job_states_marks_missing_job_completed(
     tmp_path: Path,
 ) -> None:
@@ -865,39 +839,5 @@ async def test_recover_orphaned_jobs_does_not_requeue_delegated_running(
         assert job is not None
         assert job["status"] == "running"
         scheduler._resources.sync_from_db.assert_awaited_once_with([])
-    finally:
-        await store.close()
-
-
-@pytest.mark.asyncio
-async def test_to_agent_input_path_strips_container_prefix(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """SIM_INPUT_DIR_ORCA_AUTO 접두사를 제거해 상대 경로를 반환한다."""
-    monkeypatch.setenv("SIM_INPUT_DIR_ORCA_AUTO", "/app/kb/orca_runs")
-    scheduler, store = await _build_scheduler(tmp_path, "orca_auto")
-    try:
-        # 단순 경로
-        assert scheduler._to_agent_input_path("orca_auto", "/app/kb/orca_runs/mj1") == "mj1"
-        # 중첩 경로
-        assert scheduler._to_agent_input_path("orca_auto", "/app/kb/orca_runs/proj/mj1") == "proj/mj1"
-        # 매칭 안 되면 원본 반환
-        assert scheduler._to_agent_input_path("orca_auto", "/other/path/mj1") == "/other/path/mj1"
-    finally:
-        await store.close()
-
-
-@pytest.mark.asyncio
-async def test_to_agent_input_path_falls_back_to_global_env(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """도구별 환경변수가 없으면 SIM_INPUT_DIR로 폴백한다."""
-    monkeypatch.delenv("SIM_INPUT_DIR_ORCA_AUTO", raising=False)
-    monkeypatch.setenv("SIM_INPUT_DIR", "/app/kb/sim_inputs")
-    scheduler, store = await _build_scheduler(tmp_path, "orca_auto")
-    try:
-        assert scheduler._to_agent_input_path("orca_auto", "/app/kb/sim_inputs/mj1") == "mj1"
     finally:
         await store.close()
