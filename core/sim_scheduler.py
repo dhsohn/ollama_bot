@@ -10,6 +10,7 @@ import asyncio
 import json
 import os
 import re
+import shutil
 import signal
 import uuid
 from datetime import datetime, timezone
@@ -875,7 +876,11 @@ class SimJobScheduler:
     def _resolve_path(raw: str) -> Path:
         p = Path(raw).expanduser()
         if not p.is_absolute():
-            p = (Path.cwd() / p).resolve()
+            found = shutil.which(raw)
+            if found:
+                p = Path(found).resolve()
+            else:
+                p = (Path.cwd() / p).resolve()
         return p
 
     def _prepare_orca_auto_runtime_config(self, executable: str) -> str:
