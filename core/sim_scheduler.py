@@ -302,7 +302,7 @@ class SimJobScheduler:
                     str(run_state.get("error") or "")
                     or str(run_state.get("message") or "")
                     or str(run_state.get("failure_reason") or "")
-                    or "외부 작업 실패"
+                    or "작업 실패"
                 )
                 return "failed", detail[:300]
             if raw_status in {"completed", "success", "done"}:
@@ -337,7 +337,7 @@ class SimJobScheduler:
             last_line = next((line.strip() for line in reversed(tail.splitlines()) if line.strip()), "")
             detail = last_line or tail
             detail = detail.replace("\n", " ").strip()
-            return "failed", f"외부 실행 실패: {detail[:300]}"
+            return "failed", f"실행 실패: {detail[:300]}"
         return None, None
 
     def _tool_default_resources(self, tool_name: str) -> tuple[int, int]:
@@ -733,7 +733,7 @@ class SimJobScheduler:
 
             inferred_status, inferred_error = self._infer_missing_delegated_terminal_state(job)
             if inferred_status == "failed":
-                error_msg = inferred_error or "외부 실행 실패"
+                error_msg = inferred_error or "실행 실패"
                 await self._store.update_status(
                     str(job["job_id"]),
                     "failed",
@@ -766,7 +766,7 @@ class SimJobScheduler:
                 str(job["job_id"]),
                 "completed",
                 completed_at="CURRENT_TIMESTAMP",
-                error_message="외부 작업 종료 감지 (성공/실패 미확인)",
+                error_message="작업 종료 감지 (성공/실패 미확인)",
                 pid=None,
             )
             await self._notify_job_completed(job)

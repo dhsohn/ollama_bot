@@ -718,7 +718,7 @@ async def test_sync_external_job_states_marks_missing_job_completed(
         job = await store.get_job(job_id)
         assert job is not None
         assert job["status"] == "completed"
-        assert "외부 작업 종료 감지" in str(job["error_message"])
+        assert "작업 종료 감지" in str(job["error_message"])
     finally:
         await store.close()
 
@@ -762,7 +762,7 @@ async def test_sync_external_job_states_marks_missing_job_failed_from_output(
         job = await store.get_job(job_id)
         assert job is not None
         assert job["status"] == "failed"
-        assert "외부 실행 실패" in str(job["error_message"])
+        assert "실행 실패" in str(job["error_message"])
         assert "allowed root" in str(job["error_message"]).lower()
     finally:
         await store.close()
