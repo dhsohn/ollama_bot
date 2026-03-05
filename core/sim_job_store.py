@@ -218,6 +218,16 @@ class SimJobStore:
             rows = await cursor.fetchall()
             return [dict(r) for r in rows]
 
+    async def get_jobs_by_status(self, status: str) -> list[dict[str, Any]]:
+        """특정 상태의 작업 전체를 반환한다."""
+        db = self._require_db()
+        async with db.execute(
+            "SELECT * FROM sim_jobs WHERE status = ? ORDER BY submitted_at ASC",
+            (status,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
     async def list_jobs(
         self,
         *,

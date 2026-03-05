@@ -1566,8 +1566,9 @@ class TelegramHandler:
                 priority=priority,
                 label=label,
             )
+            display_job_id = job_id if job_id.startswith("external-") else job_id[:8]
             await update.effective_message.reply_text(  # type: ignore[union-attr]
-                f"작업 등록 완료: {job_id[:8]}\n"
+                f"작업 등록 완료: {display_job_id}\n"
                 f"도구: {tool} | 우선순위: {priority}"
             )
         except (ValueError, FileNotFoundError) as exc:
@@ -1581,10 +1582,43 @@ class TelegramHandler:
             return
 
         status_filter = args[0] if args else None
-        jobs = await sim_scheduler.list_jobs(status=status_filter)
+        if status_filter == "external":
+            jobs = [
+                j for j in await sim_scheduler.list_jobs(limit=50)
+                if (
+                    (
+                        str(j.get("status")) == "running"
+                        and str(j.get("cli_command") or "").startswith("delegated:")
+                    )
+                    or str(j.get("status")) == "running_external"
+                )
+            ]
+        else:
+            jobs = await sim_scheduler.list_jobs(status=status_filter)
         external_jobs: list[dict[str, Any]] = []
-        if status_filter in (None, "all", "running", "running_external", "external"):
+        if status_filter in (None, "all", "running", "external"):
             external_jobs = await sim_scheduler.get_external_running_jobs()
+            tracked_external_pids = {
+                int(j["pid"])
+                for j in jobs
+                if isinstance(j.get("pid"), int)
+                and (
+                    (
+                        str(j.get("status")) == "running"
+                        and str(j.get("cli_command") or "").startswith("delegated:")
+                    )
+                    or str(j.get("status")) == "running_external"
+                )
+            }
+            if tracked_external_pids:
+                external_jobs = [
+                    j
+                    for j in external_jobs
+                    if not (
+                        isinstance(j.get("pid"), int)
+                        and int(j.get("pid")) in tracked_external_pids
+                    )
+                ]
 
         if not jobs and not external_jobs:
             await update.effective_message.reply_text(  # type: ignore[union-attr]
@@ -1634,7 +1668,7 @@ class TelegramHandler:
                 f"{self._escape_html(j['tool']):<6s} "
                 f"{ext_status:<9s} "
                 f"{resource_text:<12s} "
-                f"외부 PID:{j.get('pid', '?')} {elapsed_text}"
+                f"PID:{j.get('pid', '?')} {elapsed_text}"
             )
 
         header = "ID        도구    상태      리소스        비고"
@@ -1661,9 +1695,10 @@ class TelegramHandler:
         queue_running = status.get("running", 0)
         external_running = status.get("external_running", 0)
         running_total = status.get("running_total", queue_running)
+        detected_running = max(0, int(running_total) - int(queue_running))
         running_detail = ""
-        if external_running:
-            running_detail = f"  (큐:{queue_running}, 외부:{external_running})"
+        if detected_running:
+            running_detail = f"  (감지:{detected_running})"
         queue_alloc_cores = int(status.get("allocated_cores", 0))
         external_alloc_cores = int(status.get("allocated_external_cores", 0))
         total_alloc_cores = int(status.get("allocated_total_cores", queue_alloc_cores))
@@ -1689,36 +1724,42 @@ class TelegramHandler:
         total_cores = status.get("total_cores", 0)
         total_mem = self._format_memory_gb(status.get("total_memory_mb", 0))
         r_rows = [
-            ("리소스", "사용/전체", "큐", "외부"),
-            ("─" * 10, "─" * 12, "─" * 6, "─" * 6),
+            ("리소스", "사용/전체"),
+            ("─" * 10, "─" * 12),
             (
                 "CPU",
                 f"{total_alloc_cores}/{total_cores} 코어",
-                str(queue_alloc_cores),
-                str(external_alloc_cores),
             ),
             (
                 "메모리(할당)",
                 f"{self._format_memory_gb(total_alloc_memory)}/{total_mem}",
-                self._format_memory_gb(queue_alloc_memory),
-                self._format_memory_gb(external_alloc_memory),
             ),
         ]
-        r_table = chr(10).join(
-            f"{r[0]:<12s} {r[1]:<14s} {r[2]:<6s} {r[3]}" for r in r_rows
-        )
+        r_table = chr(10).join(f"{r[0]:<12s} {r[1]}" for r in r_rows)
 
         rss_line = ""
         if external_running:
-            rss_line = f"\n외부 RSS 실측: {external_rss_memory} MB"
+            rss_line = f"\n감지 RSS 실측: {external_rss_memory} MB"
 
-        footer = f"동시실행(큐): {running_jobs_queue}/{status.get('max_concurrent', 0)} | 실행합계: {running_jobs_total}"
+        detected_detail = ""
+        if detected_running:
+            detected_detail = (
+                f"\n감지 실행: {detected_running}건 "
+                f"(CPU {external_alloc_cores}, MEM {self._format_memory_gb(external_alloc_memory)})"
+            )
+
+        overall_running = int(status.get("running_total", running_jobs_total))
+        footer = (
+            f"동시실행(큐): {running_jobs_queue}/{status.get('max_concurrent', 0)} "
+            f"| 실행합계: {running_jobs_total}\n"
+            f"동시실행: {overall_running} | 실행합계: {running_jobs_total}"
+        )
 
         text = (
             f"<b>시뮬레이션 큐 현황</b>\n\n"
             f"<pre>{q_table}</pre>\n\n"
             f"<b>리소스</b>\n\n"
-            f"<pre>{r_table}{rss_line}\n\n{footer}</pre>"
+            f"<pre>{r_table}{rss_line}{detected_detail}\n\n{footer}</pre>"
         )
         await update.effective_message.reply_text(  # type: ignore[union-attr]
             text, parse_mode=ParseMode.HTML,
@@ -1767,7 +1808,7 @@ class TelegramHandler:
                     cmd = f"{cmd[:1000]}..."
 
                 rows: list[tuple[str, str]] = [
-                    ("유형", "external"),
+                    ("유형", "detected"),
                     ("도구", self._escape_html(str(ext.get("tool", "-")))),
                     ("상태", self._escape_html(str(ext.get("status", "running")))),
                     ("PID", str(ext.get("pid", "-"))),
@@ -1775,7 +1816,7 @@ class TelegramHandler:
                     ("입력", self._escape_html(str(ext.get("input_file") or "-"))),
                     ("코어", str(int(ext.get("cores", 0)))),
                     ("메모리(할당)", self._format_memory_gb(ext.get("memory_mb", 0))),
-                    ("타임스탬프", "외부 프로세스라 추적 불가"),
+                    ("타임스탬프", "감지 프로세스라 추적 불가"),
                 ]
                 rss_raw = ext.get("memory_rss_mb", 0)
                 try:
@@ -1794,7 +1835,7 @@ class TelegramHandler:
                 for label, value in rows:
                     table_lines.append(f"{label:<{lw}s}  {value}")
                 table = chr(10).join(table_lines)
-                text = f"<b>외부 작업 상세: {ext['job_id'][:12]}</b>\n\n<pre>{table}</pre>"
+                text = f"<b>감지 작업 상세: {ext['job_id'][:12]}</b>\n\n<pre>{table}</pre>"
                 await update.effective_message.reply_text(  # type: ignore[union-attr]
                     text, parse_mode=ParseMode.HTML,
                 )
@@ -1890,11 +1931,11 @@ class TelegramHandler:
         success = await sim_scheduler.cancel_external_job(pid)
         if success:
             await update.effective_message.reply_text(  # type: ignore[union-attr]
-                f"외부 작업 {target['job_id'][:12]} (PID:{pid}) 종료 완료"
+                f"감지 작업 {target['job_id'][:12]} (PID:{pid}) 종료 완료"
             )
         else:
             await update.effective_message.reply_text(  # type: ignore[union-attr]
-                f"외부 작업 {target['job_id'][:12]} 종료 불가 (이미 종료됨/권한 없음)"
+                f"감지 작업 {target['job_id'][:12]} 종료 불가 (이미 종료됨/권한 없음)"
             )
 
     async def _sim_priority(self, update: Update, args: list[str]) -> None:

@@ -140,6 +140,7 @@ SIM_EXTERNAL_AGENT_TOKEN=<긴_랜덤_토큰>
 - `ALLOWED_TELEGRAM_USERS`는 **숫자 Chat ID CSV**만 허용됩니다.
 - placeholder(`your_telegram_chat_id_here`) 상태면 시작 시 fail-fast로 종료됩니다.
 - `HOST_KB_DIR`는 docker compose 볼륨 마운트용 경로입니다. (앱 런타임 설정은 아님)
+  - 기본 compose는 `${HOST_KB_DIR}/orca_runs`와 `${HOST_KB_DIR}/orca_auto`를 `sim_host_agent`에 마운트합니다.
 - `/sim submit <tool> <이름>` shorthand를 쓰려면 `SIM_INPUT_DIR_<TOOL>` 또는 `SIM_INPUT_DIR`를 설정하세요.
   - 예: `SIM_INPUT_DIR_ORCA_AUTO=/app/kb/orca_runs`이면 `/sim submit orca_auto STRUC1` → `/app/kb/orca_runs/STRUC1`
 - `SIM_EXTERNAL_AGENT_TOKEN`은 `sim_host_agent` 인증 토큰입니다. 충분히 긴 랜덤 문자열을 사용하세요.
@@ -186,14 +187,14 @@ docker compose logs -f ollama_bot
 docker compose ps
 ```
 
-### 외부 시뮬레이션 에이전트 분리(권장)
+### 시뮬레이션 실행 경로
 
-`/sim list|status|info|cancel`의 외부 작업 처리는 `sim_host_agent`가 담당합니다.
+`/sim submit|list|status|info|cancel`은 모두 `sim_host_agent`를 통해 실행/조회/취소됩니다.
 
-- `ollama_bot`: 일반 봇 기능만 담당 (host PID 미사용)
-- `sim_host_agent`: host PID에서 외부 시뮬레이션 조회/종료 API만 제공
+- `ollama_bot`: 큐/텔레그램 인터페이스 담당
+- `sim_host_agent`: host PID에서 실제 시뮬레이션 실행과 제어 담당
 - 인증: `SIM_EXTERNAL_AGENT_TOKEN` Bearer 토큰 필수
-- 취소 가드: 감지된 external 작업만 종료 허용 (임의 PID 차단)
+- 취소 가드: 감지된 시뮬레이션 작업만 종료 허용 (임의 PID 차단)
 
 점검 예시:
 
@@ -204,7 +205,7 @@ docker compose logs -f sim_host_agent
 
 ## 실행 정책/제약
 
-- 기본 정책은 **컨테이너 내부 실행 전용**입니다.
+- 시뮬레이션 작업은 **host agent 단일 실행 경로**를 사용합니다. (`ollama_bot` 내부에서 직접 실행하지 않음)
 - 실행은 `bash scripts/run_bot.sh` 또는 `bash scripts/setup.sh --run`을 사용하세요.
 - 로컬 직접 실행 우회가 필요하면 `ALLOW_LOCAL_RUN=1` 환경변수를 사용합니다.
 - 텔레그램은 private chat(1:1)만 처리합니다. 그룹/채널 메시지는 거절됩니다.

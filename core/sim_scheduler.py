@@ -210,6 +210,38 @@ class SimJobScheduler:
             return dt.replace(tzinfo=timezone.utc)
         return dt.astimezone(timezone.utc)
 
+    @staticmethod
+    def _extract_pid_from_external_job_id(job_id: str) -> int | None:
+        if not job_id.startswith("external-"):
+            return None
+        pid_text = job_id.split("-", 1)[1].strip()
+        try:
+            pid = int(pid_text)
+        except (TypeError, ValueError):
+            return None
+        if pid <= 0:
+            return None
+        return pid
+
+    @staticmethod
+    def _is_delegated_job(job: dict[str, Any]) -> bool:
+        cli = str(job.get("cli_command") or "")
+        return cli.startswith("delegated:")
+
+    async def _list_tracked_delegated_jobs(self) -> list[dict[str, Any]]:
+        """DB에서 위임 실행 중인 작업을 반환한다.
+
+        Backward compatibility:
+        - 신규: status='running' + cli_command='delegated:*'
+        - 레거시: status='running_external'
+        """
+        running_jobs = [
+            j for j in await self._store.get_jobs_by_status("running")
+            if self._is_delegated_job(j)
+        ]
+        legacy_jobs = await self._store.get_jobs_by_status("running_external")
+        return running_jobs + legacy_jobs
+
     def _elapsed_seconds_from_lock(
         self,
         *,
@@ -487,10 +519,8 @@ class SimJobScheduler:
 
         반환:
         - list: 성공적으로 조회(빈 목록 포함)
-        - None: 에이전트 비활성/오류로 조회 실패
+        - None: 통신 오류로 조회 실패
         """
-        if not self._config.external_agent_enabled:
-            return None
         base_url = self._config.external_agent_base_url.strip().rstrip("/")
         if not base_url:
             return None
@@ -540,10 +570,8 @@ class SimJobScheduler:
 
         반환:
         - bool: 에이전트 응답 성공
-        - None: 에이전트 비활성/통신 오류로 판단 불가
+        - None: 통신 오류로 판단 불가
         """
-        if not self._config.external_agent_enabled:
-            return None
         base_url = self._config.external_agent_base_url.strip().rstrip("/")
         if not base_url:
             return None
@@ -577,6 +605,144 @@ class SimJobScheduler:
             body=response.text[:200],
         )
         return False
+
+    async def _sync_external_job_states(self) -> None:
+        """DB의 위임 실행 작업을 외부 에이전트 조회 결과로 동기화한다."""
+        tracked_jobs = await self._list_tracked_delegated_jobs()
+        if not tracked_jobs:
+            return
+
+        live_jobs = await self.get_external_running_jobs()
+        live_by_pid: dict[int, dict[str, Any]] = {}
+        for item in live_jobs:
+            pid_raw = item.get("pid")
+            try:
+                pid = int(pid_raw)
+            except (TypeError, ValueError):
+                continue
+            if pid > 0:
+                live_by_pid[pid] = item
+
+        now = datetime.now(timezone.utc)
+        stale_seconds = 30
+
+        for job in tracked_jobs:
+            pid_raw = job.get("pid")
+            try:
+                pid = int(pid_raw)
+            except (TypeError, ValueError):
+                pid = None
+
+            if pid is not None and pid > 0:
+                live = live_by_pid.get(pid)
+                if live is not None:
+                    updates: dict[str, Any] = {}
+                    if not job.get("cli_command") and live.get("cli_command"):
+                        updates["cli_command"] = str(live.get("cli_command"))
+                    if not job.get("output_file") and live.get("output_file"):
+                        updates["output_file"] = str(live.get("output_file"))
+                    if updates:
+                        await self._store.update_status(
+                            str(job["job_id"]),
+                            "running",
+                            **updates,
+                        )
+                    continue
+
+            started_raw = job.get("started_at")
+            started_dt = self._parse_iso_datetime(
+                str(started_raw) if started_raw is not None else None,
+            )
+            if started_dt is not None:
+                elapsed = (now - started_dt).total_seconds()
+                if elapsed < stale_seconds:
+                    continue
+
+            await self._store.update_status(
+                str(job["job_id"]),
+                "completed",
+                completed_at="CURRENT_TIMESTAMP",
+                error_message="외부 작업 종료 감지 (성공/실패 미확인)",
+                pid=None,
+            )
+
+    async def _submit_external_job_via_agent(
+        self,
+        *,
+        tool: str,
+        input_file: str,
+        submitted_by: int,
+        cores: int,
+        memory_mb: int,
+        priority: int,
+        max_retries: int,
+        retry_delay_s: int,
+        label: str,
+    ) -> str:
+        """외부 에이전트를 통해 작업 submit을 위임한다."""
+        base_url = self._config.external_agent_base_url.strip().rstrip("/")
+        if not base_url:
+            raise ValueError("external_agent_base_url 설정이 비어 있습니다.")
+
+        url = f"{base_url}/v1/sim/external/submit"
+        headers = self._external_agent_headers()
+        headers["Content-Type"] = "application/json"
+        timeout = max(0.1, float(self._config.external_agent_timeout_seconds))
+        payload: dict[str, Any] = {
+            "tool": tool,
+            "input_file": input_file,
+            "submitted_by": submitted_by,
+            "cores": cores,
+            "memory_mb": memory_mb,
+            "priority": priority,
+            "max_retries": max_retries,
+            "retry_delay_s": retry_delay_s,
+            "label": label,
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.post(url, headers=headers, json=payload)
+        except Exception as exc:
+            raise ValueError(f"외부 에이전트 submit 호출 실패: {exc}") from exc
+
+        if response.status_code not in (200, 201, 202):
+            detail = response.text.strip()
+            if len(detail) > 300:
+                detail = f"{detail[:300]}..."
+            self._logger.warning(
+                "sim_external_agent_submit_failed",
+                url=url,
+                status_code=response.status_code,
+                body=response.text[:200],
+            )
+            raise ValueError(
+                f"외부 에이전트 submit 실패({response.status_code}): "
+                f"{detail or '응답 본문 없음'}"
+            )
+
+        try:
+            response_payload = response.json()
+        except ValueError as exc:
+            raise ValueError(f"외부 에이전트 submit 응답 파싱 실패: {exc}") from exc
+
+        if not isinstance(response_payload, dict):
+            raise ValueError("외부 에이전트 submit 응답 형식이 올바르지 않습니다.")
+
+        job_id_raw = str(response_payload.get("job_id") or "").strip()
+        if not job_id_raw:
+            pid_raw = response_payload.get("pid")
+            try:
+                pid = int(pid_raw)
+            except (TypeError, ValueError):
+                pid = None
+            if pid is not None and pid > 0:
+                job_id_raw = f"external-{pid}"
+
+        if not job_id_raw:
+            raise ValueError("외부 에이전트 submit 응답에 job_id가 없습니다.")
+
+        return job_id_raw
 
     def _resolve_input_path(self, tool: str, input_file: str) -> Path:
         """입력 경로를 실제 경로로 해석한다.
@@ -671,6 +837,7 @@ class SimJobScheduler:
         interval = self._config.queue_check_interval_seconds
         while not self._stop_event.is_set():
             try:
+                await self._sync_external_job_states()
                 await self._dispatch_pending_jobs()
             except Exception as exc:
                 self._logger.error("sim_scheduler_loop_error", error=str(exc))
@@ -787,10 +954,33 @@ class SimJobScheduler:
             return
         job = candidates[0]
         resource_status = await self._resources.get_status()
+        tracked_external_jobs = await self._list_tracked_delegated_jobs()
+        tracked_external_pids = {
+            int(j["pid"])
+            for j in tracked_external_jobs
+            if isinstance(j.get("pid"), int)
+        }
+        tracked_external_cores = sum(int(j.get("cores", 0)) for j in tracked_external_jobs)
+        tracked_external_memory = sum(int(j.get("memory_mb", 0)) for j in tracked_external_jobs)
         external_jobs = await self.get_external_running_jobs()
-        external_running = len(external_jobs)
-        external_alloc_cores = sum(int(j.get("cores", 0)) for j in external_jobs)
-        external_alloc_memory = sum(int(j.get("memory_mb", 0)) for j in external_jobs)
+        untracked_external_jobs: list[dict[str, Any]] = []
+        for item in external_jobs:
+            pid_raw = item.get("pid")
+            try:
+                pid = int(pid_raw)
+            except (TypeError, ValueError):
+                pid = None
+            if pid is not None and pid in tracked_external_pids:
+                continue
+            untracked_external_jobs.append(item)
+
+        external_running = len(tracked_external_jobs) + len(untracked_external_jobs)
+        external_alloc_cores = tracked_external_cores + sum(
+            int(j.get("cores", 0)) for j in untracked_external_jobs
+        )
+        external_alloc_memory = tracked_external_memory + sum(
+            int(j.get("memory_mb", 0)) for j in untracked_external_jobs
+        )
 
         allocated_cores = int(resource_status.get("allocated_cores", 0))
         allocated_memory = int(resource_status.get("allocated_memory_mb", 0))
@@ -845,12 +1035,72 @@ class SimJobScheduler:
             )
             return
 
-        if not await self._resources.can_allocate(dispatch_cores, dispatch_memory):
+        running_now = int(effective_status.get("running_jobs", 0))
+        if running_now >= int(self._config.max_concurrent_jobs):
+            self._logger.info(
+                "sim_job_waiting_for_slot",
+                job_id=str(job.get("job_id") or ""),
+                running_jobs=running_now,
+                max_concurrent=int(self._config.max_concurrent_jobs),
+            )
             return
-        success = await self._resources.allocate(dispatch_cores, dispatch_memory)
-        if not success:
+        await self._delegate_job(dispatch_job)
+
+    async def _delegate_job(self, job: dict[str, Any]) -> None:
+        """큐 작업을 host agent 실행으로 위임하고 running 상태로 전환한다."""
+        job_id = str(job["job_id"])
+        try:
+            external_job_id = await self._submit_external_job_via_agent(
+                tool=str(job["tool"]),
+                input_file=str(job["input_file"]),
+                submitted_by=int(job["submitted_by"]),
+                cores=int(job["cores"]),
+                memory_mb=int(job["memory_mb"]),
+                priority=int(job["priority"]),
+                max_retries=int(job.get("max_retries", self._config.default_retry_count)),
+                retry_delay_s=int(job.get("retry_delay_s", self._config.retry_delay_seconds)),
+                label=str(job.get("label") or ""),
+            )
+        except (TypeError, ValueError) as exc:
+            self._logger.error(
+                "sim_job_delegate_failed",
+                job_id=job_id,
+                error=str(exc),
+            )
+            await self._store.update_status(
+                job_id,
+                "failed",
+                completed_at="CURRENT_TIMESTAMP",
+                error_message=str(exc),
+            )
+            await self._notify(
+                f"[SIM] 작업 {job_id[:8]} 위임 실패\n{exc}"
+            )
             return
-        await self._launch_job(dispatch_job)
+
+        pid = self._extract_pid_from_external_job_id(external_job_id)
+        update_kwargs: dict[str, Any] = {
+            "started_at": "CURRENT_TIMESTAMP",
+            "cli_command": f"delegated:{external_job_id}",
+            "cores": int(job["cores"]),
+            "memory_mb": int(job["memory_mb"]),
+        }
+        if pid is not None:
+            update_kwargs["pid"] = pid
+        await self._store.update_status(
+            job_id,
+            "running",
+            **update_kwargs,
+        )
+        self._logger.info(
+            "sim_job_delegated",
+            job_id=job_id,
+            external_job_id=external_job_id,
+            tool=str(job["tool"]),
+            cores=int(job["cores"]),
+            memory_mb=int(job["memory_mb"]),
+        )
+        await self._notify_job_started(job)
 
     async def _launch_job(self, job: dict[str, Any]) -> None:
         """CLI 커맨드를 빌드하고 subprocess를 실행한다."""
@@ -866,11 +1116,14 @@ class SimJobScheduler:
             await self._resources.release(job["cores"], job["memory_mb"])
             return
 
-        work_dir = Path(self._config.job_work_dir) / job_id
+        base_work_dir = Path(self._config.job_work_dir).expanduser()
+        if not base_work_dir.is_absolute():
+            base_work_dir = (Path.cwd() / base_work_dir).resolve()
+        work_dir = (base_work_dir / job_id).resolve()
         work_dir.mkdir(parents=True, exist_ok=True)
 
         input_path = Path(job["input_file"])
-        output_file = str(work_dir / (input_path.stem + tool_config.output_extension))
+        output_file = str((work_dir / (input_path.stem + tool_config.output_extension)).resolve())
         executable = tool_config.executable
         if executable.startswith(("~", ".", "/")):
             executable = str(Path(executable).expanduser().resolve())
@@ -993,6 +1246,9 @@ class SimJobScheduler:
         """시작 시 DB에 running이지만 프로세스가 없는 작업을 복구한다."""
         running_jobs = await self._store.get_running_jobs()
         for job in running_jobs:
+            if self._is_delegated_job(job):
+                # 위임 작업은 host PID namespace에 있으므로 로컬 kill(0)로 판단하지 않는다.
+                continue
             pid = job.get("pid")
             alive = False
             if pid:
@@ -1007,7 +1263,8 @@ class SimJobScheduler:
                 self._logger.info("sim_job_recovered_to_queue", job_id=job["job_id"])
 
         actual_running = await self._store.get_running_jobs()
-        await self._resources.sync_from_db(actual_running)
+        internal_running = [j for j in actual_running if not self._is_delegated_job(j)]
+        await self._resources.sync_from_db(internal_running)
 
     # ── DFT 통합 ──
 
@@ -1089,7 +1346,7 @@ class SimJobScheduler:
         max_retries: int | None = None,
         label: str = "",
     ) -> str:
-        """작업을 검증하고 큐에 등록한다. job_id를 반환한다."""
+        """작업을 검증하고 큐에 등록한다. 실제 실행은 host agent로 위임된다."""
         tool_config = self._config.tools.get(tool)
         if not tool_config or not tool_config.enabled:
             raise ValueError(f"알 수 없거나 비활성화된 도구: {tool}")
@@ -1152,6 +1409,26 @@ class SimJobScheduler:
             return False
         if job["status"] in ("completed", "cancelled", "failed"):
             return False
+
+        if (
+            (job["status"] == "running" and self._is_delegated_job(job))
+            or job["status"] == "running_external"
+        ):
+            pid_raw = job.get("pid")
+            try:
+                pid = int(pid_raw)
+            except (TypeError, ValueError):
+                pid = None
+            if pid is None or pid <= 0:
+                return False
+            cancelled = await self.cancel_external_job(pid)
+            if cancelled:
+                await self._store.update_status(
+                    job_id,
+                    "cancelled",
+                    completed_at="CURRENT_TIMESTAMP",
+                )
+            return cancelled
 
         proc = self._running_processes.get(job_id)
         if proc:
@@ -1245,17 +1522,37 @@ class SimJobScheduler:
         """큐 통계 + 리소스 현황을 합쳐 반환한다."""
         queue_stats = await self._store.get_queue_stats()
         resource_status = await self._resources.get_status()
+        tracked_external_jobs = await self._list_tracked_delegated_jobs()
+        tracked_external_pids = {
+            int(j["pid"])
+            for j in tracked_external_jobs
+            if isinstance(j.get("pid"), int)
+        }
+        tracked_external_cores = sum(int(j.get("cores", 0)) for j in tracked_external_jobs)
+        tracked_external_memory_mb = sum(int(j.get("memory_mb", 0)) for j in tracked_external_jobs)
+
         external_jobs = await self.get_external_running_jobs()
+        untracked_external_jobs: list[dict[str, Any]] = []
+        for job in external_jobs:
+            pid_raw = job.get("pid")
+            try:
+                pid = int(pid_raw)
+            except (TypeError, ValueError):
+                pid = None
+            if pid is not None and pid in tracked_external_pids:
+                continue
+            untracked_external_jobs.append(job)
+
         queue_running = int(queue_stats.get("running", 0))
-        external_running = len(external_jobs)
-        allocated_external_cores = sum(
-            int(j.get("cores", 0)) for j in external_jobs
+        external_running = len(tracked_external_jobs) + len(untracked_external_jobs)
+        allocated_external_cores = tracked_external_cores + sum(
+            int(j.get("cores", 0)) for j in untracked_external_jobs
         )
-        allocated_external_memory_mb = sum(
-            int(j.get("memory_mb", 0)) for j in external_jobs
+        allocated_external_memory_mb = tracked_external_memory_mb + sum(
+            int(j.get("memory_mb", 0)) for j in untracked_external_jobs
         )
         external_memory_rss_mb = sum(
-            int(j.get("memory_rss_mb", 0) or 0) for j in external_jobs
+            int(j.get("memory_rss_mb", 0) or 0) for j in untracked_external_jobs
         )
         allocated_queue_cores = int(resource_status.get("allocated_cores", 0))
         allocated_queue_memory_mb = int(resource_status.get("allocated_memory_mb", 0))
@@ -1263,7 +1560,7 @@ class SimJobScheduler:
             **queue_stats,
             **resource_status,
             "external_running": external_running,
-            "running_total": queue_running + external_running,
+            "running_total": queue_running + len(untracked_external_jobs),
             "allocated_external_cores": allocated_external_cores,
             "allocated_external_memory_mb": allocated_external_memory_mb,
             "allocated_total_cores": allocated_queue_cores + allocated_external_cores,
@@ -1271,7 +1568,11 @@ class SimJobScheduler:
                 allocated_queue_memory_mb + allocated_external_memory_mb
             ),
             "external_memory_rss_mb": external_memory_rss_mb,
-            "running_total_jobs": int(resource_status.get("running_jobs", 0)) + external_running,
+            "running_total_jobs": (
+                int(resource_status.get("running_jobs", 0))
+                + len(tracked_external_jobs)
+                + len(untracked_external_jobs)
+            ),
         }
 
     async def get_external_running_jobs(self) -> list[dict[str, Any]]:

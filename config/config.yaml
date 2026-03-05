@@ -169,7 +169,6 @@ sim_queue:
   queue_check_interval_seconds: 5
   adaptive_allocation_enabled: true
   adaptive_memory_step_mb: 1024
-  external_agent_enabled: true
   external_agent_base_url: "http://sim_host_agent:18081"
   external_agent_timeout_seconds: 3.0
   external_agent_token_env: "SIM_EXTERNAL_AGENT_TOKEN"
@@ -177,9 +176,9 @@ sim_queue:
   tools:
     orca_auto:
       enabled: true
-      executable: "./bin/orca_auto"
+      executable: "/app/host/orca_auto/bin/orca_auto"
       cli_template: "{executable} run-inp --reaction-dir '{input_file}' > {output_file} 2>&1"
-      command_prefix: "conda run -n base"
+      command_prefix: ""
       min_cores: 2
       default_cores: 4
       min_memory_mb: 16384

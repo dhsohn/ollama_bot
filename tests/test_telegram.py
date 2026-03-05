@@ -1495,7 +1495,7 @@ class TestSimInfoExternal:
         await telegram_handler._sim_info(update, ["external-543"])
 
         reply = message.reply_text.await_args[0][0]
-        assert "외부 작업 상세" in reply
+        assert "감지 작업 상세" in reply
         assert "54321" in reply
         assert "/tmp/STRUC2" in reply
         assert "run-inp" in reply
@@ -1533,7 +1533,7 @@ class TestSimInfoExternal:
         await telegram_handler._sim_info(update, ["987"])
 
         reply = message.reply_text.await_args[0][0]
-        assert "외부 작업 상세" in reply
+        assert "감지 작업 상세" in reply
         assert "98765" in reply
 
     @pytest.mark.asyncio
@@ -1576,7 +1576,7 @@ class TestSimInfoExternal:
         reply = message.reply_text.await_args[0][0]
         assert "12/16 코어" in reply
         assert "24GB/128GB" in reply
-        assert "외부 RSS 실측: 114 MB" in reply
+        assert "감지 RSS 실측: 114 MB" in reply
         assert "실행합계: 3" in reply
 
     @pytest.mark.asyncio
@@ -1610,7 +1610,7 @@ class TestSimInfoExternal:
 
         reply = message.reply_text.await_args[0][0]
         assert "C4/M8GB" in reply
-        assert "외부 PID:12345" in reply
+        assert "PID:12345" in reply
 
     @pytest.mark.asyncio
     async def test_sim_list_marks_queued_resources_as_requested(

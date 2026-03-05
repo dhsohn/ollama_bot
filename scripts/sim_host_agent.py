@@ -12,7 +12,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
+import shutil
 import signal
+import subprocess
 import sys
 import time
 from datetime import datetime, timezone
@@ -162,6 +165,207 @@ def _load_tool_defaults(config_path: Path) -> dict[str, tuple[int, int]]:
         memory_mb = int(tool_cfg.get("default_memory_mb", 0) or 0)
         defaults[tool_name] = (max(0, cores), max(0, memory_mb))
     return defaults
+
+
+def _load_tool_configs(config_path: Path) -> dict[str, dict[str, Any]]:
+    try:
+        raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    except OSError:
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    sim_queue = raw.get("sim_queue")
+    if not isinstance(sim_queue, dict):
+        return {}
+    tools = sim_queue.get("tools")
+    if not isinstance(tools, dict):
+        return {}
+
+    result: dict[str, dict[str, Any]] = {}
+    for tool_name, tool_cfg in tools.items():
+        if isinstance(tool_name, str) and isinstance(tool_cfg, dict):
+            result[tool_name] = tool_cfg
+    return result
+
+
+def _coerce_int_range(value: Any, *, default: int, minimum: int, maximum: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = int(default)
+    return min(max(parsed, minimum), maximum)
+
+
+def _resolve_submit_input_path(
+    *,
+    tool: str,
+    input_file: str,
+) -> Path:
+    raw_path = Path(input_file).expanduser()
+    if raw_path.exists():
+        return raw_path.resolve()
+    if raw_path.is_absolute():
+        raise FileNotFoundError(f"입력 경로를 찾을 수 없음: {input_file}")
+
+    suffix = _tool_env_suffix(tool)
+    env_keys = [f"SIM_INPUT_DIR_{suffix}", "SIM_INPUT_DIR"]
+    tried: list[str] = []
+
+    for key in env_keys:
+        root_raw = os.environ.get(key, "").strip()
+        if not root_raw:
+            continue
+        root = _resolve_path(root_raw)
+        candidate = (root / raw_path).resolve()
+        tried.append(f"{key}:{candidate}")
+        if candidate.exists():
+            return candidate
+
+    host_kb = os.environ.get("HOST_KB_DIR", "").strip()
+    if host_kb:
+        candidate = (_resolve_path(host_kb) / "orca_runs" / raw_path).resolve()
+        tried.append(f"HOST_KB_DIR:{candidate}")
+        if candidate.exists():
+            return candidate
+
+    fallback = (_resolve_path("/app/kb/orca_runs") / raw_path).resolve()
+    tried.append(f"/app/kb/orca_runs:{fallback}")
+    if fallback.exists():
+        return fallback
+
+    hint = f"입력 경로를 찾을 수 없음: {input_file}"
+    if tried:
+        hint += f" (확인한 후보: {', '.join(tried)})"
+    raise FileNotFoundError(hint)
+
+
+def submit_external_job(config_path: Path, payload: dict[str, Any]) -> dict[str, Any]:
+    tool = str(payload.get("tool") or "").strip()
+    if not tool:
+        raise ValueError("tool_required")
+    input_file = str(payload.get("input_file") or "").strip()
+    if not input_file:
+        raise ValueError("input_file_required")
+
+    tools = _load_tool_configs(config_path)
+    tool_cfg = tools.get(tool)
+    if not isinstance(tool_cfg, dict):
+        raise ValueError(f"unknown_tool:{tool}")
+    if not bool(tool_cfg.get("enabled", True)):
+        raise ValueError(f"tool_disabled:{tool}")
+
+    resolved_input = _resolve_submit_input_path(tool=tool, input_file=input_file)
+
+    min_cores = max(1, int(tool_cfg.get("min_cores", 1) or 1))
+    max_cores = max(min_cores, int(tool_cfg.get("max_cores", min_cores) or min_cores))
+    default_cores = _coerce_int_range(
+        tool_cfg.get("default_cores", min_cores),
+        default=min_cores,
+        minimum=min_cores,
+        maximum=max_cores,
+    )
+    cores = _coerce_int_range(
+        payload.get("cores"),
+        default=default_cores,
+        minimum=min_cores,
+        maximum=max_cores,
+    )
+
+    min_memory = max(1, int(tool_cfg.get("min_memory_mb", 1) or 1))
+    max_memory = max(min_memory, int(tool_cfg.get("max_memory_mb", min_memory) or min_memory))
+    default_memory = _coerce_int_range(
+        tool_cfg.get("default_memory_mb", min_memory),
+        default=min_memory,
+        minimum=min_memory,
+        maximum=max_memory,
+    )
+    memory_mb = _coerce_int_range(
+        payload.get("memory_mb"),
+        default=default_memory,
+        minimum=min_memory,
+        maximum=max_memory,
+    )
+
+    output_extension = str(tool_cfg.get("output_extension") or ".out")
+    work_dir = resolved_input if resolved_input.is_dir() else resolved_input.parent
+    output_file = (work_dir / f"{resolved_input.stem}{output_extension}").resolve()
+    if not os.access(work_dir, os.W_OK):
+        raise OSError(f"work_dir_not_writable:{work_dir}")
+
+    executable = str(tool_cfg.get("executable") or "").strip()
+    if not executable:
+        raise ValueError(f"tool_executable_missing:{tool}")
+    if executable.startswith(("~", ".", "/")):
+        executable = str(_resolve_path(executable))
+    executable_path = Path(executable)
+    if executable_path.is_absolute() and not executable_path.exists():
+        raise ValueError(f"tool_executable_not_found:{executable}")
+
+    cli_template = str(tool_cfg.get("cli_template") or "{executable} {input_file}")
+    cmd = cli_template.format(
+        executable=executable,
+        input_file=str(resolved_input),
+        output_file=str(output_file),
+        cores=cores,
+        memory_mb=memory_mb,
+    )
+    command_prefix = str(tool_cfg.get("command_prefix") or "").strip()
+    if command_prefix:
+        try:
+            prefix_tokens = shlex.split(command_prefix)
+        except ValueError as exc:
+            raise ValueError(f"command_prefix_invalid:{exc}") from exc
+        if prefix_tokens:
+            prefix_bin = prefix_tokens[0]
+            prefix_path = Path(prefix_bin)
+            if prefix_path.is_absolute():
+                if not prefix_path.exists():
+                    raise ValueError(f"command_prefix_not_found:{prefix_bin}")
+            elif shutil.which(prefix_bin) is None:
+                raise ValueError(f"command_prefix_not_found:{prefix_bin}")
+        prefix = command_prefix.format(
+            executable=executable,
+            input_file=str(resolved_input),
+            output_file=str(output_file),
+            cores=cores,
+            memory_mb=memory_mb,
+        )
+        cmd = f"{prefix} {cmd}"
+
+    env = dict(os.environ)
+    env_vars_raw = tool_cfg.get("env_vars")
+    if isinstance(env_vars_raw, dict):
+        for key, template in env_vars_raw.items():
+            if not isinstance(key, str):
+                continue
+            env[key] = str(template).format(cores=cores, memory_mb=memory_mb)
+
+    proc = subprocess.Popen(
+        cmd,
+        shell=True,
+        cwd=str(work_dir),
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    started_at = datetime.now(timezone.utc).isoformat()
+    return {
+        "accepted": True,
+        "job_id": f"external-{proc.pid}",
+        "pid": proc.pid,
+        "tool": tool,
+        "status": "running",
+        "input_file": str(resolved_input),
+        "output_file": str(output_file),
+        "cli_command": cmd,
+        "submitted_at": started_at,
+        "started_at": started_at,
+        "cores": cores,
+        "memory_mb": memory_mb,
+        "label": str(payload.get("label") or ""),
+        "source": "agent_submit",
+    }
 
 
 def _scan_roots(tools: dict[str, tuple[int, int]]) -> list[tuple[str, Path]]:
@@ -390,46 +594,76 @@ class _AgentHandler(BaseHTTPRequestHandler):
         self._send_json(HTTPStatus.OK, {"jobs": jobs, "count": len(jobs)})
 
     def do_POST(self) -> None:
-        if self.path != "/v1/sim/external/cancel":
-            self._send_json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
-            return
-        if not self._authorized():
-            self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
+        if self.path == "/v1/sim/external/submit":
+            if not self._authorized():
+                self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
+                return
+            payload = self._read_json_body()
+            try:
+                result = submit_external_job(self.server.config_path, payload)
+            except FileNotFoundError as exc:
+                self._send_json(
+                    HTTPStatus.BAD_REQUEST,
+                    {"error": "input_not_found", "detail": str(exc)},
+                )
+                return
+            except ValueError as exc:
+                self._send_json(
+                    HTTPStatus.BAD_REQUEST,
+                    {"error": "invalid_request", "detail": str(exc)},
+                )
+                return
+            except OSError as exc:
+                self._send_json(
+                    HTTPStatus.CONFLICT,
+                    {"error": "submit_failed", "detail": str(exc)},
+                )
+                return
+
+            self._send_json(HTTPStatus.ACCEPTED, result)
             return
 
-        payload = self._read_json_body()
-        pid: int | None = None
-        if "pid" in payload:
-            try:
-                pid = int(payload.get("pid"))
-            except (TypeError, ValueError):
-                pid = None
-        elif "job_id" in payload:
-            job_id = str(payload.get("job_id") or "")
-            if job_id.startswith("external-"):
+        if self.path == "/v1/sim/external/cancel":
+            if not self._authorized():
+                self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
+                return
+
+            payload = self._read_json_body()
+            pid: int | None = None
+            if "pid" in payload:
                 try:
-                    pid = int(job_id.split("-", 1)[1])
+                    pid = int(payload.get("pid"))
                 except (TypeError, ValueError):
                     pid = None
+            elif "job_id" in payload:
+                job_id = str(payload.get("job_id") or "")
+                if job_id.startswith("external-"):
+                    try:
+                        pid = int(job_id.split("-", 1)[1])
+                    except (TypeError, ValueError):
+                        pid = None
 
-        if pid is None or pid <= 0:
-            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid_pid"})
-            return
+            if pid is None or pid <= 0:
+                self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid_pid"})
+                return
 
-        jobs = discover_external_jobs(self.server.config_path)
-        if not any(int(job.get("pid", -1)) == pid for job in jobs):
+            jobs = discover_external_jobs(self.server.config_path)
+            if not any(int(job.get("pid", -1)) == pid for job in jobs):
+                self._send_json(
+                    HTTPStatus.NOT_FOUND,
+                    {"error": "job_not_found", "pid": pid, "cancelled": False},
+                )
+                return
+
+            cancelled, detail = cancel_pid(pid, self.server.grace_seconds)
+            status = HTTPStatus.OK if cancelled else HTTPStatus.CONFLICT
             self._send_json(
-                HTTPStatus.NOT_FOUND,
-                {"error": "job_not_found", "pid": pid, "cancelled": False},
+                status,
+                {"cancelled": cancelled, "pid": pid, "detail": detail},
             )
             return
 
-        cancelled, detail = cancel_pid(pid, self.server.grace_seconds)
-        status = HTTPStatus.OK if cancelled else HTTPStatus.CONFLICT
-        self._send_json(
-            status,
-            {"cancelled": cancelled, "pid": pid, "detail": detail},
-        )
+        self._send_json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
 
 
 def _parse_args() -> argparse.Namespace:

@@ -78,6 +78,97 @@ async def test_submit_job_resolves_input_from_global_env(tmp_path: Path, monkeyp
 
 
 @pytest.mark.asyncio
+async def test_submit_job_queues_job_for_host_agent_dispatch(
+    tmp_path: Path,
+) -> None:
+    tool = "orca_auto"
+    base_dir = tmp_path / "orca_runs"
+    input_dir = base_dir / "STRUC_EXT"
+    input_dir.mkdir(parents=True)
+    os.environ["SIM_INPUT_DIR_ORCA_AUTO"] = str(base_dir)
+
+    scheduler, store = await _build_scheduler(tmp_path, tool)
+    scheduler._submit_external_job_via_agent = AsyncMock(  # type: ignore[method-assign]
+        return_value="external-12345"
+    )
+    try:
+        job_id = await scheduler.submit_job(
+            tool=tool,
+            input_file="STRUC_EXT",
+            submitted_by=123,
+        )
+        assert len(job_id) == 32
+        scheduler._submit_external_job_via_agent.assert_not_awaited()
+        job = await store.get_job(job_id)
+        assert job is not None
+        assert job["status"] == "queued"
+        assert job["input_file"] == str(input_dir.resolve())
+        assert job["pid"] is None
+        assert job["cli_command"] is None
+    finally:
+        os.environ.pop("SIM_INPUT_DIR_ORCA_AUTO", None)
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_launch_job_builds_absolute_output_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    store = SimJobStore()
+    await store.initialize(str(tmp_path / "sim_jobs.db"))
+    resources = ResourceManager(total_cores=16, total_memory_mb=131072, max_concurrent=4)
+    config = SimQueueConfig(
+        enabled=True,
+        job_work_dir="data/sim_jobs",
+        tools={
+            "orca_auto": SimToolConfig(
+                enabled=True,
+                executable="echo",
+                cli_template="{executable} run-inp --reaction-dir '{input_file}' > {output_file} 2>&1",
+                output_extension=".out",
+            ),
+        },
+    )
+    scheduler = SimJobScheduler(config=config, store=store, resources=resources)
+    input_dir = tmp_path / "orca_runs" / "mj1"
+    input_dir.mkdir(parents=True)
+    job = {
+        "job_id": "job-abs-out-1",
+        "tool": "orca_auto",
+        "input_file": str(input_dir),
+        "cores": 4,
+        "memory_mb": 16384,
+    }
+
+    captured: dict[str, str] = {}
+
+    async def _fake_create_subprocess_shell(
+        cmd: str,
+        **kwargs: object,
+    ) -> object:
+        captured["cmd"] = cmd
+        captured["cwd"] = str(kwargs.get("cwd") or "")
+        raise RuntimeError("intentional failure")
+
+    monkeypatch.setattr(
+        "core.sim_scheduler.asyncio.create_subprocess_shell",
+        _fake_create_subprocess_shell,
+    )
+
+    try:
+        await scheduler._launch_job(job)
+        expected_work_dir = (tmp_path / "data" / "sim_jobs" / job["job_id"]).resolve()
+        expected_output = (expected_work_dir / "mj1.out").resolve()
+        assert captured["cwd"] == str(expected_work_dir)
+        assert str(expected_output) in captured["cmd"]
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
 async def test_detects_external_running_jobs_from_process_table(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -232,21 +323,17 @@ async def test_dispatch_runs_when_external_jobs_leave_capacity(
     scheduler.get_external_running_jobs = AsyncMock(  # type: ignore[method-assign]
         return_value=[{"cores": 4, "memory_mb": 32768} for _ in range(2)]
     )
-
-    async def _fake_launch(job: dict[str, object]) -> None:
-        await store.update_status(
-            str(job["job_id"]),
-            "running",
-            cores=int(job["cores"]),
-            memory_mb=int(job["memory_mb"]),
-        )
-
-    scheduler._launch_job = _fake_launch  # type: ignore[method-assign]
+    scheduler._submit_external_job_via_agent = AsyncMock(  # type: ignore[method-assign]
+        return_value="external-77777"
+    )
     try:
         await scheduler._dispatch_pending_jobs()
         job = await store.get_job(job_id)
         assert job is not None
         assert job["status"] == "running"
+        assert job["pid"] == 77777
+        assert job["cli_command"] == "delegated:external-77777"
+        scheduler._submit_external_job_via_agent.assert_awaited_once()
     finally:
         await store.close()
 
@@ -566,11 +653,10 @@ async def test_cancel_external_job_returns_false_for_unreachable_lockfile_pid(
 
 
 @pytest.mark.asyncio
-async def test_get_external_running_jobs_uses_agent_when_enabled(
+async def test_get_external_running_jobs_uses_agent_when_available(
     tmp_path: Path,
 ) -> None:
     scheduler, store = await _build_scheduler(tmp_path, "orca_auto")
-    scheduler._config.external_agent_enabled = True
     scheduler._fetch_external_jobs_from_agent = AsyncMock(  # type: ignore[method-assign]
         return_value=[{"job_id": "external-88888", "pid": 88888}]
     )
@@ -590,7 +676,6 @@ async def test_cancel_external_job_uses_agent_path_when_available(
     tmp_path: Path,
 ) -> None:
     scheduler, store = await _build_scheduler(tmp_path, "orca_auto")
-    scheduler._config.external_agent_enabled = True
     scheduler.get_external_running_jobs = AsyncMock(  # type: ignore[method-assign]
         return_value=[{"pid": 24680, "source": "agent"}]
     )
@@ -601,5 +686,139 @@ async def test_cancel_external_job_uses_agent_path_when_available(
     try:
         success = await scheduler.cancel_external_job(24680)
         assert success is True
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_sync_external_job_states_marks_missing_job_completed(
+    tmp_path: Path,
+) -> None:
+    scheduler, store = await _build_scheduler(tmp_path, "orca_auto")
+    job_id = await store.insert_job(
+        SimJob(
+            job_id="job-external-sync-1",
+            tool="orca_auto",
+            input_file="/tmp/STRUC_SYNC",
+            submitted_by=1,
+            cores=4,
+            memory_mb=16384,
+        )
+    )
+    await store.update_status(
+        job_id,
+        "running",
+        pid=12345,
+        started_at="2026-03-05 00:00:00",
+        cli_command="delegated:external-12345",
+    )
+    scheduler.get_external_running_jobs = AsyncMock(return_value=[])  # type: ignore[method-assign]
+    try:
+        await scheduler._sync_external_job_states()
+        job = await store.get_job(job_id)
+        assert job is not None
+        assert job["status"] == "completed"
+        assert "외부 작업 종료 감지" in str(job["error_message"])
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_get_queue_status_includes_delegated_running_from_db(
+    tmp_path: Path,
+) -> None:
+    scheduler, store = await _build_scheduler(tmp_path, "orca_auto")
+    job_id = await store.insert_job(
+        SimJob(
+            job_id="job-external-status-1",
+            tool="orca_auto",
+            input_file="/tmp/STRUC_STATUS",
+            submitted_by=1,
+            cores=4,
+            memory_mb=32768,
+        )
+    )
+    await store.update_status(
+        job_id,
+        "running",
+        pid=54321,
+        started_at="2026-03-05 00:00:00",
+        cli_command="delegated:external-54321",
+    )
+    scheduler.get_external_running_jobs = AsyncMock(return_value=[])  # type: ignore[method-assign]
+    try:
+        status = await scheduler.get_queue_status()
+        assert status["external_running"] == 1
+        assert status["running_total"] == 1
+        assert status["allocated_external_cores"] == 4
+        assert status["allocated_external_memory_mb"] == 32768
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_cancel_job_delegated_running_uses_external_cancel(
+    tmp_path: Path,
+) -> None:
+    scheduler, store = await _build_scheduler(tmp_path, "orca_auto")
+    job_id = await store.insert_job(
+        SimJob(
+            job_id="job-external-cancel-1",
+            tool="orca_auto",
+            input_file="/tmp/STRUC_CANCEL",
+            submitted_by=1,
+            cores=4,
+            memory_mb=32768,
+        )
+    )
+    await store.update_status(
+        job_id,
+        "running",
+        pid=67890,
+        started_at="2026-03-05 00:00:00",
+        cli_command="delegated:external-67890",
+    )
+    scheduler.cancel_external_job = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    try:
+        success = await scheduler.cancel_job(job_id)
+        assert success is True
+        scheduler.cancel_external_job.assert_awaited_once_with(67890)
+        job = await store.get_job(job_id)
+        assert job is not None
+        assert job["status"] == "cancelled"
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_recover_orphaned_jobs_does_not_requeue_delegated_running(
+    tmp_path: Path,
+) -> None:
+    scheduler, store = await _build_scheduler(tmp_path, "orca_auto")
+    job_id = await store.insert_job(
+        SimJob(
+            job_id="job-recover-delegated-1",
+            tool="orca_auto",
+            input_file="/tmp/STRUC_RECOVER",
+            submitted_by=1,
+            cores=4,
+            memory_mb=16384,
+        )
+    )
+    await store.update_status(
+        job_id,
+        "running",
+        pid=55555,
+        started_at="2026-03-05 00:00:00",
+        cli_command="delegated:external-55555",
+    )
+
+    scheduler._resources.sync_from_db = AsyncMock()  # type: ignore[method-assign]
+    try:
+        await scheduler._recover_orphaned_jobs()
+        job = await store.get_job(job_id)
+        assert job is not None
+        assert job["status"] == "running"
+        scheduler._resources.sync_from_db.assert_awaited_once_with([])
     finally:
         await store.close()
