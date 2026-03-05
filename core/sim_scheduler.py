@@ -777,81 +777,80 @@ class SimJobScheduler:
         return target_cores, target_memory
 
     async def _dispatch_pending_jobs(self) -> None:
-        """리소스가 허용하는 만큼 대기 중인 작업을 디스패치한다."""
-        while True:
-            queue_stats = await self._store.get_queue_stats()
-            queued_count = int(queue_stats.get("queued", 0))
-            if queued_count <= 0:
-                break
-            candidates = await self._store.get_next_queued(limit=1)
-            if not candidates:
-                break
-            job = candidates[0]
-            resource_status = await self._resources.get_status()
-            external_jobs = await self.get_external_running_jobs()
-            external_running = len(external_jobs)
-            external_alloc_cores = sum(int(j.get("cores", 0)) for j in external_jobs)
-            external_alloc_memory = sum(int(j.get("memory_mb", 0)) for j in external_jobs)
+        """대기 중인 작업을 큐 순서대로 하나씩 디스패치한다."""
+        queue_stats = await self._store.get_queue_stats()
+        queued_count = int(queue_stats.get("queued", 0))
+        if queued_count <= 0:
+            return
+        candidates = await self._store.get_next_queued(limit=1)
+        if not candidates:
+            return
+        job = candidates[0]
+        resource_status = await self._resources.get_status()
+        external_jobs = await self.get_external_running_jobs()
+        external_running = len(external_jobs)
+        external_alloc_cores = sum(int(j.get("cores", 0)) for j in external_jobs)
+        external_alloc_memory = sum(int(j.get("memory_mb", 0)) for j in external_jobs)
 
-            allocated_cores = int(resource_status.get("allocated_cores", 0))
-            allocated_memory = int(resource_status.get("allocated_memory_mb", 0))
-            effective_status = dict(resource_status)
-            effective_status["running_jobs"] = int(resource_status.get("running_jobs", 0)) + external_running
-            effective_status["available_cores"] = max(
-                0,
-                int(self._config.total_cores) - allocated_cores - external_alloc_cores,
-            )
-            effective_status["available_memory_mb"] = max(
-                0,
-                int(self._config.total_memory_mb) - allocated_memory - external_alloc_memory,
-            )
-            dispatch_cores, dispatch_memory = self._compute_dispatch_resources(
-                job,
+        allocated_cores = int(resource_status.get("allocated_cores", 0))
+        allocated_memory = int(resource_status.get("allocated_memory_mb", 0))
+        effective_status = dict(resource_status)
+        effective_status["running_jobs"] = int(resource_status.get("running_jobs", 0)) + external_running
+        effective_status["available_cores"] = max(
+            0,
+            int(self._config.total_cores) - allocated_cores - external_alloc_cores,
+        )
+        effective_status["available_memory_mb"] = max(
+            0,
+            int(self._config.total_memory_mb) - allocated_memory - external_alloc_memory,
+        )
+        dispatch_cores, dispatch_memory = self._compute_dispatch_resources(
+            job,
+            queued_count=queued_count,
+            resource_status=effective_status,
+        )
+        dispatch_job = dict(job)
+        dispatch_job["cores"] = dispatch_cores
+        dispatch_job["memory_mb"] = dispatch_memory
+        if (
+            int(job.get("cores", 0)) != dispatch_cores
+            or int(job.get("memory_mb", 0)) != dispatch_memory
+        ):
+            self._logger.info(
+                "sim_job_resources_adapted",
+                job_id=str(job.get("job_id") or ""),
+                tool=str(job.get("tool") or ""),
                 queued_count=queued_count,
-                resource_status=effective_status,
+                running_jobs=int(effective_status.get("running_jobs", 0)),
+                cores_from=int(job.get("cores", 0)),
+                memory_from=int(job.get("memory_mb", 0)),
+                cores_to=dispatch_cores,
+                memory_to=dispatch_memory,
             )
-            dispatch_job = dict(job)
-            dispatch_job["cores"] = dispatch_cores
-            dispatch_job["memory_mb"] = dispatch_memory
-            if (
-                int(job.get("cores", 0)) != dispatch_cores
-                or int(job.get("memory_mb", 0)) != dispatch_memory
-            ):
-                self._logger.info(
-                    "sim_job_resources_adapted",
-                    job_id=str(job.get("job_id") or ""),
-                    tool=str(job.get("tool") or ""),
-                    queued_count=queued_count,
-                    running_jobs=int(effective_status.get("running_jobs", 0)),
-                    cores_from=int(job.get("cores", 0)),
-                    memory_from=int(job.get("memory_mb", 0)),
-                    cores_to=dispatch_cores,
-                    memory_to=dispatch_memory,
-                )
 
-            if (
-                dispatch_cores > int(effective_status.get("available_cores", 0))
-                or dispatch_memory > int(effective_status.get("available_memory_mb", 0))
-            ):
-                self._logger.info(
-                    "sim_job_waiting_for_resources",
-                    job_id=str(job.get("job_id") or ""),
-                    tool=str(job.get("tool") or ""),
-                    queued_count=queued_count,
-                    running_jobs=int(effective_status.get("running_jobs", 0)),
-                    available_cores=int(effective_status.get("available_cores", 0)),
-                    available_memory_mb=int(effective_status.get("available_memory_mb", 0)),
-                    required_cores=dispatch_cores,
-                    required_memory_mb=dispatch_memory,
-                )
-                break
+        if (
+            dispatch_cores > int(effective_status.get("available_cores", 0))
+            or dispatch_memory > int(effective_status.get("available_memory_mb", 0))
+        ):
+            self._logger.info(
+                "sim_job_waiting_for_resources",
+                job_id=str(job.get("job_id") or ""),
+                tool=str(job.get("tool") or ""),
+                queued_count=queued_count,
+                running_jobs=int(effective_status.get("running_jobs", 0)),
+                available_cores=int(effective_status.get("available_cores", 0)),
+                available_memory_mb=int(effective_status.get("available_memory_mb", 0)),
+                required_cores=dispatch_cores,
+                required_memory_mb=dispatch_memory,
+            )
+            return
 
-            if not await self._resources.can_allocate(dispatch_cores, dispatch_memory):
-                break
-            success = await self._resources.allocate(dispatch_cores, dispatch_memory)
-            if not success:
-                break
-            await self._launch_job(dispatch_job)
+        if not await self._resources.can_allocate(dispatch_cores, dispatch_memory):
+            return
+        success = await self._resources.allocate(dispatch_cores, dispatch_memory)
+        if not success:
+            return
+        await self._launch_job(dispatch_job)
 
     async def _launch_job(self, job: dict[str, Any]) -> None:
         """CLI 커맨드를 빌드하고 subprocess를 실행한다."""
