@@ -39,6 +39,7 @@ mkdir -p \
 
 cd "${PROJECT_ROOT}"
 
+export PATH="${HOME}/.local/bin:${PATH}"
 export HF_HOME="${PROJECT_ROOT}/data/hf_cache"
 export FASTEMBED_CACHE_PATH="${PROJECT_ROOT}/data/hf_cache/fastembed"
 
