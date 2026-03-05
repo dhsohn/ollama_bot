@@ -1461,6 +1461,7 @@ class SimJobScheduler:
         current_pid = os.getpid()
         external_jobs: list[dict[str, Any]] = []
         seen_external_pids: set[int] = set()
+        ppid_map: dict[int, int] = {}
         if token_map:
             try:
                 proc = await asyncio.create_subprocess_exec(
@@ -1484,7 +1485,6 @@ class SimJobScheduler:
                     )
                 else:
                     # tracked PID의 자손을 제외하기 위해 PPID 맵을 구축
-                    ppid_map: dict[int, int] = {}
                     parsed_lines: list[tuple[int, int, str]] = []
                     for raw_line in stdout.decode(errors="ignore").splitlines():
                         line = raw_line.strip()
@@ -1553,9 +1553,22 @@ class SimJobScheduler:
                             }
                         )
 
+        # lockfile 스캐너에 tracked PID + 그 자손 PID를 모두 전달
+        tracked_pids_expanded = set(tracked_pids)
+        if ppid_map:
+            for p in ppid_map:
+                cur = p
+                visited: set[int] = set()
+                while cur in ppid_map and cur not in visited:
+                    visited.add(cur)
+                    cur = ppid_map[cur]
+                    if cur in tracked_pids:
+                        tracked_pids_expanded.add(p)
+                        break
+
         external_jobs.extend(
             self._scan_lockfile_external_jobs(
-                tracked_pids=tracked_pids,
+                tracked_pids=tracked_pids_expanded,
                 seen_external_pids=seen_external_pids,
             )
         )
