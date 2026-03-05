@@ -1,6 +1,6 @@
 # ollama_bot 전역 설정
 log_level: "INFO"
-data_dir: "/app/data"
+data_dir: "data"
 
 bot:
   name: "ollama_bot"
@@ -120,8 +120,8 @@ rag:
   enabled: true
   startup_index_enabled: true
   kb_dirs:
-    - "/app/kb/orca_runs"
-    - "/app/kb/orca_outputs"
+    - "kb/orca_runs"
+    - "kb/orca_outputs"
   max_file_size_mb: 5
   trigger_keywords:
     - "orca"
@@ -169,14 +169,14 @@ sim_queue:
   queue_check_interval_seconds: 5
   adaptive_allocation_enabled: true
   adaptive_memory_step_mb: 1024
-  external_agent_base_url: "http://host.docker.internal:18081"
+  external_agent_base_url: "http://localhost:18081"
   external_agent_timeout_seconds: 3.0
   external_agent_token_env: "SIM_EXTERNAL_AGENT_TOKEN"
   job_work_dir: "data/sim_jobs"
   tools:
     orca_auto:
       enabled: true
-      executable: "/app/host/orca_auto/bin/orca_auto"
+      executable: "orca_auto"
       cli_template: "{executable} run-inp --reaction-dir '{input_file}' > {output_file} 2>&1"
       command_prefix: ""
       min_cores: 2

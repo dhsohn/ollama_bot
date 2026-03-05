@@ -198,7 +198,7 @@ class SecurityManager:
 
     # ── 경로 격리 ──
 
-    def validate_path(self, path: str, base_dir: str = "/app/data") -> Path:
+    def validate_path(self, path: str, base_dir: str = "data") -> Path:
         """파일 경로가 허용된 디렉토리 내에 있는지 검증한다.
 
         Raises:

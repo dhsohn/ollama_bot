@@ -38,9 +38,6 @@ from core.skill_manager import SkillManager
 from core.telegram_handler import TelegramHandler
 from packages.hw_amd_npu import apply_npu_profile
 
-_ALLOW_LOCAL_RUN_ENV = "ALLOW_LOCAL_RUN"
-
-
 class StartupError(RuntimeError):
     """초기화 실패 시 사용자 노출용 메시지를 전달한다."""
 
@@ -68,27 +65,6 @@ class RuntimeState:
     semantic_cache: Any = None  # SemanticCache | None
     rag_startup_index_task: asyncio.Task[Any] | None = None
     sim_scheduler: Any = None  # SimJobScheduler | None
-
-
-def _is_running_in_container() -> bool:
-    """현재 프로세스가 컨테이너 내부에서 실행 중인지 판단한다."""
-    if Path("/.dockerenv").exists():
-        return True
-
-    try:
-        cgroup = Path("/proc/1/cgroup").read_text(encoding="utf-8")
-    except OSError:
-        return False
-
-    markers = ("docker", "containerd", "kubepods", "podman")
-    return any(marker in cgroup for marker in markers)
-
-
-def _is_truthy(value: str | None) -> bool:
-    """환경변수 문자열을 bool로 변환한다."""
-    if value is None:
-        return False
-    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _runtime_env_files() -> str | tuple[str, ...] | None:
@@ -805,15 +781,6 @@ async def async_main(
     app_name: str,
 ) -> None:
     """비동기 메인 루프."""
-    if not _is_running_in_container() and not _is_truthy(os.environ.get(_ALLOW_LOCAL_RUN_ENV)):
-        print(
-            "오류: 이 애플리케이션은 Docker 컨테이너에서만 실행됩니다.\n"
-            "실행 방법: docker compose up --build -d\n"
-            f"로컬 실행 우회: {_ALLOW_LOCAL_RUN_ENV}=1",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
     npu_profile = os.environ.get("AMD_NPU_PROFILE", "").strip()
     npu_applied: dict[str, str] = {}
     if npu_profile:

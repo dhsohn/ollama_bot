@@ -23,7 +23,7 @@ class BotConfig(BaseModel):
 
 
 class OllamaConfig(BaseModel):
-    host: str = "http://host.docker.internal:11434"
+    host: str = "http://localhost:11434"
     model: str = ""
     temperature: float = 0.7
     max_tokens: int = 2048
@@ -36,7 +36,7 @@ class OllamaConfig(BaseModel):
 
 
 class LemonadeConfig(BaseModel):
-    host: str = "http://host.docker.internal:8000"
+    host: str = "http://localhost:8000"
     api_key: str = ""
     default_model: str = "gpt-oss-20b-NPU"
     base_path: str = "/api/v1"
@@ -234,7 +234,7 @@ class ContextCompressorConfig(BaseModel):
 class RetrievalProviderConfig(BaseModel):
     """Ollama 기반 retrieval(임베딩/리랭킹) 전용 프로바이더 설정."""
 
-    host: str = "http://host.docker.internal:11434"
+    host: str = "http://localhost:11434"
     embedding_model: str = "Qwen3-Embedding-0.6B-GGUF"
     reranker_model: str = "bge-reranker-v2-m3-GGUF"
 
@@ -355,7 +355,7 @@ class SimQueueConfig(BaseModel):
     adaptive_memory_step_mb: int = 1024
     # Deprecated: 시뮬레이션 실행은 host agent 단일 경로로 동작한다.
     external_agent_enabled: bool = True
-    external_agent_base_url: str = "http://sim_host_agent:18081"
+    external_agent_base_url: str = "http://localhost:18081"
     external_agent_timeout_seconds: float = 3.0
     external_agent_token_env: str = "SIM_EXTERNAL_AGENT_TOKEN"
     job_work_dir: str = "data/sim_jobs"
@@ -389,7 +389,7 @@ class AppSettings(BaseModel):
     telegram_bot_token: str = ""
     allowed_telegram_users: str = ""
     log_level: str = "INFO"
-    data_dir: str = "/app/data"
+    data_dir: str = "data"
 
     bot: BotConfig = Field(default_factory=BotConfig)
     lemonade: LemonadeConfig = Field(default_factory=LemonadeConfig)

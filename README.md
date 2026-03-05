@@ -9,7 +9,7 @@
 - 엔트리포인트: `apps/ollama_bot/main.py` (`main.py`는 단순 래퍼)
 - 코어 로직: `core/`
 - 설정: `config/config.yaml`
-- 컨테이너 실행 기본: `bash scripts/run_bot.sh` (초기 설정 포함은 `bash scripts/setup.sh --run`)
+- 실행: `bash scripts/run_bot.sh`
 
 ## 핵심 기능
 
@@ -28,7 +28,6 @@
   - 화이트리스트 사용자 인증(`ALLOWED_TELEGRAM_USERS`)
   - 레이트리밋/전역 동시성 제한
   - 경로 검증, 입력 정제
-- Docker 하드닝(읽기 전용 루트, no-new-privileges, cap_drop)
 
 ## 동작 플로우차트
 
@@ -76,7 +75,6 @@ flowchart TD
 ## 사전 요구사항
 
 - Python 3.11+
-- Docker / Docker Compose
 - 임베딩 런타임은 `fastembed`(ONNX Runtime CPU) 기반
 - 텔레그램 봇 토큰 (`@BotFather`)
 - Dual-Provider 백엔드 (Windows 호스트에서 실행)
@@ -85,44 +83,14 @@ flowchart TD
 
 ## 빠른 시작
 
-### 원클릭 설치 (추천)
-
-처음 설치까지 한 줄로 실행:
-
-```bash
-git clone <repo-url> && cd ollama_bot && bash scripts/setup.sh --run
-```
-
-이미 리포지토리를 받은 상태라면:
-
-```bash
-bash scripts/setup.sh --run
-```
-
-- Dual-Provider 환경(Lemonade + Ollama):
-  - Windows 방화벽/portproxy를 자동 설정합니다.
-  - 관리자 권한이 필요하면 UAC 팝업이 1회 표시됩니다.
-  - WSL 재부팅 없이 바로 적용됩니다.
-- 이미지까지 강제 빌드하려면:
-
-```bash
-bash scripts/setup.sh --run --build
-```
-
 ### 1) 설치
 
 ```bash
 git clone <repo-url>
 cd ollama_bot
-bash scripts/setup.sh
-```
-
-또는 수동 설치:
-
-```bash
-pip install -r requirements-dev.txt
+python -m venv .venv
+.venv/bin/pip install -r requirements.lock
 cp .env.example .env
-mkdir -p data/conversations data/memory data/logs data/reports kb/orca_runs kb/orca_outputs
 ```
 
 ### 2) `.env` 설정
@@ -132,22 +100,16 @@ mkdir -p data/conversations data/memory data/logs data/reports kb/orca_runs kb/o
 ```env
 TELEGRAM_BOT_TOKEN=...
 ALLOWED_TELEGRAM_USERS=123456789
-HOST_KB_DIR=./kb
-SIM_INPUT_DIR_ORCA_AUTO=/app/kb/orca_runs
-ORCA_HOST_DIR=/home/daehyupsohn/opt/orca
+SIM_INPUT_DIR_ORCA_AUTO=kb/orca_runs
 SIM_EXTERNAL_AGENT_TOKEN=<긴_랜덤_토큰>
 ```
 
 - `ALLOWED_TELEGRAM_USERS`는 **숫자 Chat ID CSV**만 허용됩니다.
 - placeholder(`your_telegram_chat_id_here`) 상태면 시작 시 fail-fast로 종료됩니다.
-- `HOST_KB_DIR`는 docker compose 볼륨 마운트용 경로입니다. (앱 런타임 설정은 아님)
-  - 기본 compose는 `${HOST_KB_DIR}/orca_runs`, `${HOST_KB_DIR}/orca_outputs`, `${HOST_KB_DIR}/orca_auto`를 `sim_host_agent`에 마운트합니다.
-- `ORCA_HOST_DIR`는 host ORCA 실행 파일 디렉터리입니다. (기본 `/home/daehyupsohn/opt/orca`)
 - `/sim submit <tool> <이름>` shorthand를 쓰려면 `SIM_INPUT_DIR_<TOOL>` 또는 `SIM_INPUT_DIR`를 설정하세요.
-  - 예: `SIM_INPUT_DIR_ORCA_AUTO=/app/kb/orca_runs`이면 `/sim submit orca_auto STRUC1` → `/app/kb/orca_runs/STRUC1`
+  - 예: `SIM_INPUT_DIR_ORCA_AUTO=kb/orca_runs`이면 `/sim submit orca_auto mj1` → `kb/orca_runs/mj1`
 - `SIM_EXTERNAL_AGENT_TOKEN`은 `sim_host_agent` 인증 토큰입니다. 충분히 긴 랜덤 문자열을 사용하세요.
 - 런타임 일반 설정(model/host/log/data_dir 등)은 `config/config.yaml`에서 관리합니다.
-- 모델 변경은 텔레그램 명령어가 아니라 서버에서 `config/config.yaml` 값을 수정한 뒤 컨테이너를 재시작하는 방식으로 운영합니다.
 
 ### 3) LLM 백엔드 준비 (Dual-Provider)
 
@@ -174,19 +136,26 @@ ollama serve
 ### 4) 실행
 
 ```bash
-bash scripts/run_bot.sh --build
+bash scripts/run_bot.sh
+```
+
+### 5) systemd 서비스 등록 (부팅 시 자동 시작)
+
+```bash
+bash scripts/install_boot_service.sh
+systemctl --user start ollama-bot sim-host-agent
 ```
 
 로그 확인:
 
 ```bash
-docker compose logs -f ollama_bot
+journalctl --user -u ollama-bot -f
 ```
 
 상태 확인:
 
 ```bash
-docker compose ps
+systemctl --user status ollama-bot sim-host-agent
 ```
 
 ### 시뮬레이션 실행 경로
@@ -194,22 +163,14 @@ docker compose ps
 `/sim submit|list|status|info|cancel`은 모두 `sim_host_agent`를 통해 실행/조회/취소됩니다.
 
 - `ollama_bot`: 큐/텔레그램 인터페이스 담당
-- `sim_host_agent`: host PID에서 실제 시뮬레이션 실행과 제어 담당
+- `sim_host_agent`: host에서 실제 시뮬레이션 실행과 제어 담당
 - 인증: `SIM_EXTERNAL_AGENT_TOKEN` Bearer 토큰 필수
 - 취소 가드: 감지된 시뮬레이션 작업만 종료 허용 (임의 PID 차단)
-
-점검 예시:
-
-```bash
-docker compose ps
-docker compose logs -f sim_host_agent
-```
 
 ## 실행 정책/제약
 
 - 시뮬레이션 작업은 **host agent 단일 실행 경로**를 사용합니다. (`ollama_bot` 내부에서 직접 실행하지 않음)
-- 실행은 `bash scripts/run_bot.sh` 또는 `bash scripts/setup.sh --run`을 사용하세요.
-- 로컬 직접 실행 우회가 필요하면 `ALLOW_LOCAL_RUN=1` 환경변수를 사용합니다.
+- 실행은 `bash scripts/run_bot.sh`를 사용하세요.
 - 텔레그램은 private chat(1:1)만 처리합니다. 그룹/채널 메시지는 거절됩니다.
 
 ## CLI 점검
@@ -333,7 +294,7 @@ timeout: 120
 ## 설정 파일
 
 - `config/config.yaml`: 전역 런타임 설정
-- `.env`: 텔레그램 시크릿 + compose 볼륨 오버라이드(`HOST_KB_DIR`)
+- `.env`: 텔레그램 시크릿 + 시뮬레이션 환경변수
 
 주요 섹션:
 - `bot`, `lemonade`, `telegram`, `security`, `memory`, `scheduler`
@@ -348,8 +309,8 @@ rag:
   enabled: true
   startup_index_enabled: false   # 부팅 시 백그라운드 인덱싱 비활성화
   kb_dirs:
-    - "/app/kb/orca_runs"
-    - "/app/kb/orca_outputs"
+    - "kb/orca_runs"
+    - "kb/orca_outputs"
   max_file_size_mb: 2
   supported_extensions:
     - ".md"
@@ -364,12 +325,12 @@ Dual-Provider 설정 예시:
 ```yaml
 # LLM 응답 — Lemonade Server
 lemonade:
-  host: "http://windows-host:8000"
+  host: "http://homelab:8000"
   default_model: "gpt-oss-20b-NPU"
 
 # 쿼리 최적화 — Ollama Server (임베딩 + 리랭킹)
 ollama:
-  host: "http://host.docker.internal:11434"
+  host: "http://homelab:11434"
   embedding_model: "dengcao/Qwen3-Embedding-0.6B:Q8_0"
   reranker_model: "dengcao/bge-reranker-v2-m3:latest"
 ```
@@ -378,26 +339,23 @@ ollama:
 - `APP_ENV_FILE` 또는 `APP_ENV_FILES`(CSV)로 로드 파일 지정 가능
 - 앱 런타임 설정 반영은 기본적으로 텔레그램 시크릿 2개만 지원하며,
   시뮬레이션 shorthand 경로(`SIM_INPUT_DIR`, `SIM_INPUT_DIR_<TOOL>`)는 실행 시 `os.environ`에서 직접 참조합니다.
-- `HOST_KB_DIR`는 docker compose가 볼륨 마운트 시 사용합니다.
 
 ## 운영 스크립트
 
 | 스크립트 | 용도 |
 |---|---|
 | `scripts/configure_windows_lemonade.sh` | Lemonade용 Windows 방화벽/portproxy 자동 설정 |
-| `scripts/setup.sh` | 초기 설정(.env 생성, 디렉토리 준비), `--run`으로 원클릭 실행 |
-| `scripts/run_bot.sh` | 컨테이너 실행 |
-| `scripts/install_boot_service.sh` | systemd 부팅 서비스 설치 |
-| `scripts/healthcheck.sh` | 컨테이너 헬스체크 |
+| `scripts/run_bot.sh` | 봇 실행 |
+| `scripts/run_host_agent.sh` | 시뮬레이션 호스트 에이전트 실행 |
+| `scripts/install_boot_service.sh` | systemd user service 설치 (부팅 시 자동 시작) |
+| `scripts/healthcheck.sh` | 헬스체크 |
 | `scripts/soak_monitor.sh` | 장시간 안정성 모니터링 |
 | `scripts/check_requirements_lock.sh` | `requirements.lock` 최신성 검사 |
-| `scripts/finetune_unsloth.py` | KTO 파인튜닝(선택) |
-| `scripts/deploy_finetuned.sh` | 파인튜닝 모델 Ollama 배포(선택) |
 
 ## 의존성 잠금 정책
 
 - `requirements.txt`: 직접 의존성 선언 파일
-- `requirements.lock`: 배포/런타임 기준 파일 (Docker/CI에서 사용)
+- `requirements.lock`: 배포/런타임 기준 파일
 - `requirements-dev.txt`: 개발 도구 + `requirements.lock` 포함
 
 의존성 변경 시 아래 순서로 갱신합니다:
@@ -422,10 +380,10 @@ bash scripts/check_requirements_lock.sh
 bash scripts/soak_monitor.sh --minutes 180 --max-restarts 0 --max-error-lines 0
 ```
 
-## 데이터/볼륨
+## 데이터
 
-기본 데이터 경로(`DATA_DIR`)는 `/app/data`이며, compose에서 `./data`로 마운트됩니다.
-기본 지식베이스 경로는 `${HOST_KB_DIR:-./kb}`이며, 컨테이너 내부에서 `/app/kb`로 마운트됩니다.
+기본 데이터 경로(`data_dir`)는 프로젝트 루트의 `data/`입니다.
+기본 지식베이스 경로는 `kb/orca_runs`, `kb/orca_outputs`입니다.
 
 주요 산출물:
 - `data/memory/ollama_bot.db` (대화/장기 메모리)
@@ -451,8 +409,6 @@ ollama_bot/
 ├── packages/hw_amd_npu/
 ├── scripts/
 ├── tests/
-├── docker-compose.yml
-├── Dockerfile
 └── .env.example
 ```
 

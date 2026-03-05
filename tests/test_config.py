@@ -346,7 +346,7 @@ def test_partial_lemonade_section_preserves_defaults(tmp_path: Path) -> None:
 
     settings = load_config(config_path=str(config_path), env_file=str(env_path))
     assert settings.lemonade.default_model == "custom-model"
-    assert settings.lemonade.host == "http://host.docker.internal:8000"
+    assert settings.lemonade.host == "http://localhost:8000"
     assert settings.lemonade.temperature == 0.7
     assert settings.lemonade.max_tokens == 4096
 
@@ -397,7 +397,7 @@ def test_lemonade_env_values_ignored(tmp_path: Path) -> None:
     )
 
     settings = load_config(config_path=str(config_path), env_file=str(env_path))
-    assert settings.lemonade.host == "http://host.docker.internal:8000"
+    assert settings.lemonade.host == "http://localhost:8000"
     assert settings.lemonade.default_model == "gpt-oss-20b-NPU"
     assert settings.lemonade.api_key == ""
     assert settings.lemonade.base_path == "/api/v1"

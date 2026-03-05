@@ -1,8 +1,13 @@
 #!/bin/bash
-# Docker 컨테이너 헬스체크 스크립트
+# 헬스체크 스크립트
 set -euo pipefail
 
-python - <<'PY'
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+cd "$PROJECT_ROOT"
+
+"${PROJECT_ROOT}/.venv/bin/python" - <<'PY'
 import asyncio
 import sys
 

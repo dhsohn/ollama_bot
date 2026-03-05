@@ -112,7 +112,7 @@ class TestPathValidation:
 
     def test_blocked_system_path(self, security_manager: SecurityManager) -> None:
         with pytest.raises(SecurityViolationError):
-            security_manager.validate_path("/etc/shadow", base_dir="/app/data")
+            security_manager.validate_path("/etc/shadow", base_dir="data")
 
 
 class TestSkillSecurity:

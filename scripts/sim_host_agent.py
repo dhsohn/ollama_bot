@@ -228,11 +228,6 @@ def _resolve_submit_input_path(
         if candidate.exists():
             return candidate
 
-    fallback = (_resolve_path("/app/kb/orca_runs") / raw_path).resolve()
-    tried.append(f"/app/kb/orca_runs:{fallback}")
-    if fallback.exists():
-        return fallback
-
     hint = f"입력 경로를 찾을 수 없음: {input_file}"
     if tried:
         hint += f" (확인한 후보: {', '.join(tried)})"
@@ -265,10 +260,10 @@ def _prepare_orca_auto_runtime_config(executable: str) -> str:
 
     allowed_root_raw = os.environ.get("SIM_INPUT_DIR_ORCA_AUTO", "").strip()
     if not allowed_root_raw:
-        allowed_root_raw = os.environ.get("SIM_INPUT_DIR", "").strip() or "/app/kb/orca_runs"
+        allowed_root_raw = os.environ.get("SIM_INPUT_DIR", "").strip() or "kb/orca_runs"
     organized_root_raw = os.environ.get("SIM_OUTPUT_DIR_ORCA_AUTO", "").strip()
     if not organized_root_raw:
-        organized_root_raw = os.environ.get("SIM_OUTPUT_DIR", "").strip() or "/app/kb/orca_outputs"
+        organized_root_raw = os.environ.get("SIM_OUTPUT_DIR", "").strip() or "kb/orca_outputs"
 
     allowed_root = _resolve_path(allowed_root_raw)
     organized_root = _resolve_path(organized_root_raw)
@@ -294,7 +289,7 @@ def _prepare_orca_auto_runtime_config(executable: str) -> str:
             if candidate.exists():
                 resolved_orca = candidate
         if resolved_orca is None:
-            fallback = Path("/app/host/orca_bin/orca")
+            fallback = Path.home() / "opt" / "orca" / "orca"
             if fallback.exists():
                 resolved_orca = fallback
 
@@ -475,7 +470,7 @@ def _scan_roots(tools: dict[str, tuple[int, int]]) -> list[tuple[str, Path]]:
             roots.append((fallback_tool, path))
 
     fallback_tool = "orca_auto" if "orca_auto" in tools else next(iter(tools), "external")
-    for raw in ("/app/kb/orca_runs", "kb/orca_runs"):
+    for raw in ("kb/orca_runs",):
         path = _resolve_path(raw)
         if path.is_dir():
             roots.append((fallback_tool, path))

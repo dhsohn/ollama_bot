@@ -26,7 +26,6 @@ if _project_root not in sys.path:
 
 async def _init_components():
     """설정 기반 LLM 클라이언트와 선택적 RAGPipeline을 초기화한다."""
-    os.environ.setdefault("ALLOW_LOCAL_RUN", "1")
     os.environ.setdefault("TELEGRAM_BOT_TOKEN", "cli-mode")
     os.environ.setdefault("ALLOWED_TELEGRAM_USERS", "0")
 

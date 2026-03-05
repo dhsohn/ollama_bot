@@ -163,7 +163,7 @@ class SimJobScheduler:
             if "orca_auto" in self._config.tools
             else (next(iter(self._config.tools), "external"))
         )
-        for raw in ("/app/kb/orca_runs", "kb/orca_runs"):
+        for raw in ("kb/orca_runs",):
             root = self._resolve_scan_root(raw)
             if root.is_dir():
                 candidates.append((fallback_tool, root))
