@@ -490,22 +490,26 @@ class SimJobScheduler:
         live_by_pid: dict[int, dict[str, Any]] = {}
         for item in live_jobs:
             pid_raw = item.get("pid")
+            if pid_raw is None:
+                continue
             try:
-                pid = int(pid_raw)
+                live_pid = int(pid_raw)
             except (TypeError, ValueError):
                 continue
-            if pid > 0:
-                live_by_pid[pid] = item
+            if live_pid > 0:
+                live_by_pid[live_pid] = item
 
         now = datetime.now(timezone.utc)
         stale_seconds = 30
 
         for job in tracked_jobs:
             pid_raw = job.get("pid")
-            try:
-                pid = int(pid_raw)
-            except (TypeError, ValueError):
-                pid = None
+            pid = None
+            if pid_raw is not None:
+                try:
+                    pid = int(pid_raw)
+                except (TypeError, ValueError):
+                    pass
 
             if pid is not None and pid > 0:
                 live = live_by_pid.get(pid)
@@ -785,10 +789,12 @@ class SimJobScheduler:
         untracked_external_jobs: list[dict[str, Any]] = []
         for item in external_jobs:
             pid_raw = item.get("pid")
-            try:
-                pid = int(pid_raw)
-            except (TypeError, ValueError):
-                pid = None
+            pid: int | None = None
+            if pid_raw is not None:
+                try:
+                    pid = int(pid_raw)
+                except (TypeError, ValueError):
+                    pass
             if pid is not None and pid in tracked_external_pids:
                 continue
             untracked_external_jobs.append(item)
@@ -1272,10 +1278,12 @@ class SimJobScheduler:
             or job["status"] == "running_external"
         ):
             pid_raw = job.get("pid")
-            try:
-                pid = int(pid_raw)
-            except (TypeError, ValueError):
-                pid = None
+            pid: int | None = None
+            if pid_raw is not None:
+                try:
+                    pid = int(pid_raw)
+                except (TypeError, ValueError):
+                    pass
             if pid is None or pid <= 0:
                 return False
             cancelled = await self.cancel_external_job(pid)
@@ -1387,10 +1395,12 @@ class SimJobScheduler:
         untracked_external_jobs: list[dict[str, Any]] = []
         for job in external_jobs:
             pid_raw = job.get("pid")
-            try:
-                pid = int(pid_raw)
-            except (TypeError, ValueError):
-                pid = None
+            pid: int | None = None
+            if pid_raw is not None:
+                try:
+                    pid = int(pid_raw)
+                except (TypeError, ValueError):
+                    pass
             if pid is not None and pid in tracked_external_pids:
                 continue
             untracked_external_jobs.append(job)

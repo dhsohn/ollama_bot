@@ -1615,8 +1615,8 @@ class TelegramHandler:
                     j
                     for j in external_jobs
                     if not (
-                        isinstance(j.get("pid"), int)
-                        and int(j.get("pid")) in tracked_external_pids
+                        isinstance((pid_val := j.get("pid")), int)
+                        and pid_val in tracked_external_pids
                     )
                 ]
 
