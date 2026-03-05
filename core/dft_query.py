@@ -343,3 +343,21 @@ def _short_path(path: str) -> str:
     if len(parts) <= 2:
         return path
     return "/".join(parts[-2:])
+
+
+class DFTContextProvider:
+    """DFTQueryEngine을 Engine의 ContextProvider 인터페이스로 감싸는 어댑터."""
+
+    def __init__(self, dft_query_engine: DFTQueryEngine) -> None:
+        self._engine = dft_query_engine
+
+    async def get_context(self, text: str) -> str | None:
+        result = await self._engine.process_query(text)
+        if not result:
+            return None
+        return (
+            "[DFT 계산 데이터]\n"
+            "아래는 DFT 인덱스에서 검색된 구조화 데이터입니다. "
+            "이 데이터를 바탕으로 정확한 수치와 파일 경로를 포함하여 답변하세요.\n\n"
+            + result
+        )

@@ -39,13 +39,24 @@ from core.text_utils import detect_output_anomalies, sanitize_model_output
 
 if TYPE_CHECKING:
     from core.context_compressor import ContextCompressor
-    from core.dft_query import DFTQueryEngine
     from core.feedback_manager import FeedbackManager
     from core.instant_responder import InstantResponder
     from core.intent_router import ContextStrategy, IntentRouter, RouteResult
     from core.rag.pipeline import RAGPipeline
     from core.rag.types import RAGTrace
     from core.semantic_cache import CacheContext, SemanticCache
+
+
+class ContextProvider:
+    """메시지 처리 시 추가 컨텍스트를 주입하는 범용 인터페이스.
+
+    구현체는 사용자 텍스트를 받아 관련 컨텍스트를 반환한다.
+    컨텍스트가 없으면 None을 반환한다.
+    """
+
+    async def get_context(self, text: str) -> str | None:
+        """사용자 텍스트에 대한 추가 컨텍스트를 반환한다."""
+        raise NotImplementedError
 
 
 @dataclass
@@ -182,7 +193,7 @@ class Engine:
         intent_router: IntentRouter | None = None,
         context_compressor: ContextCompressor | None = None,
         rag_pipeline: RAGPipeline | None = None,
-        dft_query_engine: DFTQueryEngine | None = None,
+        context_providers: list[ContextProvider] | None = None,
     ) -> None:
         self._config = config
         self._llm_client = llm_client
@@ -194,7 +205,7 @@ class Engine:
         self._intent_router = intent_router
         self._context_compressor = context_compressor
         self._rag_pipeline = rag_pipeline
-        self._dft_query_engine = dft_query_engine
+        self._context_providers: list[ContextProvider] = context_providers or []
         self._system_prompt = getattr(llm_client, "system_prompt", config.lemonade.system_prompt)
         self._max_conversation_length = config.bot.max_conversation_length
         self._start_time = time.monotonic()
@@ -995,29 +1006,22 @@ class Engine:
         return result
 
     @staticmethod
-    def _inject_dft_context(
+    def _inject_extra_context(
         messages: list[dict[str, str]],
-        dft_context: str,
+        context: str,
     ) -> list[dict[str, str]]:
-        """DFT 구조화 데이터를 시스템 프롬프트에 주입한다."""
-        if not dft_context:
+        """추가 컨텍스트를 시스템 프롬프트에 주입한다."""
+        if not context:
             return messages
-
-        suffix = (
-            "\n\n[DFT 계산 데이터]\n"
-            "아래는 DFT 인덱스에서 검색된 구조화 데이터입니다. "
-            "이 데이터를 바탕으로 정확한 수치와 파일 경로를 포함하여 답변하세요.\n\n"
-            + dft_context
-        )
 
         result = list(messages)
         if result and result[0].get("role") == "system":
             result[0] = {
                 "role": "system",
-                "content": result[0]["content"] + suffix,
+                "content": result[0]["content"] + "\n\n" + context,
             }
         else:
-            result.insert(0, {"role": "system", "content": suffix})
+            result.insert(0, {"role": "system", "content": context})
         return result
 
     def _trigger_background_summary(self, chat_id: int) -> None:
@@ -1285,14 +1289,18 @@ class Engine:
         if rag_result and rag_result.contexts:
             messages = self._inject_rag_context(messages, rag_result)
 
-        # DFT 구조화 데이터 컨텍스트 주입
-        if self._dft_query_engine is not None:
+        # 추가 컨텍스트 프로바이더 주입
+        for provider in self._context_providers:
             try:
-                dft_context = await self._dft_query_engine.process_query(text)
-                if dft_context:
-                    messages = self._inject_dft_context(messages, dft_context)
+                extra = await provider.get_context(text)
+                if extra:
+                    messages = self._inject_extra_context(messages, extra)
             except Exception as exc:
-                self._logger.warning("dft_context_inject_failed", error=str(exc))
+                self._logger.warning(
+                    "context_provider_failed",
+                    provider=type(provider).__name__,
+                    error=str(exc),
+                )
 
         return _PreparedFullRequest(
             messages=messages,

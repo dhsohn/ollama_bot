@@ -12,8 +12,9 @@ import re
 import shutil
 import signal
 import uuid
+from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import Any, Protocol
 
 import time
 
@@ -27,8 +28,7 @@ from core.sim_external_tracker import ExternalRunningSnapshot, SimExternalTracke
 from core.sim_job_store import SimJob, SimJobStore
 from core.sim_resource_manager import ResourceManager
 
-if TYPE_CHECKING:
-    from core.dft_index import DFTIndex
+JobCompletionHook = Callable[[dict[str, Any]], Awaitable[None]]
 
 
 class _TelegramLike(Protocol):
@@ -52,12 +52,10 @@ class SimJobScheduler:
         config: SimQueueConfig,
         store: SimJobStore,
         resources: ResourceManager,
-        dft_index: DFTIndex | None = None,
     ) -> None:
         self._config = config
         self._store = store
         self._resources = resources
-        self._dft_index = dft_index
         self._logger = get_logger("sim_scheduler")
         self._external_tracker = SimExternalTracker(
             config=self._config,
@@ -67,12 +65,13 @@ class SimJobScheduler:
 
         self._telegram: _TelegramLike | None = None
         self._allowed_users: list[int] = []
+        self._completion_hooks: list[JobCompletionHook] = []
 
         self._running_processes: dict[str, asyncio.subprocess.Process] = {}
         self._monitor_tasks: dict[str, asyncio.Task[None]] = {}
         self._scheduler_task: asyncio.Task[None] | None = None
         self._stop_event = asyncio.Event()
-        self._known_external_ids: set[str] = set()
+        self._known_external_jobs: dict[str, dict[str, Any]] = {}
 
     @staticmethod
     def _tool_env_suffix(tool: str) -> str:
@@ -110,18 +109,37 @@ class SimJobScheduler:
         )
 
     async def _check_new_external_jobs(self) -> None:
-        """새로 감지된 외부 실행 작업이 있으면 텔레그램으로 알림을 보낸다."""
+        """외부 실행 작업의 등장/소멸을 감지하여 텔레그램으로 알림을 보낸다."""
         external_jobs = await self.get_external_running_jobs()
         current_ids = {job["job_id"] for job in external_jobs}
 
-        # 사라진 작업은 추적 해제
-        self._known_external_ids &= current_ids
+        # 사라진 작업 → 완료/실패 판정 후 알림
+        disappeared_ids = set(self._known_external_jobs) - current_ids
+        for job_id in disappeared_ids:
+            prev_job = self._known_external_jobs.pop(job_id)
+            tool = prev_job.get("tool", "unknown")
+            input_file = prev_job.get("input_file", "-")
+            status, error = self._external_tracker._infer_missing_delegated_terminal_state(prev_job)
+            if status == "failed":
+                await self._notify(
+                    f"[SIM] 외부 시뮬레이션 실패\n"
+                    f"도구: {tool}\n"
+                    f"입력: {input_file}\n"
+                    f"오류: {error or '알 수 없음'}"
+                )
+            else:
+                await self._notify(
+                    f"[SIM] 외부 시뮬레이션 완료\n"
+                    f"도구: {tool}\n"
+                    f"입력: {input_file}"
+                )
 
+        # 새 작업 감지 알림
         for job in external_jobs:
             job_id = job["job_id"]
-            if job_id in self._known_external_ids:
+            if job_id in self._known_external_jobs:
                 continue
-            self._known_external_ids.add(job_id)
+            self._known_external_jobs[job_id] = job
             tool = job.get("tool", "unknown")
             input_file = job.get("input_file", "-")
             source = job.get("source", "")
@@ -209,8 +227,9 @@ class SimJobScheduler:
     def set_allowed_users(self, users: list[int]) -> None:
         self._allowed_users = list(users)
 
-    def set_dft_index(self, dft_index: DFTIndex) -> None:
-        self._dft_index = dft_index
+    def add_completion_hook(self, hook: JobCompletionHook) -> None:
+        """작업 완료 시 호출될 콜백을 등록한다."""
+        self._completion_hooks.append(hook)
 
     # ── 생명주기 ──
 
@@ -501,7 +520,7 @@ class SimJobScheduler:
             )
             if job:
                 await self._notify_job_completed(job)
-            await self._try_index_output(job_id)
+            await self._run_completion_hooks(job_id)
         else:
             if job and job["retry_count"] < job["max_retries"]:
                 retry_num = job["retry_count"] + 1
@@ -550,29 +569,24 @@ class SimJobScheduler:
         internal_running = [j for j in actual_running if not self._is_delegated_job(j)]
         await self._resources.sync_from_db(internal_running)
 
-    # ── DFT 통합 ──
+    # ── 완료 훅 ──
 
-    async def _try_index_output(self, job_id: str) -> None:
-        """ORCA 완료 시 DFT 인덱스에 자동 등록한다."""
-        if self._dft_index is None:
+    async def _run_completion_hooks(self, job_id: str) -> None:
+        """등록된 완료 콜백을 실행한다."""
+        if not self._completion_hooks:
             return
         job = await self._store.get_job(job_id)
-        if not job or not job.get("output_file"):
+        if not job:
             return
-        if job.get("tool") not in ("orca_auto",):
-            return
-        try:
-            success = await self._dft_index.upsert_single(job["output_file"])
-            if success:
-                self._logger.info(
-                    "sim_job_output_indexed",
-                    job_id=job_id, output_file=job["output_file"],
+        for hook in self._completion_hooks:
+            try:
+                await hook(job)
+            except Exception as exc:
+                self._logger.warning(
+                    "sim_completion_hook_failed",
+                    job_id=job_id, hook=getattr(hook, "__name__", "?"),
+                    error=str(exc),
                 )
-        except Exception as exc:
-            self._logger.warning(
-                "sim_job_output_index_failed",
-                job_id=job_id, error=str(exc),
-            )
 
     # ── 알림 ──
 

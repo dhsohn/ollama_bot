@@ -20,8 +20,8 @@ _RUNNING_PROGRESS_CALC_TYPES = ("opt", "ts", "neb", "irc")
 
 _DFT_SYSTEM_PROMPT = (
     "ORCA DFT 계산 모니터링 전문가. "
-    "데이터를 보고 한국어 한 문장 코멘트만 출력하라. "
-    "설명·분석·사고과정 없이 코멘트 한 줄만."
+    "데이터를 보고 한국어 300자 이내로 코멘트하라. "
+    "설명·사고과정 없이 코멘트만."
 )
 
 # 사고 과정 유출을 감지하는 패턴들 — 줄 시작 기준
@@ -68,8 +68,6 @@ _META_REASONING_RE = re.compile(
     re.IGNORECASE,
 )
 
-# 코멘트 한 줄 최대 글자수 — 초과 시 사고 과정으로 판정
-_MAX_COMMENT_LENGTH = 200
 
 
 def build_dft_monitor_callable(
@@ -431,22 +429,17 @@ def _is_thinking_line(line: str) -> bool:
         return True
     if _META_REASONING_RE.search(line):
         return True
-    if len(line) > _MAX_COMMENT_LENGTH:
-        return True
     return False
 
 
 def _extract_comment(raw: str) -> str:
-    """LLM 응답에서 사고 과정을 제거하고 최종 코멘트 한 줄을 추출한다."""
+    """LLM 응답에서 사고 과정을 제거하고 코멘트를 추출한다."""
     lines = [ln.strip() for ln in raw.strip().splitlines() if ln.strip()]
     if not lines:
         return ""
 
-    # 사고 과정이 아닌 첫 번째 줄을 반환, 모두 사고 과정이면 빈 문자열.
-    for line in lines:
-        if not _is_thinking_line(line):
-            return line
-    return ""
+    kept = [line for line in lines if not _is_thinking_line(line)]
+    return "\n".join(kept)
 
 
 async def _get_ai_comment(
@@ -533,7 +526,7 @@ def _build_analysis_prompt(progress: OptProgress) -> str:
         f"메서드: {progress.method}/{progress.basis_set}, "
         f"총 {len(progress.steps)} 스텝\n"
         + "\n".join(recent_data)
-        + "\n\n수렴 상태와 주의사항을 한국어 한 문장으로 코멘트하라."
+        + "\n\n수렴 상태와 주의사항을 한국어 300자 이내로 코멘트하라."
     )
 
 
@@ -552,7 +545,7 @@ def _build_running_analysis_prompt(result: Any, source_path: str) -> str:
         f"계산: {result.calc_type or 'unknown'}, "
         f"메서드: {method_basis}, "
         f"에너지: {energy_str}\n\n"
-        f"현재 상태를 한국어 한 문장으로 코멘트하라."
+        f"현재 상태를 한국어 300자 이내로 코멘트하라."
     )
 
 

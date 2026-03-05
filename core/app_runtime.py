@@ -373,6 +373,68 @@ def _record_degraded_component(
     )
 
 
+async def _init_dft(
+    config: AppSettings,
+    cleanup_stack: AsyncExitStack,
+    logger: Any,
+    degraded_components: list[dict[str, str]],
+) -> tuple[Any, Any]:
+    """DFT 인덱스와 컨텍스트 프로바이더를 초기화한다.
+
+    Returns:
+        (dft_index, dft_context_provider) — 실패 시 둘 다 None.
+    """
+    if not config.dft.enabled:
+        return None, None
+    try:
+        from core.dft_index import DFTIndex
+        from core.dft_query import DFTContextProvider, DFTQueryEngine
+
+        dft_db_path = str(Path(config.data_dir) / "rag_index" / "dft.db")
+        dft_index = DFTIndex()
+        await dft_index.initialize(dft_db_path)
+        cleanup_stack.push_async_callback(dft_index.close)
+
+        dft_query_engine = DFTQueryEngine(dft_index)
+        dft_context_provider = DFTContextProvider(dft_query_engine)
+
+        if config.dft.auto_index_on_startup and config.rag.kb_dirs:
+            kb_dirs = [d for d in config.rag.kb_dirs if Path(d).is_dir()]
+            if kb_dirs:
+                result = await dft_index.index_calculations(
+                    kb_dirs, max_file_size_mb=config.dft.max_file_size_mb,
+                )
+                logger.info("dft_startup_index_complete", **result)
+
+        logger.info("dft_index_initialized")
+        return dft_index, dft_context_provider
+    except Exception as exc:
+        _handle_optional_component_failure(
+            config, logger, degraded_components,
+            component="dft_index", error=exc,
+        )
+        return None, None
+
+
+def _build_dft_completion_hook(dft_index: Any, logger: Any):
+    """SimScheduler용 DFT 인덱싱 완료 훅을 생성한다."""
+
+    async def _hook(job: dict) -> None:
+        if job.get("tool") not in ("orca_auto",):
+            return
+        output_file = job.get("output_file")
+        if not output_file:
+            return
+        success = await dft_index.upsert_single(output_file)
+        if success:
+            logger.info(
+                "sim_job_output_indexed",
+                job_id=job.get("job_id", ""), output_file=output_file,
+            )
+
+    return _hook
+
+
 def _handle_optional_component_failure(
     config: AppSettings,
     logger: Any,
@@ -792,48 +854,9 @@ async def _build_runtime(
                 rag_pipeline = None
 
         # ── DFT 인덱스 초기화 ──
-        dft_index: DFTIndex | None = None
-        dft_query_engine: DFTQueryEngine | None = None
-
-        if config.dft.enabled:
-            try:
-                from core.dft_index import DFTIndex
-                from core.dft_query import DFTQueryEngine
-
-                dft_db_path = str(
-                    Path(config.data_dir) / "rag_index" / "dft.db"
-                )
-                dft_index = DFTIndex()
-                await dft_index.initialize(dft_db_path)
-                cleanup_stack.push_async_callback(dft_index.close)
-
-                dft_query_engine = DFTQueryEngine(dft_index)
-
-                if config.dft.auto_index_on_startup and config.rag.kb_dirs:
-                    kb_dirs = [
-                        d for d in config.rag.kb_dirs if Path(d).is_dir()
-                    ]
-                    if kb_dirs:
-                        dft_startup_result = await dft_index.index_calculations(
-                            kb_dirs,
-                            max_file_size_mb=config.dft.max_file_size_mb,
-                        )
-                        logger.info(
-                            "dft_startup_index_complete",
-                            **dft_startup_result,
-                        )
-
-                logger.info("dft_index_initialized")
-            except Exception as exc:
-                _handle_optional_component_failure(
-                    config,
-                    logger,
-                    degraded_components,
-                    component="dft_index",
-                    error=exc,
-                )
-                dft_index = None
-                dft_query_engine = None
+        dft_index, dft_context_provider = await _init_dft(
+            config, cleanup_stack, logger, degraded_components,
+        )
 
         # ── 시뮬레이션 큐 초기화 ──
         sim_scheduler = None
@@ -859,9 +882,12 @@ async def _build_runtime(
                     config=config.sim_queue,
                     store=sim_store,
                     resources=sim_resources,
-                    dft_index=dft_index,
                 )
                 sim_scheduler.set_allowed_users(config.security.allowed_users)
+                if dft_index is not None:
+                    sim_scheduler.add_completion_hook(
+                        _build_dft_completion_hook(dft_index, logger),
+                    )
                 logger.info("sim_scheduler_initialized")
             except Exception as exc:
                 _handle_optional_component_failure(
@@ -873,6 +899,7 @@ async def _build_runtime(
                 )
                 sim_scheduler = None
 
+        context_providers = [dft_context_provider] if dft_context_provider else []
         engine = Engine(
             config=config,
             llm_client=llm,
@@ -884,7 +911,7 @@ async def _build_runtime(
             intent_router=intent_router,
             context_compressor=context_compressor,
             rag_pipeline=rag_pipeline,
-            dft_query_engine=dft_query_engine,
+            context_providers=context_providers,
         )
 
         auto_evaluator: AutoEvaluator | None = None
