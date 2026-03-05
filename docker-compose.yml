@@ -10,8 +10,6 @@ services:
       MKL_NUM_THREADS: "${MKL_NUM_THREADS:-4}"
       OPENBLAS_NUM_THREADS: "${OPENBLAS_NUM_THREADS:-4}"
       TOKENIZERS_PARALLELISM: "false"
-    depends_on:
-      - sim_host_agent
     entrypoint: ["python", "-m", "apps.ollama_bot.main"]
     volumes:
       - ./data:/app/data
@@ -38,52 +36,6 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
       - "windows-host:${WINDOWS_HOST_IP:-host-gateway}"
-
-  sim_host_agent:
-    build: .
-    restart: unless-stopped
-    pid: "host"
-    env_file: .env
-    environment:
-      ORCA_AUTO_RUN_INP_BACKGROUND: "0"
-      ORCA_AUTO_ORCA_EXECUTABLE: "${ORCA_AUTO_ORCA_EXECUTABLE:-/app/host/orca_bin/orca}"
-      SIM_OUTPUT_DIR_ORCA_AUTO: "/app/kb/orca_outputs"
-    entrypoint:
-      - python
-      - scripts/sim_host_agent.py
-      - --host
-      - 0.0.0.0
-      - --port
-      - "18081"
-      - --config
-      - /app/config/config.yaml
-    volumes:
-      - ./config:/app/config:ro
-      - ${HOST_KB_DIR:-./kb}/orca_runs:/app/kb/orca_runs
-      - ${HOST_KB_DIR:-./kb}/orca_outputs:/app/kb/orca_outputs
-      - ${HOST_KB_DIR:-./kb}/orca_auto:/app/host/orca_auto
-      - ${ORCA_HOST_DIR:-/home/daehyupsohn/opt/orca}:/app/host/orca_bin:ro
-    security_opt:
-      - no-new-privileges:true
-    read_only: true
-    tmpfs:
-      - /tmp
-    cap_drop:
-      - ALL
-    cap_add:
-      - KILL
-    user: "${SIM_AGENT_UID:-1000}:${SIM_AGENT_GID:-1000}"
-    healthcheck:
-      test:
-        - CMD
-        - python
-        - -c
-        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:18081/health', timeout=2).read()"
-      interval: 30s
-      timeout: 10s
-      retries: 3
-    networks:
-      - bot_network
 
 networks:
   bot_network:

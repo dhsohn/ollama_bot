@@ -367,7 +367,10 @@ def submit_external_job(config_path: Path, payload: dict[str, Any]) -> dict[str,
     if not os.access(work_dir, os.W_OK):
         raise OSError(f"work_dir_not_writable:{work_dir}")
 
-    executable = str(tool_cfg.get("executable") or "").strip()
+    exe_env_key = f"SIM_TOOL_EXECUTABLE_{_tool_env_suffix(tool)}"
+    executable = os.environ.get(exe_env_key, "").strip()
+    if not executable:
+        executable = str(tool_cfg.get("executable") or "").strip()
     if not executable:
         raise ValueError(f"tool_executable_missing:{tool}")
     if executable.startswith(("~", ".", "/")):

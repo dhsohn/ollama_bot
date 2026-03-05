@@ -169,7 +169,7 @@ sim_queue:
   queue_check_interval_seconds: 5
   adaptive_allocation_enabled: true
   adaptive_memory_step_mb: 1024
-  external_agent_base_url: "http://sim_host_agent:18081"
+  external_agent_base_url: "http://host.docker.internal:18081"
   external_agent_timeout_seconds: 3.0
   external_agent_token_env: "SIM_EXTERNAL_AGENT_TOKEN"
   job_work_dir: "data/sim_jobs"
