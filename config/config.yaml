@@ -174,7 +174,7 @@ sim_queue:
     orca_auto:
       enabled: true
       executable: "orca_auto"
-      cli_template: "{executable} run-inp --reaction-dir '{input_file}' > {output_file} 2>&1"
+      cli_template: "{executable} run-inp --foreground --reaction-dir '{input_file}' > {output_file} 2>&1"
       command_prefix: ""
       min_cores: 2
       default_cores: 4
