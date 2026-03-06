@@ -214,11 +214,11 @@ async def test_detects_external_running_jobs_from_process_table(
     try:
         jobs = await scheduler.get_external_running_jobs()
         assert len(jobs) == 2
-        assert jobs[0]["job_id"] == "external-1001"
+        assert jobs[0]["job_id"] == "ext-1001"
         assert jobs[0]["tool"] == "orca_auto"
         assert jobs[0]["input_file"] == "/tmp/STRUC1"
         assert "--reaction-dir /tmp/STRUC1" in jobs[0]["cli_command"]
-        assert jobs[1]["job_id"] == "external-1002"
+        assert jobs[1]["job_id"] == "ext-1002"
         assert jobs[1]["tool"] == "crest"
     finally:
         await store.close()
@@ -444,7 +444,7 @@ async def test_detects_external_jobs_from_lock_files_when_ps_unavailable(
     try:
         jobs = await scheduler.get_external_running_jobs()
         assert len(jobs) == 1
-        assert jobs[0]["job_id"] == "external-77777"
+        assert jobs[0]["job_id"] == "ext-77777"
         assert jobs[0]["tool"] == "orca_auto"
         assert jobs[0]["status"] == "running"
         assert jobs[0]["input_file"] == "/host/orca_runs/STRUC2"

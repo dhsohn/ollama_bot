@@ -1397,7 +1397,7 @@ class TestSimCancelExternal:
         sim_scheduler = MagicMock()
         sim_scheduler.list_jobs = AsyncMock(return_value=[])
         sim_scheduler.get_external_running_jobs = AsyncMock(
-            return_value=[{"job_id": "external-43210", "pid": 43210}]
+            return_value=[{"job_id": "ext-43210", "pid": 43210}]
         )
         sim_scheduler.cancel_external_job = AsyncMock(return_value=True)
         telegram_handler.set_sim_scheduler(sim_scheduler)
@@ -1407,7 +1407,7 @@ class TestSimCancelExternal:
         update = MagicMock()
         update.effective_message = message
 
-        await telegram_handler._sim_cancel(update, ["external-43210"])
+        await telegram_handler._sim_cancel(update, ["ext-43210"])
 
         sim_scheduler.cancel_external_job.assert_awaited_once_with(43210)
         reply = message.reply_text.await_args[0][0]
@@ -1422,7 +1422,7 @@ class TestSimCancelExternal:
         sim_scheduler = MagicMock()
         sim_scheduler.list_jobs = AsyncMock(return_value=[])
         sim_scheduler.get_external_running_jobs = AsyncMock(
-            return_value=[{"job_id": "external-98765", "pid": 98765}]
+            return_value=[{"job_id": "ext-98765", "pid": 98765}]
         )
         sim_scheduler.cancel_external_job = AsyncMock(return_value=True)
         telegram_handler.set_sim_scheduler(sim_scheduler)
@@ -1446,7 +1446,7 @@ class TestSimCancelExternal:
         sim_scheduler = MagicMock()
         sim_scheduler.list_jobs = AsyncMock(return_value=[])
         sim_scheduler.get_external_running_jobs = AsyncMock(
-            return_value=[{"job_id": "external-11111", "pid": 11111}]
+            return_value=[{"job_id": "ext-11111", "pid": 11111}]
         )
         sim_scheduler.cancel_external_job = AsyncMock(return_value=False)
         telegram_handler.set_sim_scheduler(sim_scheduler)
@@ -1456,7 +1456,7 @@ class TestSimCancelExternal:
         update = MagicMock()
         update.effective_message = message
 
-        await telegram_handler._sim_cancel(update, ["external-111"])
+        await telegram_handler._sim_cancel(update, ["ext-111"])
 
         sim_scheduler.cancel_external_job.assert_awaited_once_with(11111)
         reply = message.reply_text.await_args[0][0]
@@ -1473,7 +1473,7 @@ class TestSimInfoExternal:
         sim_scheduler.list_jobs = AsyncMock(return_value=[])
         sim_scheduler.get_external_running_jobs = AsyncMock(
             return_value=[{
-                "job_id": "external-54321",
+                "job_id": "ext-54321",
                 "tool": "orca_auto",
                 "status": "running",
                 "pid": 54321,
@@ -1492,7 +1492,7 @@ class TestSimInfoExternal:
         update = MagicMock()
         update.effective_message = message
 
-        await telegram_handler._sim_info(update, ["external-543"])
+        await telegram_handler._sim_info(update, ["ext-543"])
 
         reply = message.reply_text.await_args[0][0]
         assert "감지 작업 상세" in reply
@@ -1510,7 +1510,7 @@ class TestSimInfoExternal:
         sim_scheduler.list_jobs = AsyncMock(return_value=[])
         sim_scheduler.get_external_running_jobs = AsyncMock(
             return_value=[{
-                "job_id": "external-98765",
+                "job_id": "ext-98765",
                 "tool": "orca_auto",
                 "status": "running",
                 "pid": 98765,
@@ -1574,7 +1574,7 @@ class TestSimInfoExternal:
         sim_scheduler.list_jobs = AsyncMock(return_value=[])
         sim_scheduler.get_external_running_jobs = AsyncMock(
             return_value=[{
-                "job_id": "external-12345",
+                "job_id": "ext-12345",
                 "tool": "orca_auto",
                 "status": "running",
                 "pid": 12345,

@@ -1555,7 +1555,7 @@ class TelegramHandler:
                 priority=priority,
                 label=label,
             )
-            display_job_id = result.job_id if result.job_id.startswith("external-") else result.job_id[:8]
+            display_job_id = result.job_id if result.job_id.startswith("ext-") else result.job_id[:8]
             msg = f"작업 등록 완료: {display_job_id}\n도구: {tool} | 우선순위: {priority}"
             if result.cancelled_job_id:
                 msg += f"\n(기존 대기 작업 {result.cancelled_job_id[:8]} 자동 취소됨)"
@@ -1635,23 +1635,28 @@ class TelegramHandler:
         table_rows: list[str] = []
         for j in jobs:
             status = str(j.get("status") or "")
+            tool = str(j.get("tool") or "")
             elapsed_text = self._sim_elapsed_text(j)
             table_rows.append(
-                f"{j['job_id'][:8]}  "
+                f"{j['job_id'][:8]:<10s} "
                 f"{status:<9s} "
+                f"{tool:<8s} "
                 f"{elapsed_text}"
             )
 
         for j in external_jobs:
             ext_status = str(j.get("status") or "running")
+            tool = str(j.get("tool") or "")
             elapsed_text = self._sim_elapsed_text(j)
+            display_id = str(j.get("job_id") or "")[:10]
             table_rows.append(
-                f"{j['job_id'][:8]}  "
+                f"{display_id:<10s} "
                 f"{ext_status:<9s} "
+                f"{tool:<8s} "
                 f"{elapsed_text}"
             )
 
-        header = "ID        상태      경과시간"
+        header = "ID         상태      도구     경과시간"
         sep = "─" * len(header)
         table = chr(10).join([header, sep] + table_rows)
 
@@ -1768,7 +1773,7 @@ class TelegramHandler:
                 for label, value in rows:
                     table_lines.append(f"{label:<{lw}s}  {value}")
                 table = chr(10).join(table_lines)
-                text = f"<b>감지 작업 상세: {ext['job_id'][:12]}</b>\n\n<pre>{table}</pre>"
+                text = f"<b>감지 작업 상세: {ext['job_id']}</b>\n\n<pre>{table}</pre>"
                 await update.effective_message.reply_text(  # type: ignore[union-attr]
                     text, parse_mode=ParseMode.HTML,
                 )
@@ -1862,11 +1867,11 @@ class TelegramHandler:
         success = await sim_scheduler.cancel_external_job(pid)
         if success:
             await update.effective_message.reply_text(  # type: ignore[union-attr]
-                f"감지 작업 {target['job_id'][:12]} (PID:{pid}) 종료 완료"
+                f"감지 작업 {target['job_id']} (PID:{pid}) 종료 완료"
             )
         else:
             await update.effective_message.reply_text(  # type: ignore[union-attr]
-                f"감지 작업 {target['job_id'][:12]} 종료 불가 (이미 종료됨/권한 없음)"
+                f"감지 작업 {target['job_id']} 종료 불가 (이미 종료됨/권한 없음)"
             )
 
     async def _sim_priority(self, update: Update, args: list[str]) -> None:

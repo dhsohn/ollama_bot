@@ -356,9 +356,9 @@ class SimExternalTracker:
                     cli_command = f"lockfile:{lock_path}"
 
                 if pid is not None and pid > 0:
-                    job_id = f"external-{pid}"
+                    job_id = f"ext-{pid}"
                 else:
-                    job_id = f"external-lock-{lock_dir.name}"
+                    job_id = f"extl-{lock_dir.name}"
 
                 jobs.append(
                     {
@@ -622,7 +622,7 @@ class SimExternalTracker:
                         input_hint = self._extract_input_hint(command)
                         external_jobs.append(
                             {
-                                "job_id": f"external-{pid}",
+                                "job_id": f"ext-{pid}",
                                 "tool": tool_name,
                                 "status": "running",
                                 "priority": 0,
