@@ -164,7 +164,7 @@ def _build_get_external_dirs(sim_scheduler: object):
     """SimJobScheduler에서 외부 실행 중인 시뮬레이션의 작업 디렉토리를 반환하는 콜백을 생성한다."""
 
     async def get_external_dirs() -> list[str]:
-        jobs = await sim_scheduler.get_external_running_jobs()  # type: ignore[union-attr]
+        jobs = await sim_scheduler.get_external_running_jobs()  # type: ignore[attr-defined]
         dirs: list[str] = []
         for job in jobs:
             input_file = job.get("input_file", "")
