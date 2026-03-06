@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -400,6 +401,59 @@ async def test_ai_comment_graceful_on_engine_failure(tmp_path: Path) -> None:
     assert "OPT Progress" in result
     assert "Step" in result
     assert "💬" not in result
+
+
+@pytest.mark.asyncio
+async def test_ai_comment_budget_prevents_global_timeout(tmp_path: Path) -> None:
+    """잡 timeout 예산이 작을 때 AI 코멘트를 제한해 전체 작업 timeout을 방지한다."""
+    kb_dir = tmp_path / "kb"
+    run_a = kb_dir / "run_a"
+    run_b = kb_dir / "run_b"
+    run_a.mkdir(parents=True)
+    run_b.mkdir(parents=True)
+
+    out_a = run_a / "opt_a.out"
+    out_b = run_b / "opt_b.out"
+    out_a.write_text(_RUNNING_OPT_OUT, encoding="utf-8")
+    out_b.write_text(_RUNNING_OPT_OUT, encoding="utf-8")
+    (run_a / "run_state.json").write_text('{"status": "running"}', encoding="utf-8")
+    (run_b / "run_state.json").write_text('{"status": "running"}', encoding="utf-8")
+
+    state_file = tmp_path / "automation" / "state.json"
+    dft_index = AsyncMock()
+    dft_index.upsert_single = AsyncMock(return_value=True)
+    logger = MagicMock()
+
+    async def _slow_comment(**kwargs: object) -> str:
+        _ = kwargs
+        await asyncio.sleep(10)
+        return "느린 응답"
+
+    mock_engine = AsyncMock()
+    mock_engine.process_prompt = AsyncMock(side_effect=_slow_comment)
+
+    monitor = build_dft_monitor_callable(
+        dft_index=dft_index,
+        kb_dirs=[str(kb_dir)],
+        logger=logger,
+        state_file=str(state_file),
+        engine=mock_engine,
+    )
+
+    await monitor()  # baseline
+
+    out_a.write_text(_RUNNING_OPT_OUT + "\n# updated\n", encoding="utf-8")
+    mtime_a = os.path.getmtime(out_a)
+    os.utime(out_a, (mtime_a + 5.0, mtime_a + 5.0))
+
+    out_b.write_text(_RUNNING_OPT_OUT + "\n# updated\n", encoding="utf-8")
+    mtime_b = os.path.getmtime(out_b)
+    os.utime(out_b, (mtime_b + 5.0, mtime_b + 5.0))
+
+    result = await asyncio.wait_for(monitor(timeout=17), timeout=18)
+    assert "RUNNING Progress: 2건의 진행 중인 계산" in result
+    assert "💬" not in result
+    assert mock_engine.process_prompt.await_count == 1
 
 
 @pytest.mark.asyncio

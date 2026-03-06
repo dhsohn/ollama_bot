@@ -10,6 +10,7 @@ import asyncio
 import json
 import os
 import re
+import time
 from html import escape as _h
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -21,6 +22,8 @@ from core.orca_parser import OptProgress, parse_opt_progress, parse_orca_output
 
 _RUNNING_PROGRESS_CALC_TYPES = ("opt", "ts", "neb", "irc")
 _AI_COMMENT_TIMEOUT_SECONDS = 60
+_AI_COMMENT_TIMEOUT_RESERVE_SECONDS = 15.0
+_AI_COMMENT_MIN_TIMEOUT_SECONDS = 1.0
 
 _DFT_SYSTEM_PROMPT = (
     "ORCA DFT 계산 모니터링 전문가. "
@@ -109,6 +112,7 @@ def build_dft_monitor_callable(
         model_role: str | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        timeout: int | None = None,
     ) -> str:
         """kb_dirs에서 새로/변경된 ORCA 파일을 감지하여 인덱싱한다.
 
@@ -121,6 +125,19 @@ def build_dft_monitor_callable(
         scanned_mtimes: dict[str, float] = {}
         state_dirty = False
         missing_kb_dirs: list[str] = []
+        started_at = time.monotonic()
+        run_timeout_seconds: float | None = None
+        if isinstance(timeout, (int, float)) and float(timeout) > 0:
+            run_timeout_seconds = float(timeout)
+
+        def _resolve_ai_comment_timeout() -> float | None:
+            if run_timeout_seconds is None:
+                return float(_AI_COMMENT_TIMEOUT_SECONDS)
+            elapsed = time.monotonic() - started_at
+            remaining = run_timeout_seconds - elapsed - _AI_COMMENT_TIMEOUT_RESERVE_SECONDS
+            if remaining <= _AI_COMMENT_MIN_TIMEOUT_SECONDS:
+                return None
+            return min(float(_AI_COMMENT_TIMEOUT_SECONDS), remaining)
 
         # 외부 시뮬레이션 디렉토리 수집
         external_dirs: list[str] = []
@@ -188,10 +205,14 @@ def build_dft_monitor_callable(
                                 progress_text = _format_opt_progress(opt_prog)
                                 if progress_text:
                                     # LLM 한줄 해석 시도
-                                    ai_comment = await _get_ai_comment(
-                                        opt_prog, engine, model, model_role,
-                                        temperature, max_tokens, logger,
-                                    )
+                                    ai_timeout = _resolve_ai_comment_timeout()
+                                    ai_comment = ""
+                                    if ai_timeout is not None:
+                                        ai_comment = await _get_ai_comment(
+                                            opt_prog, engine, model, model_role,
+                                            temperature, max_tokens, logger,
+                                            timeout_seconds=ai_timeout,
+                                        )
                                     if ai_comment:
                                         progress_text += f'\n\n💬 "<i>{_h(ai_comment)}</i>"'
                         except Exception as exc:
@@ -204,10 +225,14 @@ def build_dft_monitor_callable(
                         # OPT step 파싱 불가(또는 비-OPT 타입) 시 요약 스냅샷 + AI 코멘트
                         if not progress_text:
                             progress_text = _format_running_snapshot(result, spath)
-                            ai_comment = await _get_ai_comment_for_running(
-                                result, spath, engine, model, model_role,
-                                temperature, max_tokens, logger,
-                            )
+                            ai_timeout = _resolve_ai_comment_timeout()
+                            ai_comment = ""
+                            if ai_timeout is not None:
+                                ai_comment = await _get_ai_comment_for_running(
+                                    result, spath, engine, model, model_role,
+                                    temperature, max_tokens, logger,
+                                    timeout_seconds=ai_timeout,
+                                )
                             if ai_comment:
                                 progress_text += f'\n\n💬 "<i>{_h(ai_comment)}</i>"'
 
@@ -534,6 +559,7 @@ async def _get_ai_comment(
     temperature: float | None,
     max_tokens: int | None,
     logger: Any,
+    timeout_seconds: float = _AI_COMMENT_TIMEOUT_SECONDS,
 ) -> str:
     """LLM에 최적화 진행 상황 한줄 해석을 요청한다.
 
@@ -553,11 +579,11 @@ async def _get_ai_comment(
                 max_tokens=max_tokens if max_tokens is not None else 150,
                 system_prompt_override=_DFT_SYSTEM_PROMPT,
             ),
-            timeout=_AI_COMMENT_TIMEOUT_SECONDS,
+            timeout=max(float(timeout_seconds), _AI_COMMENT_MIN_TIMEOUT_SECONDS),
         )
         return _extract_comment(raw)
     except Exception as exc:
-        logger.warning("dft_monitor_ai_comment_failed", error=str(exc))
+        logger.warning("dft_monitor_ai_comment_failed", error=_format_error(exc))
         return ""
 
 
@@ -570,6 +596,7 @@ async def _get_ai_comment_for_running(
     temperature: float | None,
     max_tokens: int | None,
     logger: Any,
+    timeout_seconds: float = _AI_COMMENT_TIMEOUT_SECONDS,
 ) -> str:
     """OPT step이 부족한 running 계산에 대한 한줄 해석을 요청한다."""
     if engine is None:
@@ -586,11 +613,11 @@ async def _get_ai_comment_for_running(
                 max_tokens=max_tokens if max_tokens is not None else 150,
                 system_prompt_override=_DFT_SYSTEM_PROMPT,
             ),
-            timeout=_AI_COMMENT_TIMEOUT_SECONDS,
+            timeout=max(float(timeout_seconds), _AI_COMMENT_MIN_TIMEOUT_SECONDS),
         )
         return _extract_comment(raw)
     except Exception as exc:
-        logger.warning("dft_monitor_ai_comment_failed", error=str(exc))
+        logger.warning("dft_monitor_ai_comment_failed", error=_format_error(exc))
         return ""
 
 
@@ -738,3 +765,9 @@ def _save_state(state_file: str | None, mtimes: dict[str, float], logger: Any) -
         tmp_path.replace(path)
     except Exception as exc:
         logger.warning("dft_monitor_state_save_failed", path=state_file, error=str(exc))
+
+
+def _format_error(exc: BaseException) -> str:
+    """예외 메시지가 비어있을 때 클래스명을 보존한다."""
+    message = str(exc).strip()
+    return message if message else exc.__class__.__name__
