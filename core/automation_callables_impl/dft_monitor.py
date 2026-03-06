@@ -6,6 +6,7 @@ DFT 인덱스에 등록 후 텔레그램으로 알림을 전송한다.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -19,6 +20,7 @@ from core.dft_discovery import discover_orca_targets
 from core.orca_parser import OptProgress, parse_opt_progress, parse_orca_output
 
 _RUNNING_PROGRESS_CALC_TYPES = ("opt", "ts", "neb", "irc")
+_AI_COMMENT_TIMEOUT_SECONDS = 30
 
 _DFT_SYSTEM_PROMPT = (
     "ORCA DFT 계산 모니터링 전문가. "
@@ -542,13 +544,16 @@ async def _get_ai_comment(
 
     prompt = _build_analysis_prompt(progress)
     try:
-        raw = await engine.process_prompt(
-            prompt=prompt,
-            model_override=model,
-            model_role=model_role,
-            temperature=temperature if temperature is not None else 0.3,
-            max_tokens=max_tokens if max_tokens is not None else 150,
-            system_prompt_override=_DFT_SYSTEM_PROMPT,
+        raw = await asyncio.wait_for(
+            engine.process_prompt(
+                prompt=prompt,
+                model_override=model,
+                model_role=model_role,
+                temperature=temperature if temperature is not None else 0.3,
+                max_tokens=max_tokens if max_tokens is not None else 150,
+                system_prompt_override=_DFT_SYSTEM_PROMPT,
+            ),
+            timeout=_AI_COMMENT_TIMEOUT_SECONDS,
         )
         return _extract_comment(raw)
     except Exception as exc:
@@ -572,13 +577,16 @@ async def _get_ai_comment_for_running(
 
     prompt = _build_running_analysis_prompt(result, source_path)
     try:
-        raw = await engine.process_prompt(
-            prompt=prompt,
-            model_override=model,
-            model_role=model_role,
-            temperature=temperature if temperature is not None else 0.3,
-            max_tokens=max_tokens if max_tokens is not None else 150,
-            system_prompt_override=_DFT_SYSTEM_PROMPT,
+        raw = await asyncio.wait_for(
+            engine.process_prompt(
+                prompt=prompt,
+                model_override=model,
+                model_role=model_role,
+                temperature=temperature if temperature is not None else 0.3,
+                max_tokens=max_tokens if max_tokens is not None else 150,
+                system_prompt_override=_DFT_SYSTEM_PROMPT,
+            ),
+            timeout=_AI_COMMENT_TIMEOUT_SECONDS,
         )
         return _extract_comment(raw)
     except Exception as exc:

@@ -150,11 +150,13 @@ class SimJobScheduler:
                 )
 
         # 새 작업 감지 알림
+        new_detected = False
         for job in external_jobs:
             job_id = job["job_id"]
             if job_id in self._known_external_jobs:
                 continue
             self._known_external_jobs[job_id] = job
+            new_detected = True
             tool = job.get("tool", "unknown")
             input_file = job.get("input_file", "-")
             source = job.get("source", "")
@@ -164,6 +166,20 @@ class SimJobScheduler:
                 f"도구: {tool}\n"
                 f"입력: {input_file}"
             )
+
+        # 새 외부 작업 감지 시 동시 실행 한도 초과 경고
+        if new_detected:
+            resource_status = await self._resources.get_status()
+            internal_running = int(resource_status.get("running_jobs", 0))
+            external_snapshot = await self._external_running_snapshot()
+            total_running = internal_running + external_snapshot.external_running
+            max_jobs = int(self._config.max_concurrent_jobs)
+            if total_running > max_jobs:
+                await self._notify(
+                    f"⚠️ [SIM] 동시 실행 한도 초과\n"
+                    f"현재 실행: {total_running}개 (내부 {internal_running} + 외부 {external_snapshot.external_running})\n"
+                    f"최대 한도: {max_jobs}개"
+                )
 
     @staticmethod
     def _safe_int(value: Any) -> int | None:
