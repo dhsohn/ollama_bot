@@ -6,14 +6,14 @@ import asyncio
 import json
 import os
 import re
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any, ClassVar
 
 from core.config import SimQueueConfig
 from core.sim_job_store import SimJobStore
-
 
 NotifyJobCompleted = Callable[[dict[str, Any]], Awaitable[None]]
 NotifyJobFailed = Callable[[dict[str, Any], str], Awaitable[None]]
@@ -30,7 +30,7 @@ class ExternalRunningSnapshot:
 class SimExternalTracker:
     """큐 외부 실행 감지와 위임 작업 상태 동기화를 담당한다."""
 
-    _IGNORED_PROCESS_TOKENS = {
+    _IGNORED_PROCESS_TOKENS: ClassVar[set[str]] = {
         "python",
         "python3",
         "bash",
@@ -173,8 +173,8 @@ class SimExternalTracker:
         except ValueError:
             return None
         if dt.tzinfo is None:
-            return dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(timezone.utc)
+            return dt.replace(tzinfo=UTC)
+        return dt.astimezone(UTC)
 
     @staticmethod
     def _safe_int(value: Any) -> int | None:
@@ -219,13 +219,13 @@ class SimExternalTracker:
     ) -> int:
         started_at = self._parse_iso_datetime(started_at_raw)
         if started_at is not None:
-            delta = datetime.now(timezone.utc) - started_at
+            delta = datetime.now(UTC) - started_at
             return max(0, int(delta.total_seconds()))
         try:
             mtime = lock_path.stat().st_mtime
         except OSError:
             return 0
-        return max(0, int(datetime.now(timezone.utc).timestamp() - mtime))
+        return max(0, int(datetime.now(UTC).timestamp() - mtime))
 
     @staticmethod
     def _tail_text(path: Path, *, max_lines: int = 30, max_chars: int = 2000) -> str:
@@ -461,29 +461,28 @@ class SimExternalTracker:
                 continue
             live_by_pid[pid] = item
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         stale_seconds = 30
 
         for job in tracked_jobs:
             pid = self._safe_int(job.get("pid"))
-            if pid is not None and pid > 0:
+            if pid is not None and pid > 0 and self._is_pid_alive(pid):
                 # get_external_running_jobs는 tracked PID를 제외하므로,
                 # 프로세스 생존 여부를 직접 확인한다.
-                if self._is_pid_alive(pid):
-                    live = live_by_pid.get(pid)
-                    if live is not None:
-                        updates: dict[str, Any] = {}
-                        if not job.get("cli_command") and live.get("cli_command"):
-                            updates["cli_command"] = str(live.get("cli_command"))
-                        if not job.get("output_file") and live.get("output_file"):
-                            updates["output_file"] = str(live.get("output_file"))
-                        if updates:
-                            await self._store.update_status(
-                                str(job["job_id"]),
-                                "running",
-                                **updates,
-                            )
-                    continue
+                live = live_by_pid.get(pid)
+                if live is not None:
+                    updates: dict[str, Any] = {}
+                    if not job.get("cli_command") and live.get("cli_command"):
+                        updates["cli_command"] = str(live.get("cli_command"))
+                    if not job.get("output_file") and live.get("output_file"):
+                        updates["output_file"] = str(live.get("output_file"))
+                    if updates:
+                        await self._store.update_status(
+                            str(job["job_id"]),
+                            "running",
+                            **updates,
+                        )
+                continue
 
             inferred_status, inferred_error = await asyncio.to_thread(
                 self._infer_missing_delegated_terminal_state, job,

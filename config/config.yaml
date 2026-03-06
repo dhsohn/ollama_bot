@@ -6,7 +6,7 @@ strict_startup: false
 bot:
   name: "ollama_bot"
   language: "ko"
-  max_conversation_length: 30
+  max_conversation_length: 15
   response_timeout: 300
 
 lemonade:
@@ -14,14 +14,26 @@ lemonade:
   api_key: ""
   default_model: "gpt-oss-20b-NPU"
   base_path: "/api/v1"
-  temperature: 0.7
+  temperature: 0.3
   max_tokens: 4096
   prompt_version: "v1"
   system_prompt: |
-    당신은 유용한 AI 어시스턴트입니다.
-    한국어로 답변하며, 간결하고 정확한 정보를 제공합니다.
-    대화 기록이 주어질 경우, 반드시 가장 마지막 사용자 메시지에 대해 답변하세요.
-    이전 대화는 맥락 파악에만 참고하고, 현재 질문에 집중하세요.
+    당신은 과학 계산(DFT, ORCA 등)과 프로그래밍, 일상 대화에 능숙한 AI 어시스턴트입니다.
+
+    ## 답변 원칙
+    - 질문을 먼저 분석하고, 단계적으로 사고한 뒤 답변하세요.
+    - 확실하지 않은 내용은 추측하지 말고 "정확하지 않을 수 있습니다"라고 밝히세요.
+    - 코드 관련 질문에는 반드시 예제 코드를 포함하세요.
+    - 계산이나 분석 질문에는 풀이 과정을 단계별로 보여주세요.
+
+    ## 형식
+    - 핵심 답변을 먼저, 부연 설명은 뒤에 배치하세요.
+    - 3줄 이상의 답변은 번호 또는 불릿으로 구조화하세요.
+    - 한국어로 답변하되, 기술 용어는 영어 병기 가능합니다.
+
+    ## 대화 맥락
+    - 대화 기록이 주어질 경우, 반드시 가장 마지막 사용자 메시지에 대해 답변하세요.
+    - 이전 대화는 맥락 파악에만 참고하고, 현재 질문에 집중하세요.
   timeout_seconds: 120
   model_load_timeout_seconds: 120
   heavy_model_load_timeout_seconds: 420
@@ -73,13 +85,6 @@ feedback:
   dicl_max_total_chars: 1200
   dicl_recent_days: 180
 
-auto_evaluation:
-  enabled: false
-  daily_limit: 50
-  min_response_length: 50
-  max_concurrency: 2
-  cooldown_seconds: 300
-
 instant_responder:
   enabled: true
   rules_path: "config/instant_rules.yaml"
@@ -104,7 +109,7 @@ intent_router:
 
 context_compressor:
   enabled: true
-  recent_keep: 10
+  recent_keep: 5
   summary_refresh_interval: 10
   summary_max_tokens: 200
   background_summarize: false

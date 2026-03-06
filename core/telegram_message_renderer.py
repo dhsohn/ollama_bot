@@ -127,7 +127,7 @@ async def stream_and_render(
                 chunk = await asyncio.wait_for(iterator.__anext__(), timeout=effective_wait)
         except StopAsyncIteration:
             break
-        except asyncio.TimeoutError:
+        except TimeoutError:
             stop_reason = "chunk_timeout"
             break
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -14,15 +14,13 @@ from core.auto_scheduler import AutoAction, AutoDefinition, AutoScheduler
 from core.automation_callables import (
     _DAILY_SUMMARY_SCHEMA,
     _PREFERENCES_SCHEMA,
-    _TRIAGE_SCHEMA,
     register_builtin_callables,
 )
-from core.feedback_manager import FeedbackManager
 from core.config import (
     AppSettings,
     BotConfig,
-    MemoryConfig,
     LemonadeConfig,
+    MemoryConfig,
     SecurityConfig,
     TelegramConfig,
 )
@@ -100,7 +98,7 @@ class TestDailySummaryCallable:
         await memory_manager.add_message(111, "user", "오늘-메시지")
 
         assert memory_manager._db is not None
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         yesterday = now - timedelta(days=1)
 
         await memory_manager._db.execute(
@@ -321,7 +319,7 @@ async def _insert_yesterday_messages(memory_manager, chat_id=111):
     await memory_manager.add_message(chat_id, "assistant", "네, 한국어로 답변하겠습니다")
 
     assert memory_manager._db is not None
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     yesterday = now - timedelta(days=1)
 
     await memory_manager._db.execute(
@@ -529,382 +527,6 @@ class TestExtractPreferencesCallable:
         assert {item["key"] for item in prefs} == {f"key_{idx}" for idx in range(10)}
 
 
-class TestErrorLogTriageCallable:
-    @pytest.mark.asyncio
-    async def test_analyzes_error_logs(
-        self,
-        scheduler: AutoScheduler,
-        app_settings: AppSettings,
-        memory_manager: MemoryManager,
-    ) -> None:
-        """에러 로그를 읽어 JSON 분석 결과를 포매팅하여 반환한다."""
-        log_dir = Path(app_settings.data_dir) / "logs"
-        log_dir.mkdir(parents=True, exist_ok=True)
-
-        now = datetime.now(timezone.utc)
-        log_entry = json.dumps({
-            "event": "ollama_retry",
-            "log_level": "error",
-            "timestamp": now.isoformat(),
-            "error": "connection refused",
-        })
-        (log_dir / "app.log").write_text(log_entry + "\n")
-
-        triage_json = json.dumps([{
-            "event": "ollama_retry",
-            "severity": "urgent",
-            "cause": "연결 거부",
-            "action": "Ollama 서비스 재시작",
-            "recurring": True,
-        }], ensure_ascii=False)
-        engine = AsyncMock()
-        engine.process_prompt = AsyncMock(return_value=triage_json)
-        _setup_callables(scheduler, engine, memory_manager, app_settings)
-
-        auto = AutoDefinition(
-            name="error_log_triage",
-            description="오류 분석",
-            schedule="0 */6 * * *",
-            action=AutoAction(
-                type="callable",
-                target="error_log_triage",
-                parameters={"hours_back": 24, "max_errors": 50},
-            ),
-        )
-        result = await scheduler._run_action(auto)
-
-        assert "오류 로그 분석" in result
-        assert "ollama_retry" in result
-        assert "연결 거부" in result
-        assert "반복 패턴: 예" in result
-        engine.process_prompt.assert_awaited_once()
-        call_kwargs = engine.process_prompt.await_args.kwargs
-        assert "ollama_retry" in call_kwargs["prompt"]
-        assert call_kwargs["response_format"] is _TRIAGE_SCHEMA
-
-    @pytest.mark.asyncio
-    async def test_no_errors_returns_empty(
-        self,
-        scheduler: AutoScheduler,
-        app_settings: AppSettings,
-        memory_manager: MemoryManager,
-    ) -> None:
-        """에러가 없으면 빈 문자열을 반환한다."""
-        log_dir = Path(app_settings.data_dir) / "logs"
-        log_dir.mkdir(parents=True, exist_ok=True)
-
-        now = datetime.now(timezone.utc)
-        log_entry = json.dumps({
-            "event": "bot_running",
-            "log_level": "info",
-            "timestamp": now.isoformat(),
-        })
-        (log_dir / "app.log").write_text(log_entry + "\n")
-
-        engine = AsyncMock()
-        _setup_callables(scheduler, engine, memory_manager, app_settings)
-
-        auto = AutoDefinition(
-            name="error_log_triage",
-            description="오류 분석",
-            schedule="0 */6 * * *",
-            action=AutoAction(
-                type="callable",
-                target="error_log_triage",
-                parameters={"hours_back": 24, "max_errors": 50},
-            ),
-        )
-        result = await scheduler._run_action(auto)
-
-        assert result == ""
-        engine.process_prompt.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_missing_log_dir_returns_empty(
-        self,
-        scheduler: AutoScheduler,
-        app_settings: AppSettings,
-        memory_manager: MemoryManager,
-    ) -> None:
-        """로그 디렉토리가 없으면 빈 문자열을 반환한다."""
-        engine = AsyncMock()
-        scheduler.set_dependencies(engine=engine, telegram=AsyncMock())
-        register_builtin_callables(
-            scheduler=scheduler,
-            engine=engine,
-            memory=memory_manager,
-            allowed_users=app_settings.security.allowed_users,
-            data_dir=str(Path(app_settings.data_dir) / "nonexistent"),
-        )
-
-        auto = AutoDefinition(
-            name="error_log_triage",
-            description="오류 분석",
-            schedule="0 */6 * * *",
-            action=AutoAction(
-                type="callable",
-                target="error_log_triage",
-                parameters={"hours_back": 6, "max_errors": 50},
-            ),
-        )
-        result = await scheduler._run_action(auto)
-        assert result == ""
-
-    @pytest.mark.asyncio
-    async def test_handles_malformed_log_lines(
-        self,
-        scheduler: AutoScheduler,
-        app_settings: AppSettings,
-        memory_manager: MemoryManager,
-    ) -> None:
-        """잘못된 JSON 라인은 건너뛴다."""
-        log_dir = Path(app_settings.data_dir) / "logs"
-        log_dir.mkdir(parents=True, exist_ok=True)
-
-        now = datetime.now(timezone.utc)
-        content = (
-            "not valid json\n"
-            + json.dumps({
-                "event": "test_error",
-                "log_level": "error",
-                "timestamp": now.isoformat(),
-            }) + "\n"
-        )
-        (log_dir / "app.log").write_text(content)
-
-        engine = AsyncMock()
-        engine.process_prompt = AsyncMock(return_value="분석 결과")
-        _setup_callables(scheduler, engine, memory_manager, app_settings)
-
-        auto = AutoDefinition(
-            name="error_log_triage",
-            description="오류 분석",
-            schedule="0 */6 * * *",
-            action=AutoAction(
-                type="callable",
-                target="error_log_triage",
-                parameters={"hours_back": 24, "max_errors": 50},
-            ),
-        )
-        result = await scheduler._run_action(auto)
-
-        assert "오류 로그 분석" in result
-        engine.process_prompt.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_error_log_triage_json_parse_fallback(
-        self,
-        scheduler: AutoScheduler,
-        app_settings: AppSettings,
-        memory_manager: MemoryManager,
-    ) -> None:
-        """JSON 파싱 실패 시 원본 텍스트를 사용한다."""
-        log_dir = Path(app_settings.data_dir) / "logs"
-        log_dir.mkdir(parents=True, exist_ok=True)
-
-        now = datetime.now(timezone.utc)
-        log_entry = json.dumps({
-            "event": "test_error",
-            "log_level": "error",
-            "timestamp": now.isoformat(),
-        })
-        (log_dir / "app.log").write_text(log_entry + "\n")
-
-        engine = AsyncMock()
-        engine.process_prompt = AsyncMock(return_value="이것은 JSON이 아닙니다")
-        _setup_callables(scheduler, engine, memory_manager, app_settings)
-
-        auto = AutoDefinition(
-            name="error_log_triage",
-            description="오류 분석",
-            schedule="0 */6 * * *",
-            action=AutoAction(
-                type="callable",
-                target="error_log_triage",
-                parameters={"hours_back": 24, "max_errors": 50},
-            ),
-        )
-        result = await scheduler._run_action(auto)
-
-        assert "이것은 JSON이 아닙니다" in result
-
-    @pytest.mark.asyncio
-    async def test_error_log_triage_unexpected_type_fallback(
-        self,
-        scheduler: AutoScheduler,
-        app_settings: AppSettings,
-        memory_manager: MemoryManager,
-    ) -> None:
-        """json.loads 결과가 list/dict가 아닐 때 원본을 사용한다."""
-        log_dir = Path(app_settings.data_dir) / "logs"
-        log_dir.mkdir(parents=True, exist_ok=True)
-
-        now = datetime.now(timezone.utc)
-        log_entry = json.dumps({
-            "event": "test_error",
-            "log_level": "error",
-            "timestamp": now.isoformat(),
-        })
-        (log_dir / "app.log").write_text(log_entry + "\n")
-
-        engine = AsyncMock()
-        engine.process_prompt = AsyncMock(return_value='"단순 문자열"')
-        _setup_callables(scheduler, engine, memory_manager, app_settings)
-
-        auto = AutoDefinition(
-            name="error_log_triage",
-            description="오류 분석",
-            schedule="0 */6 * * *",
-            action=AutoAction(
-                type="callable",
-                target="error_log_triage",
-                parameters={"hours_back": 24, "max_errors": 50},
-            ),
-        )
-        result = await scheduler._run_action(auto)
-
-        assert '"단순 문자열"' in result
-
-    @pytest.mark.asyncio
-    async def test_error_log_triage_non_boolean_recurring_unknown(
-        self,
-        scheduler: AutoScheduler,
-        app_settings: AppSettings,
-        memory_manager: MemoryManager,
-    ) -> None:
-        """recurring이 bool이 아니면 '?'로 표시한다."""
-        log_dir = Path(app_settings.data_dir) / "logs"
-        log_dir.mkdir(parents=True, exist_ok=True)
-
-        now = datetime.now(timezone.utc)
-        log_entry = json.dumps({
-            "event": "test_error",
-            "log_level": "error",
-            "timestamp": now.isoformat(),
-        })
-        (log_dir / "app.log").write_text(log_entry + "\n")
-
-        engine = AsyncMock()
-        engine.process_prompt = AsyncMock(
-            return_value=json.dumps([{
-                "event": "test_error",
-                "severity": "warning",
-                "cause": "원인",
-                "action": "조치",
-                "recurring": "false",
-            }], ensure_ascii=False),
-        )
-        _setup_callables(scheduler, engine, memory_manager, app_settings)
-
-        auto = AutoDefinition(
-            name="error_log_triage",
-            description="오류 분석",
-            schedule="0 */6 * * *",
-            action=AutoAction(
-                type="callable",
-                target="error_log_triage",
-                parameters={"hours_back": 24, "max_errors": 50},
-            ),
-        )
-        result = await scheduler._run_action(auto)
-
-        assert "반복 패턴: ?" in result
-
-    @pytest.mark.asyncio
-    async def test_error_log_triage_uses_latest_sample_when_limited(
-        self,
-        scheduler: AutoScheduler,
-        app_settings: AppSettings,
-        memory_manager: MemoryManager,
-    ) -> None:
-        """max_errors 제한 시 최신 샘플부터 분석한다."""
-        log_dir = Path(app_settings.data_dir) / "logs"
-        log_dir.mkdir(parents=True, exist_ok=True)
-
-        now = datetime.now(timezone.utc)
-        old_entry = json.dumps({
-            "event": "old_event",
-            "log_level": "error",
-            "timestamp": (now - timedelta(minutes=10)).isoformat(),
-        })
-        new_entry = json.dumps({
-            "event": "new_event",
-            "log_level": "error",
-            "timestamp": now.isoformat(),
-        })
-        (log_dir / "app.log").write_text(old_entry + "\n" + new_entry + "\n")
-
-        engine = AsyncMock()
-        engine.process_prompt = AsyncMock(return_value="[]")
-        _setup_callables(scheduler, engine, memory_manager, app_settings)
-
-        auto = AutoDefinition(
-            name="error_log_triage",
-            description="오류 분석",
-            schedule="0 */6 * * *",
-            action=AutoAction(
-                type="callable",
-                target="error_log_triage",
-                parameters={"hours_back": 24, "max_errors": 1},
-            ),
-        )
-        result = await scheduler._run_action(auto)
-
-        call_kwargs = engine.process_prompt.await_args.kwargs
-        assert "new_event" in call_kwargs["prompt"]
-        assert "old_event" not in call_kwargs["prompt"]
-        assert "분석 샘플: 1건" in result
-
-    @pytest.mark.asyncio
-    async def test_error_log_triage_invalid_hours_back_raises(
-        self,
-        scheduler: AutoScheduler,
-        app_settings: AppSettings,
-        memory_manager: MemoryManager,
-    ) -> None:
-        """hours_back <= 0이면 ValueError를 발생시킨다."""
-        engine = AsyncMock()
-        _setup_callables(scheduler, engine, memory_manager, app_settings)
-
-        auto = AutoDefinition(
-            name="error_log_triage",
-            description="오류 분석",
-            schedule="0 */6 * * *",
-            action=AutoAction(
-                type="callable",
-                target="error_log_triage",
-                parameters={"hours_back": 0, "max_errors": 50},
-            ),
-        )
-        with pytest.raises(ValueError, match="hours_back must be > 0"):
-            await scheduler._run_action(auto)
-        engine.process_prompt.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_error_log_triage_invalid_max_errors_raises(
-        self,
-        scheduler: AutoScheduler,
-        app_settings: AppSettings,
-        memory_manager: MemoryManager,
-    ) -> None:
-        """max_errors <= 0이면 ValueError를 발생시킨다."""
-        engine = AsyncMock()
-        _setup_callables(scheduler, engine, memory_manager, app_settings)
-
-        auto = AutoDefinition(
-            name="error_log_triage",
-            description="오류 분석",
-            schedule="0 */6 * * *",
-            action=AutoAction(
-                type="callable",
-                target="error_log_triage",
-                parameters={"hours_back": 6, "max_errors": 0},
-            ),
-        )
-        with pytest.raises(ValueError, match="max_errors must be > 0"):
-            await scheduler._run_action(auto)
-        engine.process_prompt.assert_not_awaited()
-
 
 class TestExtractPreferencesSchemaFormat:
     @pytest.mark.asyncio
@@ -1087,7 +709,7 @@ class TestHealthCheckCallable:
         """에러 로그가 있으면 건수가 보고된다."""
         log_dir = Path(app_settings.data_dir) / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         for i in range(3):
             entry = json.dumps({
                 "event": f"test_error_{i}",
@@ -1123,7 +745,7 @@ class TestHealthCheckCallable:
         # 에러 로그도 추가
         log_dir = Path(app_settings.data_dir) / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         entry = json.dumps({
             "event": "test_error",
             "log_level": "error",
@@ -1173,7 +795,7 @@ class TestHealthCheckCallable:
         """파손된 JSON 라인은 건너뛰고 유효 에러만 카운트한다."""
         log_dir = Path(app_settings.data_dir) / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         content = (
             "not valid json\n"
             "another broken line { incomplete\n"
@@ -1625,184 +1247,3 @@ class TestMemoryHygieneCallable:
         assert len(prefs) == 1
 
 
-# ── feedback_analysis 테스트 ──
-
-
-@pytest_asyncio.fixture
-async def feedback_manager(memory_manager: MemoryManager) -> FeedbackManager:
-    fm = FeedbackManager(memory_manager.db)
-    await fm.initialize_schema()
-    return fm
-
-
-def _setup_callables_with_feedback(scheduler, engine, memory_manager, app_settings, feedback):
-    """feedback을 포함한 callable 등록 헬퍼."""
-    scheduler.set_dependencies(engine=engine, telegram=AsyncMock())
-    register_builtin_callables(
-        scheduler=scheduler,
-        engine=engine,
-        memory=memory_manager,
-        allowed_users=app_settings.security.allowed_users,
-        data_dir=app_settings.data_dir,
-        feedback=feedback,
-    )
-
-
-def _feedback_analysis_auto(**overrides) -> AutoDefinition:
-    """feedback_analysis AutoDefinition 생성 헬퍼."""
-    params = {
-        "min_feedback_count": 5,
-        "max_negative_samples": 15,
-        "max_positive_samples": 10,
-        "max_guidelines": 5,
-    }
-    params.update(overrides)
-    return AutoDefinition(
-        name="feedback_analysis",
-        description="피드백 분석",
-        schedule="0 2 * * *",
-        action=AutoAction(
-            type="callable",
-            target="feedback_analysis",
-            parameters=params,
-        ),
-    )
-
-
-class TestFeedbackAnalysisCallable:
-    @pytest.mark.asyncio
-    async def test_skip_when_below_min_feedback(
-        self,
-        scheduler: AutoScheduler,
-        app_settings: AppSettings,
-        memory_manager: MemoryManager,
-        feedback_manager: FeedbackManager,
-    ) -> None:
-        """최소 피드백 미달 시 빈 문자열을 반환한다."""
-        # 피드백 3건만 저장 (최소 5건 미달)
-        for i in range(3):
-            await feedback_manager.store_feedback(111, i, 1)
-
-        engine = AsyncMock()
-        _setup_callables_with_feedback(scheduler, engine, memory_manager, app_settings, feedback_manager)
-
-        result = await scheduler._run_action(_feedback_analysis_auto())
-
-        assert result == ""
-        engine.process_prompt.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_successful_analysis(
-        self,
-        scheduler: AutoScheduler,
-        app_settings: AppSettings,
-        memory_manager: MemoryManager,
-        feedback_manager: FeedbackManager,
-    ) -> None:
-        """피드백 분석이 성공하면 가이드라인이 저장된다."""
-        for i in range(5):
-            await feedback_manager.store_feedback(111, i, -1 if i < 3 else 1, f"q{i}", f"a{i}")
-
-        llm_response = json.dumps([
-            {"type": "avoid", "guideline": "너무 긴 응답을 피하세요"},
-            {"type": "prefer", "guideline": "예시를 포함하세요"},
-        ], ensure_ascii=False)
-        engine = AsyncMock()
-        engine.process_prompt = AsyncMock(return_value=llm_response)
-        _setup_callables_with_feedback(scheduler, engine, memory_manager, app_settings, feedback_manager)
-
-        result = await scheduler._run_action(_feedback_analysis_auto())
-
-        assert "피드백 분석 결과" in result
-        assert "2건 갱신" in result
-
-        guidelines = await memory_manager.recall_memory(111, category="feedback_guidelines")
-        assert len(guidelines) == 2
-
-    @pytest.mark.asyncio
-    async def test_json_parse_failure_graceful(
-        self,
-        scheduler: AutoScheduler,
-        app_settings: AppSettings,
-        memory_manager: MemoryManager,
-        feedback_manager: FeedbackManager,
-    ) -> None:
-        """JSON 파싱 실패 시 빈 문자열을 반환한다."""
-        for i in range(5):
-            await feedback_manager.store_feedback(111, i, -1)
-
-        engine = AsyncMock()
-        engine.process_prompt = AsyncMock(return_value="이것은 JSON이 아닙니다")
-        _setup_callables_with_feedback(scheduler, engine, memory_manager, app_settings, feedback_manager)
-
-        result = await scheduler._run_action(_feedback_analysis_auto())
-
-        assert result == ""
-
-    @pytest.mark.asyncio
-    async def test_max_guidelines_limit(
-        self,
-        scheduler: AutoScheduler,
-        app_settings: AppSettings,
-        memory_manager: MemoryManager,
-        feedback_manager: FeedbackManager,
-    ) -> None:
-        """max_guidelines 초과 시 잘린다."""
-        for i in range(6):
-            await feedback_manager.store_feedback(111, i, -1)
-
-        payload = [
-            {"type": "avoid", "guideline": f"가이드라인 {i}"}
-            for i in range(8)
-        ]
-        engine = AsyncMock()
-        engine.process_prompt = AsyncMock(return_value=json.dumps(payload, ensure_ascii=False))
-        _setup_callables_with_feedback(scheduler, engine, memory_manager, app_settings, feedback_manager)
-
-        await scheduler._run_action(_feedback_analysis_auto(max_guidelines=3))
-
-        guidelines = await memory_manager.recall_memory(111, category="feedback_guidelines")
-        assert len(guidelines) == 3
-
-    @pytest.mark.asyncio
-    async def test_existing_guidelines_replaced(
-        self,
-        scheduler: AutoScheduler,
-        app_settings: AppSettings,
-        memory_manager: MemoryManager,
-        feedback_manager: FeedbackManager,
-    ) -> None:
-        """기존 가이드라인이 삭제 후 재저장된다."""
-        # 기존 가이드라인 저장
-        await memory_manager.store_memory(111, "feedback_guideline_01", "old", category="feedback_guidelines")
-
-        for i in range(5):
-            await feedback_manager.store_feedback(111, i, -1)
-
-        llm_response = json.dumps([
-            {"type": "style", "guideline": "새 가이드라인"},
-        ], ensure_ascii=False)
-        engine = AsyncMock()
-        engine.process_prompt = AsyncMock(return_value=llm_response)
-        _setup_callables_with_feedback(scheduler, engine, memory_manager, app_settings, feedback_manager)
-
-        await scheduler._run_action(_feedback_analysis_auto())
-
-        guidelines = await memory_manager.recall_memory(111, category="feedback_guidelines")
-        assert len(guidelines) == 1
-        assert "새 가이드라인" in guidelines[0]["value"]
-
-    @pytest.mark.asyncio
-    async def test_noop_when_feedback_none(
-        self,
-        scheduler: AutoScheduler,
-        app_settings: AppSettings,
-        memory_manager: MemoryManager,
-    ) -> None:
-        """feedback=None 시 no-op callable이 빈 문자열을 반환한다."""
-        engine = AsyncMock()
-        _setup_callables(scheduler, engine, memory_manager, app_settings)
-
-        result = await scheduler._run_action(_feedback_analysis_auto())
-
-        assert result == ""

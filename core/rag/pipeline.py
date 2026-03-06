@@ -57,10 +57,7 @@ class RAGPipeline:
         if metadata and metadata.get("use_rag"):
             return True
         text_lower = text.lower()
-        for keyword in self._config.trigger_keywords:
-            if keyword in text_lower:
-                return True
-        return False
+        return any(keyword in text_lower for keyword in self._config.trigger_keywords)
 
     async def execute(
         self,

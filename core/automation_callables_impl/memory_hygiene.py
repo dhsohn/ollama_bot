@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
 from core.engine import Engine
@@ -145,7 +145,7 @@ def build_memory_hygiene_callable(
                 ]
 
             cutoff_str = (
-                datetime.now(timezone.utc) - timedelta(days=stale_days)
+                datetime.now(UTC) - timedelta(days=stale_days)
             ).strftime(SQLITE_TIMESTAMP_FORMAT)
 
             stale_candidates = [

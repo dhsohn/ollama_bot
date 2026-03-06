@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import AsyncGenerator
+from contextlib import suppress
 from typing import Any
 
 import numpy as np
@@ -164,10 +165,8 @@ class OllamaClient:
             old_client = self._client
             self._client = candidate
             if old_client is not None and hasattr(old_client, "_client"):
-                try:
+                with suppress(Exception):
                     await old_client._client.aclose()
-                except Exception:
-                    pass
             self._mark_healthy()
             self._logger.info(
                 "ollama_reconnected",
@@ -260,7 +259,7 @@ class OllamaClient:
             while True:
                 elapsed = time.monotonic() - stream_started
                 if elapsed > float(timeout):
-                    raise asyncio.TimeoutError(
+                    raise TimeoutError(
                         f"stream_duration_exceeded({elapsed:.1f}s>{timeout}s)"
                     )
                 try:
@@ -276,7 +275,7 @@ class OllamaClient:
                     if content == last_content_chunk:
                         repeated_content_count += 1
                         if repeated_content_count >= max_repeated_content:
-                            raise asyncio.TimeoutError(
+                            raise TimeoutError(
                                 "stream_stalled_repeating_content"
                             )
                     else:
@@ -292,7 +291,7 @@ class OllamaClient:
                         total_duration=getattr(chunk, "total_duration", 0) or 0,
                     )
             self._mark_healthy()
-        except (ResponseError, asyncio.TimeoutError, OSError) as exc:
+        except (TimeoutError, ResponseError, OSError) as exc:
             self._mark_unhealthy(exc)
             await self.recover_connection()
             raise OllamaClientError(
@@ -393,7 +392,7 @@ class OllamaClient:
             )
             self._mark_healthy()
             return [list(item) for item in response.embeddings]
-        except (ResponseError, asyncio.TimeoutError, OSError) as exc:
+        except (TimeoutError, ResponseError, OSError) as exc:
             self._mark_unhealthy(exc)
             raise OllamaClientError(
                 f"Ollama embed failed for model '{target_model}': {exc}"
@@ -414,7 +413,7 @@ class OllamaClient:
         target_model = model or self._default_model
         effective_timeout = timeout or 30
 
-        all_texts = [query] + documents
+        all_texts = [query, *documents]
         embeddings = await self.embed(
             all_texts, model=target_model, timeout=effective_timeout,
         )
@@ -468,7 +467,7 @@ class OllamaClient:
                 response = await coro_factory()
                 self._mark_healthy()
                 return response
-            except (ResponseError, asyncio.TimeoutError, OSError) as exc:
+            except (TimeoutError, ResponseError, OSError) as exc:
                 last_error = exc
                 self._mark_unhealthy(exc)
                 if attempt < max_retries:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, time, timedelta, timezone
+from datetime import UTC, datetime, time, timedelta, timezone
 from typing import Any
 
 from core.engine import Engine
@@ -86,8 +86,8 @@ def build_daily_summary_callable(
         target_day = (local_now - timedelta(days=days_ago)).date()
         start_local = datetime.combine(target_day, time.min, tzinfo=tz)
         end_local = start_local + timedelta(days=1)
-        start_utc = start_local.astimezone(timezone.utc)
-        end_utc = end_local.astimezone(timezone.utc)
+        start_utc = start_local.astimezone(UTC)
+        end_utc = end_local.astimezone(UTC)
 
         sections: list[str] = []
         found_any = False
@@ -229,8 +229,8 @@ def build_extract_preferences_callable(
         target_day = (local_now - timedelta(days=days_ago)).date()
         start_local = datetime.combine(target_day, time.min, tzinfo=tz)
         end_local = start_local + timedelta(days=1)
-        start_utc = start_local.astimezone(timezone.utc)
-        end_utc = end_local.astimezone(timezone.utc)
+        start_utc = start_local.astimezone(UTC)
+        end_utc = end_local.astimezone(UTC)
 
         sections: list[str] = []
         found_any = False

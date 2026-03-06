@@ -6,12 +6,18 @@ from pathlib import Path
 
 from core.automation_callables_impl.common import (
     CONSOLIDATION_MERGE_SCHEMA as _CONSOLIDATION_MERGE_SCHEMA,
+)
+from core.automation_callables_impl.common import (
     DAILY_SUMMARY_SCHEMA as _DAILY_SUMMARY_SCHEMA,
-    FEEDBACK_ANALYSIS_SCHEMA as _FEEDBACK_ANALYSIS_SCHEMA,
+)
+from core.automation_callables_impl.common import (
     MEMORY_HYGIENE_SCHEMA as _MEMORY_HYGIENE_SCHEMA,
+)
+from core.automation_callables_impl.common import (
     PREFERENCES_SCHEMA as _PREFERENCES_SCHEMA,
+)
+from core.automation_callables_impl.common import (
     STALE_EVALUATION_SCHEMA as _STALE_EVALUATION_SCHEMA,
-    TRIAGE_SCHEMA as _TRIAGE_SCHEMA,
 )
 from core.automation_callables_impl.memory_consolidation import (
     build_memory_consolidation_callable,
@@ -20,7 +26,6 @@ from core.automation_callables_impl.memory_hygiene import (
     build_memory_hygiene_callable,
 )
 from core.automation_callables_impl.observability import (
-    build_error_log_triage_callable,
     build_health_check_callable,
 )
 from core.automation_callables_impl.rag import (
@@ -69,14 +74,6 @@ def register_builtin_callables(
         ),
     )
     scheduler.register_callable(
-        "error_log_triage",
-        build_error_log_triage_callable(
-            engine=engine,
-            data_dir=data_dir,
-            logger=logger,
-        ),
-    )
-    scheduler.register_callable(
         "health_check",
         build_health_check_callable(
             engine=engine,
@@ -111,21 +108,11 @@ def register_builtin_callables(
         ),
     )
 
-    # 피드백 분석 callable
-    if feedback is not None:
-        from core.automation_callables_impl.feedback_analysis import build_feedback_analysis_callable
-        scheduler.register_callable(
-            "feedback_analysis",
-            build_feedback_analysis_callable(engine, memory, feedback, allowed_users, logger),
-        )
-    else:
-        async def _feedback_analysis_noop(**kwargs) -> str:
-            return ""
-        scheduler.register_callable("feedback_analysis", _feedback_analysis_noop)
-
     # DFT 모니터 callable
     if dft_index is not None:
-        from core.automation_callables_impl.dft_monitor import build_dft_monitor_callable
+        from core.automation_callables_impl.dft_monitor import (
+            build_dft_monitor_callable,
+        )
 
         get_external_dirs = None
         if sim_scheduler is not None:
@@ -147,17 +134,6 @@ def register_builtin_callables(
             return ""
         scheduler.register_callable("dft_monitor", _dft_monitor_noop)
 
-    # KTO 파인튜닝 데이터 내보내기 callable
-    if feedback is not None:
-        from core.automation_callables_impl.export_training_data import build_export_training_data_callable
-        scheduler.register_callable(
-            "export_training_data",
-            build_export_training_data_callable(feedback, data_dir, logger),
-        )
-    else:
-        async def _export_training_data_noop(**kwargs) -> str:
-            return ""
-        scheduler.register_callable("export_training_data", _export_training_data_noop)
 
 
 def _build_get_external_dirs(sim_scheduler: object):
@@ -192,10 +168,8 @@ def _build_get_external_dirs(sim_scheduler: object):
 __all__ = [
     "_CONSOLIDATION_MERGE_SCHEMA",
     "_DAILY_SUMMARY_SCHEMA",
-    "_FEEDBACK_ANALYSIS_SCHEMA",
     "_MEMORY_HYGIENE_SCHEMA",
     "_PREFERENCES_SCHEMA",
     "_STALE_EVALUATION_SCHEMA",
-    "_TRIAGE_SCHEMA",
     "register_builtin_callables",
 ]

@@ -285,10 +285,7 @@ class SemanticCache:
             return False
         if len(query.strip()) < self._min_query_chars:
             return False
-        for pattern in self._exclude_res:
-            if pattern.search(query):
-                return False
-        return True
+        return all(not pattern.search(query) for pattern in self._exclude_res)
 
     async def get(self, query: str, context: CacheContext) -> CacheResult | None:
         """유사한 캐시 항목을 검색한다."""

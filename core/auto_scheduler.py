@@ -10,7 +10,7 @@ import asyncio
 import functools
 import inspect
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any, Protocol
@@ -112,7 +112,7 @@ class AutoDefinition(BaseModel):
         normalized = v.strip()
         try:
             # 필드 개수뿐 아니라 값 범위/문법까지 검증한다.
-            CronTrigger.from_crontab(normalized, timezone=timezone.utc)
+            CronTrigger.from_crontab(normalized, timezone=UTC)
         except ValueError as exc:
             raise ValueError(f"Invalid cron expression: {v}") from exc
         return v
@@ -453,7 +453,7 @@ class AutoScheduler:
             chat_id=chat_id if isinstance(chat_id, int) else None,
             response_format=response_format,
             max_tokens=max_tokens if isinstance(max_tokens, int) else None,
-            temperature=temperature if isinstance(temperature, (int, float)) else None,
+            temperature=temperature if isinstance(temperature, int | float) else None,
             model_override=model_override,
             model_role=model_role,
             timeout=auto.timeout,

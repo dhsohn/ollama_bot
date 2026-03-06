@@ -7,7 +7,11 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from core.telegram_message_renderer import StreamResult, split_message, stream_and_render
+from core.telegram_message_renderer import (
+    StreamResult,
+    split_message,
+    stream_and_render,
+)
 
 
 class TestSplitMessage:

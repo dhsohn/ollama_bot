@@ -6,12 +6,10 @@ import asyncio
 import functools
 import json
 import re
-from datetime import datetime, timedelta, timezone
-from datetime import tzinfo
+from datetime import UTC, datetime, timedelta, timezone, tzinfo
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-
 
 ROLE_LABELS = {
     "user": "사용자",
@@ -144,7 +142,7 @@ def safe_timezone(name: str, logger: Any) -> tzinfo:
             timezone=name,
             fallback="UTC",
         )
-        return timezone.utc
+        return UTC
 
 
 def truncate(text: str, max_chars: int) -> str:
@@ -200,7 +198,7 @@ def count_recent_errors(
     if not log_files:
         return entries, error_count, warning_count
 
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours_back)
+    cutoff = datetime.now(UTC) - timedelta(hours=hours_back)
     collect = max_entries > 0
 
     for lf in log_files:
@@ -227,7 +225,7 @@ def count_recent_errors(
                 try:
                     ts = datetime.fromisoformat(ts_str)
                     if ts.tzinfo is None:
-                        ts = ts.replace(tzinfo=timezone.utc)
+                        ts = ts.replace(tzinfo=UTC)
                     if ts < cutoff:
                         continue
                 except (ValueError, TypeError):

@@ -6,8 +6,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
@@ -133,26 +133,6 @@ class FeedbackConfig(BaseModel):
     def validate_positive_ints(cls, value: int) -> int:
         if value < 1:
             raise ValueError("feedback numeric settings must be >= 1")
-        return value
-
-
-class AutoEvaluationConfig(BaseModel):
-    enabled: bool = False
-    daily_limit: int = 50
-    min_response_length: int = 50
-    max_concurrency: int = 2
-    cooldown_seconds: int = 300
-
-    @field_validator(
-        "daily_limit",
-        "min_response_length",
-        "max_concurrency",
-        "cooldown_seconds",
-    )
-    @classmethod
-    def validate_positive_ints(cls, value: int) -> int:
-        if value < 1:
-            raise ValueError("auto_evaluation numeric settings must be >= 1")
         return value
 
 
@@ -345,7 +325,6 @@ class AppSettings(BaseModel):
     runtime_maintenance: RuntimeMaintenanceConfig = Field(default_factory=RuntimeMaintenanceConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
     feedback: FeedbackConfig = Field(default_factory=FeedbackConfig)
-    auto_evaluation: AutoEvaluationConfig = Field(default_factory=AutoEvaluationConfig)
     instant_responder: InstantResponderConfig = Field(default_factory=InstantResponderConfig)
     semantic_cache: SemanticCacheConfig = Field(default_factory=SemanticCacheConfig)
     intent_router: IntentRouterConfig = Field(default_factory=IntentRouterConfig)

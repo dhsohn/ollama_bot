@@ -15,8 +15,8 @@ from typing import Any
 import httpx
 
 from core.config import LemonadeConfig
-from core.logging_setup import get_logger
 from core.llm_types import ChatResponse, ChatStreamState, ChatUsage
+from core.logging_setup import get_logger
 
 
 class LemonadeClientError(Exception):
@@ -513,7 +513,7 @@ class LemonadeClient:
                     # 이 수동 체크는 전체 스트림 지속 시간을 제한한다.
                     elapsed = time.monotonic() - stream_started
                     if elapsed > float(timeout):
-                        raise asyncio.TimeoutError(
+                        raise TimeoutError(
                             f"stream_duration_exceeded({elapsed:.1f}s>{timeout}s)"
                         )
                     data_line = line.strip()
@@ -548,7 +548,7 @@ class LemonadeClient:
                         if content == last_content_chunk:
                             repeated_content_count += 1
                             if repeated_content_count >= max_repeated_content:
-                                raise asyncio.TimeoutError(
+                                raise TimeoutError(
                                     "stream_stalled_repeating_content"
                                 )
                         else:
@@ -568,7 +568,7 @@ class LemonadeClient:
                             if fallback_content == last_fallback_snapshot:
                                 repeated_content_count += 1
                                 if repeated_content_count >= max_repeated_content:
-                                    raise asyncio.TimeoutError(
+                                    raise TimeoutError(
                                         "stream_stalled_repeating_content"
                                     )
                                 if finish_reason:
@@ -584,7 +584,7 @@ class LemonadeClient:
                         if fallback_content == last_content_chunk:
                             repeated_content_count += 1
                             if repeated_content_count >= max_repeated_content:
-                                raise asyncio.TimeoutError(
+                                raise TimeoutError(
                                     "stream_stalled_repeating_content"
                                 )
                         else:
@@ -597,7 +597,7 @@ class LemonadeClient:
                     if finish_reason:
                         break
             self._mark_healthy()
-        except asyncio.TimeoutError as exc:
+        except TimeoutError as exc:
             # 애플리케이션 레벨 타임아웃(전체 스트림 시간 초과, 반복 콘텐츠 감지)은
             # 연결 장애가 아니므로 unhealthy로 마킹하지 않는다.
             error_text = self._format_exception(exc)
@@ -683,7 +683,7 @@ class LemonadeClient:
                 timeout=timeout or self._timeout_default,
             )
             response.raise_for_status()
-        except (httpx.HTTPError, asyncio.TimeoutError, OSError) as exc:
+        except (TimeoutError, httpx.HTTPError, OSError) as exc:
             self._mark_unhealthy(exc)
             error_text = self._format_exception(exc)
             raise LemonadeClientError(
@@ -762,7 +762,7 @@ class LemonadeClient:
                 raise LemonadeClientError(
                     f"Rerank request failed: {error_text}"
                 ) from exc
-        except (httpx.HTTPError, asyncio.TimeoutError, OSError) as exc:
+        except (TimeoutError, httpx.HTTPError, OSError) as exc:
             self._mark_unhealthy(exc)
             error_text = self._format_exception(exc)
             raise LemonadeClientError(f"Rerank request failed: {error_text}") from exc
@@ -847,7 +847,7 @@ class LemonadeClient:
                 response = await coro_factory()
                 self._mark_healthy()
                 return response
-            except (httpx.HTTPError, asyncio.TimeoutError, OSError, LemonadeClientError) as exc:
+            except (TimeoutError, httpx.HTTPError, OSError, LemonadeClientError) as exc:
                 last_error = exc
                 self._mark_unhealthy(exc)
                 if attempt < max_retries:

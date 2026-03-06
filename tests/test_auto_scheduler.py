@@ -2,15 +2,22 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from pathlib import Path
 import textwrap
+from datetime import UTC, datetime, timezone
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from core.auto_scheduler import AutoAction, AutoDefinition, AutoRetry, AutoScheduler
-from core.config import AppSettings, BotConfig, MemoryConfig, LemonadeConfig, SecurityConfig, TelegramConfig
+from core.config import (
+    AppSettings,
+    BotConfig,
+    LemonadeConfig,
+    MemoryConfig,
+    SecurityConfig,
+    TelegramConfig,
+)
 from core.security import SecurityManager
 
 
@@ -461,9 +468,11 @@ class TestAutoScheduler:
                 raise RuntimeError("register boom")
             return original_register(auto, trigger=trigger)
 
-        with patch.object(scheduler, "_register_job", side_effect=flaky_register):
-            with pytest.raises(RuntimeError, match="register boom"):
-                await scheduler.load_automations()
+        with (
+            patch.object(scheduler, "_register_job", side_effect=flaky_register),
+            pytest.raises(RuntimeError, match="register boom"),
+        ):
+            await scheduler.load_automations()
 
         autos = scheduler.list_automations()
         assert len(autos) == 1
@@ -533,7 +542,7 @@ class TestAutoScheduler:
         class _FixedDateTime(datetime):
             @classmethod
             def now(cls, tz=None):  # type: ignore[override]
-                base = datetime(2026, 1, 1, 23, 30, tzinfo=timezone.utc)
+                base = datetime(2026, 1, 1, 23, 30, tzinfo=UTC)
                 if tz is None:
                     return base.replace(tzinfo=None)
                 return base.astimezone(tz)

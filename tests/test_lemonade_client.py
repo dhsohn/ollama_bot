@@ -295,7 +295,7 @@ class TestChat:
         lemonade_config: LemonadeConfig,
     ) -> None:
         repeating_lines = ['data: {"choices":[{"delta":{"content":"가"}}]}'] * 205
-        stream_body = "\n\n".join(repeating_lines + [""])
+        stream_body = "\n\n".join([*repeating_lines, ""])
 
         def _handler(request: httpx.Request) -> httpx.Response:
             if request.url.path == "/api/v1/chat/completions":
@@ -368,7 +368,7 @@ class TestChat:
         lemonade_config: LemonadeConfig,
     ) -> None:
         repeating_lines = ['data: {"choices":[{"message":{"content":"가"}}]}'] * 205
-        stream_body = "\n\n".join(repeating_lines + [""])
+        stream_body = "\n\n".join([*repeating_lines, ""])
 
         def _handler(request: httpx.Request) -> httpx.Response:
             if request.url.path == "/api/v1/chat/completions":

@@ -264,9 +264,9 @@ class DFTIndex:
         params: list[Any] = []
 
         for col in ("method", "basis_set", "calc_type", "status", "formula"):
-            if col in filters and filters[col]:
+            if value := filters.get(col):
                 conditions.append(f"{col} = ?")
-                params.append(filters[col])
+                params.append(value)
 
         if "method_like" in filters:
             conditions.append("method LIKE ?")

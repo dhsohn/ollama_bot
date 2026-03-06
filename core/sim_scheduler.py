@@ -12,16 +12,15 @@ import re
 import shlex
 import shutil
 import signal
+import time
 import uuid
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-import time
-
 import yaml
-
-from dataclasses import dataclass
 
 from core.config import SimQueueConfig
 from core.logging_setup import get_logger
@@ -279,11 +278,11 @@ class SimJobScheduler:
         """루프를 중지하고 실행 중인 프로세스를 정리한다."""
         self._stop_event.set()
 
-        for job_id, proc in list(self._running_processes.items()):
+        for _job_id, proc in list(self._running_processes.items()):
             try:
                 proc.terminate()
                 await asyncio.wait_for(proc.wait(), timeout=10)
-            except (asyncio.TimeoutError, ProcessLookupError):
+            except (TimeoutError, ProcessLookupError):
                 proc.kill()
 
         monitor_tasks = list(self._monitor_tasks.values())
@@ -317,7 +316,7 @@ class SimJobScheduler:
                     self._stop_event.wait(), timeout=interval,
                 )
                 break
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 pass
 
 
@@ -351,10 +350,7 @@ class SimJobScheduler:
         p = Path(raw).expanduser()
         if not p.is_absolute():
             found = shutil.which(raw)
-            if found:
-                p = Path(found).resolve()
-            else:
-                p = (Path.cwd() / p).resolve()
+            p = Path(found).resolve() if found else (Path.cwd() / p).resolve()
         return p
 
     def _prepare_orca_auto_runtime_config(self, executable: str) -> str:
@@ -778,10 +774,8 @@ class SimJobScheduler:
             pid_raw = job.get("pid")
             pid: int | None = None
             if pid_raw is not None:
-                try:
+                with suppress(TypeError, ValueError):
                     pid = int(pid_raw)
-                except (TypeError, ValueError):
-                    pass
             if pid is None or pid <= 0:
                 return False
             cancelled = await self.cancel_external_job(pid)
@@ -798,7 +792,7 @@ class SimJobScheduler:
             try:
                 proc.terminate()
                 await asyncio.wait_for(proc.wait(), timeout=10)
-            except (asyncio.TimeoutError, ProcessLookupError):
+            except (TimeoutError, ProcessLookupError):
                 proc.kill()
             self._running_processes.pop(job_id, None)
             task = self._monitor_tasks.pop(job_id, None)

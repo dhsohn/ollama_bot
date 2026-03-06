@@ -1,5 +1,8 @@
 # ollama_bot
 
+[![CI](https://github.com/dhsohn/ollama_bot/actions/workflows/ci.yml/badge.svg)](https://github.com/dhsohn/ollama_bot/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+
 WSL2/리눅스 환경용 텔레그램 private-chat 봇. Dual-Provider 아키텍처 기반.
 
 - **Lemonade Server**: LLM 응답 (`gpt-oss-20b-NPU`)
@@ -84,6 +87,52 @@ systemctl --user status ollama-bot       # 상태
 | `/sim list`, `/sim status` | 작업 목록/상태 |
 | `/sim cancel <id>` | 작업 취소 |
 
+## 아키텍처 개요
+
+요청 처리 흐름은 아래 순서를 따른다.
+
+```text
+Telegram Update
+  -> TelegramHandler
+  -> Engine
+     -> Skill trigger
+     -> Instant responder
+     -> Intent router
+     -> Semantic cache
+     -> Full LLM + RAG
+  -> Memory / Feedback / Automation / Sim queue
+  -> Telegram response
+```
+
+### 레이어별 책임
+
+| 레이어 | 주요 파일 | 책임 |
+|---|---|---|
+| Runtime | `core/app_runtime.py`, `core/runtime_*` | 설정 로딩, 의존성 생성, startup/shutdown, background task |
+| Interface | `core/telegram_handler.py`, `core/telegram_*` | Telegram command/callback/message 처리, 스트리밍 UX, feedback 버튼 |
+| Orchestration | `core/engine.py`, `core/engine_*` | 계층형 라우팅, 컨텍스트 조립, 모델 준비, 요청 추적, RAG/요약 orchestration |
+| Domain services | `core/memory.py`, `core/security.py`, `core/feedback_manager.py`, `core/semantic_cache.py`, `core/intent_router.py` | 보안, 메모리, 피드백, 캐시, 라우팅 정책 |
+| Retrieval | `core/rag/*` | 인덱싱, 검색, rerank, RAG context 구성 |
+| Operations | `core/auto_scheduler.py`, `core/sim_scheduler.py`, `core/automation_callables*.py` | 자동화 실행, 시뮬레이션 큐, 운영형 작업 orchestration |
+
+### 주요 모듈 맵
+
+| 모듈 | 역할 |
+|---|---|
+| `core/telegram_handler.py` | Telegram entrypoint. handler registration과 dependency wiring만 담당 |
+| `core/telegram_commands*.py` | `/start`, `/help`, `/skills`, `/auto`, `/memory`, `/status` 등 명령 처리 |
+| `core/telegram_streaming.py` | 일반 메시지, streaming render, analyze-all fallback |
+| `core/telegram_continuation.py` | 긴 응답 이어보기 state와 follow-up message 생성 |
+| `core/telegram_feedback.py` | 👍/👎 callback, reason 수집, preview cache 관리 |
+| `core/telegram_sim.py` | `/sim` 큐 명령 처리 |
+| `core/engine.py` | public API와 최상위 orchestration 유지 |
+| `core/engine_routing.py` | skill/instant/cache/full 라우팅 판단 |
+| `core/engine_context.py` | prompt/history 조립, preference/guideline/DICL 주입 |
+| `core/engine_summary.py` | summarize skill과 chunked summary pipeline |
+| `core/engine_rag.py` | full request 준비, RAG 주입, full-scan analyze/reindex |
+| `core/engine_tracking.py` | request lifecycle, stream meta, persistence, request logging |
+| `core/engine_background.py`, `core/engine_models.py` | background summary task, model prepare/role resolution |
+
 ## 프로젝트 구조
 
 ```text
@@ -99,6 +148,14 @@ ollama_bot/
 ├── data/                      # 런타임 데이터 (DB, 로그, 리포트)
 └── .env                       # 시크릿
 ```
+
+## 모듈 분리 원칙
+
+- 줄 수가 아니라 책임 경계로 분리한다. 예: `telegram`은 `commands/messages/feedback/sim`, `engine`은 `routing/context/summary/rag/tracking`으로 나눈다.
+- public entrypoint는 유지한다. 예: `core.engine.Engine`, `core.telegram_handler.TelegramHandler`는 계속 최상위 import 경로를 보존한다.
+- orchestrator는 얇게 유지한다. 상위 파일은 흐름 제어와 wiring 중심으로 두고, 세부 구현은 helper module로 이동한다.
+- 구조 변경과 동작 변경을 섞지 않는다. 리팩터링 단계에서는 동작을 바꾸지 않고, helper 추출 후 테스트로 회귀를 막는다.
+- 테스트가 모듈 경계의 안전망 역할을 한다. `pytest`, `mypy`, `ruff`를 리팩터링마다 반복 실행해 patch 포인트와 내부 API 호환성을 확인한다.
 
 ## 설정
 
@@ -132,9 +189,21 @@ bash scripts/check_requirements_lock.sh
 ## 품질 검증
 
 ```bash
-.venv/bin/pytest -q
 .venv/bin/ruff check .
+.venv/bin/mypy core apps main.py
+.venv/bin/pytest -q
+.venv/bin/pytest -q --cov=core --cov=apps --cov-report=term-missing:skip-covered
 ```
+
+## 품질 게이트
+
+| 항목 | 로컬 명령 | CI 산출물 |
+|---|---|---|
+| 의존성 잠금 검증 | `bash scripts/check_requirements_lock.sh` | lock drift 차단 |
+| 린트 | `.venv/bin/ruff check .` | `ruff` 결과 |
+| 타입 검사 | `.venv/bin/mypy core apps main.py` | `mypy` 결과 |
+| 테스트 | `.venv/bin/pytest -q` | 테스트 결과 |
+| 커버리지 | `.venv/bin/pytest -q --cov=core --cov=apps --cov-report=term-missing:skip-covered` | 콘솔 coverage summary + `coverage.xml` artifact |
 
 ## 라이선스
 

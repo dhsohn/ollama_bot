@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from core.security import SecurityManager
 from core.config import SecurityConfig
+from core.security import SecurityManager
 from core.skill_manager import SkillManager
 
 

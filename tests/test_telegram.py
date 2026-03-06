@@ -7,8 +7,17 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
-from core.config import AppSettings, BotConfig, FeedbackConfig, LemonadeConfig, SecurityConfig, MemoryConfig, TelegramConfig
-from core.security import SecurityManager, AuthenticationError, RateLimitError
+
+from core.config import (
+    AppSettings,
+    BotConfig,
+    FeedbackConfig,
+    LemonadeConfig,
+    MemoryConfig,
+    SecurityConfig,
+    TelegramConfig,
+)
+from core.security import AuthenticationError, RateLimitError, SecurityManager
 from core.telegram_handler import TelegramHandler
 
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -92,7 +92,7 @@ class TestConversationOrder:
         await memory_manager.add_message(chat_id, "assistant", "today-message")
 
         assert memory_manager._db is not None
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         yesterday = now - timedelta(days=1)
         today = now
 
@@ -110,7 +110,7 @@ class TestConversationOrder:
             year=yesterday.year,
             month=yesterday.month,
             day=yesterday.day,
-            tzinfo=timezone.utc,
+            tzinfo=UTC,
         )
         end_at = start_at + timedelta(days=1)
         rows = await memory_manager.get_conversation_in_range(

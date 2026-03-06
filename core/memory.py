@@ -10,7 +10,7 @@ import functools
 import json
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
 import aiosqlite
@@ -85,7 +85,7 @@ _SQLITE_TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 def _utc_now_sql() -> str:
     """SQLite CURRENT_TIMESTAMP와 동일한 UTC 문자열 포맷."""
-    return datetime.now(timezone.utc).strftime(_SQLITE_TIMESTAMP_FORMAT)
+    return datetime.now(UTC).strftime(_SQLITE_TIMESTAMP_FORMAT)
 
 
 async def _apply_memory_v1(db: aiosqlite.Connection) -> None:
@@ -252,8 +252,8 @@ class MemoryManager:
         if end_at <= start_at:
             raise ValueError("end_at must be later than start_at")
 
-        start_text = start_at.astimezone(timezone.utc).strftime(_SQLITE_TIMESTAMP_FORMAT)
-        end_text = end_at.astimezone(timezone.utc).strftime(_SQLITE_TIMESTAMP_FORMAT)
+        start_text = start_at.astimezone(UTC).strftime(_SQLITE_TIMESTAMP_FORMAT)
+        end_text = end_at.astimezone(UTC).strftime(_SQLITE_TIMESTAMP_FORMAT)
 
         query = (
             "SELECT id, role, content, timestamp FROM conversations "
@@ -465,7 +465,7 @@ class MemoryManager:
     async def prune_old_conversations(self) -> int:
         """보관 기간이 지난 대화를 삭제한다 (archive/summary 포함)."""
         cutoff = (
-            datetime.now(timezone.utc) - timedelta(days=self._retention_days)
+            datetime.now(UTC) - timedelta(days=self._retention_days)
         ).strftime(_SQLITE_TIMESTAMP_FORMAT)
         deleted = 0
         archive_deleted = 0
@@ -563,7 +563,7 @@ class MemoryManager:
         """대화를 마크다운 파일로 내보낸다."""
         db = self._require_db()
         output_dir.mkdir(parents=True, exist_ok=True)
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
         filepath = output_dir / f"chat_{chat_id}_{timestamp}.md"
 
         async with db.execute(

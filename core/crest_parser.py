@@ -6,6 +6,7 @@ CREST 작업 디렉토리에서 상태, 배좌이성질체 수, 최저 에너지
 from __future__ import annotations
 
 import re
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -44,7 +45,7 @@ _METHOD_RE = re.compile(r"(GFN\d?-xTB|GFN-FF)", re.IGNORECASE)
 def is_crest_output(path: str | Path) -> bool:
     """파일이 CREST 출력인지 확인한다 (첫 3 KB에서 헤더 탐색)."""
     try:
-        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+        with open(path, encoding="utf-8", errors="ignore") as f:
             head = f.read(3000)
         return bool(_CREST_HEADER_RE.search(head))
     except OSError:
@@ -78,11 +79,10 @@ def parse_crest_output(path: str) -> CrestResult:
     best_xyz = work_dir / "crest_best.xyz"
     if best_xyz.is_file():
         _parse_best_xyz(best_xyz, result)
-        if result.status == "running":
-            if out_content and _NORMAL_TERM_RE.search(out_content):
-                result.status = "completed"
-            elif not out_content:
-                result.status = "completed"
+        if result.status == "running" and (
+            not out_content or _NORMAL_TERM_RE.search(out_content)
+        ):
+            result.status = "completed"
 
     # crest_conformers.xyz에서 conformer 수 보완
     if result.n_conformers is None:
@@ -140,10 +140,8 @@ def _parse_out_content(content: str, result: CrestResult) -> None:
 
     # 최저 에너지
     for m in _BEST_ENERGY_RE.finditer(content):
-        try:
+        with suppress(ValueError):
             result.best_energy_hartree = float(m.group(1))
-        except ValueError:
-            pass
 
     # 종료 상태
     if _NORMAL_TERM_RE.search(content):
@@ -176,10 +174,8 @@ def _parse_best_xyz(path: Path, result: CrestResult) -> None:
     comment = lines[1].strip()
     energy_match = re.search(r"([-]?\d+\.\d{4,})", comment)
     if energy_match and result.best_energy_hartree is None:
-        try:
+        with suppress(ValueError):
             result.best_energy_hartree = float(energy_match.group(1))
-        except ValueError:
-            pass
 
 
 def _count_xyz_structures(path: Path) -> int | None:

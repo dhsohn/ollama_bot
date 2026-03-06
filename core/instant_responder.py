@@ -12,6 +12,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import ClassVar
 
 import yaml
 
@@ -40,7 +41,7 @@ class _InstantRule:
 class InstantResponder:
     """정규식/키워드 매칭 기반 즉시 응답기."""
 
-    _BUILTIN_CALLABLES: dict[str, Callable[[], str]] = {
+    _BUILTIN_CALLABLES: ClassVar[dict[str, Callable[[], str]]] = {
         "get_current_time": lambda: datetime.now().strftime("%H시 %M분입니다."),
         "get_current_date": lambda: datetime.now().strftime("%Y년 %m월 %d일입니다."),
     }

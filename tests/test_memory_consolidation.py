@@ -17,14 +17,13 @@ from core.automation_callables import (
 from core.config import (
     AppSettings,
     BotConfig,
-    MemoryConfig,
     LemonadeConfig,
+    MemoryConfig,
     SecurityConfig,
     TelegramConfig,
 )
 from core.memory import MemoryManager
 from core.security import SecurityManager
-
 
 # ── fixtures ──
 

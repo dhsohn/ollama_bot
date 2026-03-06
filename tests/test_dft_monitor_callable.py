@@ -11,11 +11,10 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from core.automation_callables_impl.dft_monitor import (
-    build_dft_monitor_callable,
     _extract_comment,
     _is_thinking_line,
+    build_dft_monitor_callable,
 )
-
 
 _COMPLETED_OUT = "\n".join([
     "! B3LYP def2-SVP Opt",
@@ -558,7 +557,7 @@ async def test_running_ts_neb_irc_include_ai_comment(
         ),
         # 중국어 사고 과정 + 한국어 코멘트 → 사고 과정 건너뛰기
         (
-            "首先分析一下数据，能量在下降\n에너지가 안정적으로 수렴 중입니다.",
+            "首先分析一下数据\uFF0C能量在下降\n에너지가 안정적으로 수렴 중입니다.",
             "에너지가 안정적으로 수렴 중입니다.",
         ),
         # 중국어 사고 과정만 → 빈 문자열

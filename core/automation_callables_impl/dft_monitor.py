@@ -11,9 +11,11 @@ import json
 import os
 import re
 import time
+from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from html import escape as _h
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 from core.crest_discovery import discover_crest_targets
 from core.crest_parser import CrestResult, parse_crest_output
@@ -34,7 +36,7 @@ _DFT_SYSTEM_PROMPT = (
 # 사고 과정 유출을 감지하는 패턴들 — 줄 시작 기준
 _THINKING_PREFIXES = re.compile(
     r"^("
-    r"(분석|해석|판단|검토|확인|관찰|결론|요약|정리|평가)\s*([:：]|결과|해보|하면)"
+    r"(분석|해석|판단|검토|확인|관찰|결론|요약|정리|평가)\s*([:\uFF1A]|결과|해보|하면)"
     r"|let me|okay|alright|well|so,?\s"
     r"|the user|they want|they say|they ask"
     r"|we need|we have|we must|we should|we can|we don'?t"
@@ -46,7 +48,7 @@ _THINKING_PREFIXES = re.compile(
     r"|먼저|우선|일단|그런데|따라서|그러므로|결론적으로"
     r"|首先|让我|好的|那么|因此|所以|然后|接下来|需要|根据"
     r"|分析一下|总结|综上|用户|我们|看起来|这[是意表说]"
-    r"|第[一二三四五六七八九十]\s*[步,、:：]"
+    r"|第[一二三四五六七八九十]\s*[步,、:\uFF1A]"
     r"|step\s*\d+\s*[:\-]"
     r"|1[\.\)]\s"
     r")",
@@ -127,7 +129,7 @@ def build_dft_monitor_callable(
         missing_kb_dirs: list[str] = []
         started_at = time.monotonic()
         run_timeout_seconds: float | None = None
-        if isinstance(timeout, (int, float)) and float(timeout) > 0:
+        if isinstance(timeout, int | float) and float(timeout) > 0:
             run_timeout_seconds = float(timeout)
 
         def _resolve_ai_comment_timeout() -> float | None:
@@ -151,10 +153,8 @@ def build_dft_monitor_callable(
         all_dirs = list(kb_dirs)
         seen_resolved: set[str] = set()
         for d in all_dirs:
-            try:
+            with suppress(OSError):
                 seen_resolved.add(str(Path(d).resolve()))
-            except OSError:
-                pass
         for d in external_dirs:
             try:
                 resolved = str(Path(d).resolve())
@@ -536,9 +536,7 @@ def _is_thinking_line(line: str) -> bool:
     """줄이 사고 과정/메타 추론인지 판정한다."""
     if _THINKING_PREFIXES.match(line):
         return True
-    if _META_REASONING_RE.search(line):
-        return True
-    return False
+    return bool(_META_REASONING_RE.search(line))
 
 
 def _extract_comment(raw: str) -> str:

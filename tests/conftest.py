@@ -16,8 +16,8 @@ from core.config import (
     SecurityConfig,
     TelegramConfig,
 )
-from core.memory import MemoryManager
 from core.llm_types import ChatResponse
+from core.memory import MemoryManager
 from core.security import SecurityManager
 
 

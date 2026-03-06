@@ -11,11 +11,10 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from core.async_utils import run_in_thread
-
 import aiosqlite
 import numpy as np
 
+from core.async_utils import run_in_thread
 from core.config import RAGConfig
 from core.logging_setup import get_logger
 from core.rag.chunker import DocumentChunker
@@ -214,7 +213,7 @@ class RAGIndexer:
                     texts = [c.text for c in chunks]
                     embeddings = await self._batch_embed(texts)
 
-                    for chunk, emb in zip(chunks, embeddings):
+                    for chunk, emb in zip(chunks, embeddings, strict=False):
                         emb_blob = np.array(emb, dtype=np.float32).tobytes()
                         await self._db.execute(
                             """INSERT INTO rag_chunks

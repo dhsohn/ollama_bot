@@ -11,9 +11,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from fastembed import TextEmbedding
 import numpy as np
 import yaml
+from fastembed import TextEmbedding
 
 from core.embedding_utils import embed_texts
 from core.logging_setup import get_logger
@@ -206,6 +206,4 @@ class IntentRouter:
             return True
         if _CODE_FILE_RE.search(normalized):
             return True
-        if _CODE_HINT_RE.search(normalized):
-            return True
-        return False
+        return bool(_CODE_HINT_RE.search(normalized))

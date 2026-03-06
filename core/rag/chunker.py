@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import csv
 import hashlib
-from html.parser import HTMLParser
 import io
 import json
 import os
 import re
-from pathlib import Path
 import zipfile
+from html.parser import HTMLParser
+from pathlib import Path
 from xml.etree import ElementTree as ET
 
 from core.config import RAGConfig

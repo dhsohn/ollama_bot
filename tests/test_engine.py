@@ -11,10 +11,17 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 import pytest_asyncio
 
-from core.config import AppSettings, BotConfig, LemonadeConfig, MemoryConfig, SecurityConfig, TelegramConfig
+from core.config import (
+    AppSettings,
+    BotConfig,
+    LemonadeConfig,
+    MemoryConfig,
+    SecurityConfig,
+    TelegramConfig,
+)
 from core.engine import Engine
-from core.memory import MemoryManager
 from core.llm_types import ChatResponse, ChatUsage
+from core.memory import MemoryManager
 from core.rag.types import Chunk, ChunkMetadata, RAGResult, RAGTrace
 from core.skill_manager import SkillDefinition, SkillManager
 

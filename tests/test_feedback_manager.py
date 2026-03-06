@@ -60,23 +60,6 @@ class TestStoreFeedback:
         assert stats["negative"] == 1
         assert stats["positive"] == 0
 
-    @pytest.mark.asyncio
-    async def test_preview_redacts_pii_on_store(self, feedback_db) -> None:
-        fm, db = feedback_db
-        await fm.store_feedback(
-            chat_id=111,
-            bot_message_id=9,
-            rating=1,
-            user_preview="연락처는 test@example.com 입니다.",
-            bot_preview="전화번호는 010-1234-5678 입니다.",
-        )
-
-        rows = await fm.get_recent_feedback(111, rating=1, limit=1)
-        assert len(rows) == 1
-        assert "[REDACTED]" in (rows[0]["user_preview"] or "")
-        assert "[REDACTED]" in (rows[0]["bot_preview"] or "")
-        assert "test@example.com" not in (rows[0]["user_preview"] or "")
-        assert "010-1234-5678" not in (rows[0]["bot_preview"] or "")
 
 
 class TestGetUserStats:
@@ -194,15 +177,6 @@ class TestSchemaMigration:
         assert "reason" in columns
 
     @pytest.mark.asyncio
-    async def test_v3_migration_creates_auto_evaluation_table(self, feedback_db) -> None:
-        fm, db = feedback_db
-        async with db.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='auto_evaluation'"
-        ) as cursor:
-            row = await cursor.fetchone()
-        assert row is not None
-
-    @pytest.mark.asyncio
     async def test_migrations_idempotent(self, feedback_db) -> None:
         fm, db = feedback_db
         # 두 번째 호출도 에러 없이 통과해야 함
@@ -308,131 +282,3 @@ class TestSearchPositiveExamples:
         bot_previews = [r["bot_preview"] for r in results]
         assert len(bot_previews) == len(set(bot_previews))
 
-
-class TestAutoEvaluation:
-    @pytest.mark.asyncio
-    async def test_store_and_retrieve(self, feedback_db) -> None:
-        fm, db = feedback_db
-        await fm.store_auto_evaluation(
-            chat_id=111,
-            bot_message_id=1,
-            user_input="안녕",
-            bot_response="안녕하세요",
-            score=4,
-            explanation="적절한 인사",
-        )
-        low = await fm.get_low_score_evaluations(chat_id=111, max_score=5)
-        assert len(low) == 1
-        assert low[0]["score"] == 4
-        assert low[0]["explanation"] == "적절한 인사"
-
-    @pytest.mark.asyncio
-    async def test_get_low_score_filters(self, feedback_db) -> None:
-        fm, db = feedback_db
-        await fm.store_auto_evaluation(111, 1, "q1", "a1", score=5)
-        await fm.store_auto_evaluation(111, 2, "q2", "a2", score=2)
-        await fm.store_auto_evaluation(111, 3, "q3", "a3", score=1)
-
-        low = await fm.get_low_score_evaluations(chat_id=111, max_score=2)
-        assert len(low) == 2
-        assert all(e["score"] <= 2 for e in low)
-
-    @pytest.mark.asyncio
-    async def test_get_low_score_excludes_manual_feedback(self, feedback_db) -> None:
-        fm, db = feedback_db
-        await fm.store_feedback(111, 10, -1, "q", "a")
-        await fm.store_auto_evaluation(111, 10, "q", "a", score=1)
-
-        low = await fm.get_low_score_evaluations(chat_id=111, max_score=2)
-        assert low == []
-
-    @pytest.mark.asyncio
-    async def test_count_today(self, feedback_db) -> None:
-        fm, db = feedback_db
-        assert await fm.count_today_evaluations() == 0
-        await fm.store_auto_evaluation(111, 1, "q", "a", score=3)
-        assert await fm.count_today_evaluations() == 1
-
-    @pytest.mark.asyncio
-    async def test_count_today_with_bounds_and_chat(self, feedback_db) -> None:
-        fm, db = feedback_db
-        await fm.store_auto_evaluation(111, 1, "q1", "a1", score=3)
-        await fm.store_auto_evaluation(222, 1, "q2", "a2", score=4)
-
-        await db.execute(
-            "UPDATE auto_evaluation SET created_at = datetime('now', '-2 days') "
-            "WHERE chat_id = 111 AND bot_message_id = 1"
-        )
-        await db.commit()
-
-        start = datetime.now(timezone.utc).replace(
-            hour=0,
-            minute=0,
-            second=0,
-            microsecond=0,
-        )
-        end = start + timedelta(days=1)
-        start_utc = start.strftime("%Y-%m-%d %H:%M:%S")
-        end_utc = end.strftime("%Y-%m-%d %H:%M:%S")
-
-        assert (
-            await fm.count_today_evaluations(
-                chat_id=111,
-                start_utc=start_utc,
-                end_utc=end_utc,
-            )
-            == 0
-        )
-        assert (
-            await fm.count_today_evaluations(
-                chat_id=222,
-                start_utc=start_utc,
-                end_utc=end_utc,
-            )
-            == 1
-        )
-
-    @pytest.mark.asyncio
-    async def test_prune_auto_evaluations(self, feedback_db) -> None:
-        fm, db = feedback_db
-        await fm.store_auto_evaluation(111, 1, "q", "a", score=3)
-        # 오래된 날짜로 백데이트
-        await db.execute(
-            "UPDATE auto_evaluation SET created_at = datetime('now', '-100 days') "
-            "WHERE chat_id = 111 AND bot_message_id = 1"
-        )
-        await db.commit()
-        await fm.store_auto_evaluation(111, 2, "q2", "a2", score=4)
-
-        pruned = await fm.prune_old_auto_evaluations(90)
-        assert pruned == 1
-        assert await fm.count_today_evaluations() == 1
-
-
-class TestExportKtoDataset:
-    @pytest.mark.asyncio
-    async def test_export_basic(self, feedback_db) -> None:
-        fm, db = feedback_db
-        await fm.store_feedback(111, 1, 1, "좋은 질문이었어요" * 3, "좋은 답변이었습니다" * 3)
-        await fm.store_feedback(111, 2, -1, "나쁜 질문이었어요" * 3, "나쁜 답변이었습니다" * 3)
-
-        dataset = await fm.export_kto_dataset(chat_id=111, min_preview_length=5)
-        assert len(dataset) == 2
-        labels = {d["label"] for d in dataset}
-        assert True in labels
-        assert False in labels
-
-    @pytest.mark.asyncio
-    async def test_export_filters_short_previews(self, feedback_db) -> None:
-        fm, db = feedback_db
-        await fm.store_feedback(111, 1, 1, "짧", "짧")  # 너무 짧음
-        await fm.store_feedback(111, 2, 1, "충분히 긴 질문입니다", "충분히 긴 답변입니다")
-
-        dataset = await fm.export_kto_dataset(chat_id=111, min_preview_length=5)
-        assert len(dataset) == 1
-
-    @pytest.mark.asyncio
-    async def test_export_empty(self, feedback_db) -> None:
-        fm, db = feedback_db
-        dataset = await fm.export_kto_dataset(chat_id=111)
-        assert dataset == []

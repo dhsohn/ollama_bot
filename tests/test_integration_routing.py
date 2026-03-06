@@ -13,12 +13,19 @@ import pytest_asyncio
 np = pytest.importorskip("numpy")
 
 import core.semantic_cache as semantic_cache_module
-from core.config import AppSettings, BotConfig, MemoryConfig, LemonadeConfig, SecurityConfig, TelegramConfig
+from core.config import (
+    AppSettings,
+    BotConfig,
+    LemonadeConfig,
+    MemoryConfig,
+    SecurityConfig,
+    TelegramConfig,
+)
 from core.engine import Engine
 from core.instant_responder import InstantResponder
 from core.intent_router import ContextStrategy, RouteResult
-from core.memory import MemoryManager
 from core.llm_types import ChatResponse
+from core.memory import MemoryManager
 from core.semantic_cache import SemanticCache
 
 

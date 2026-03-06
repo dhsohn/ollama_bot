@@ -11,8 +11,8 @@ import fnmatch
 import re
 import time
 import unicodedata
-from collections.abc import AsyncGenerator
 from collections import defaultdict, deque
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -141,7 +141,7 @@ class SecurityManager:
         """
         try:
             await asyncio.wait_for(self._global_semaphore.acquire(), timeout=0.001)
-        except (TimeoutError, asyncio.TimeoutError) as exc:
+        except TimeoutError as exc:
             self._logger.warning(
                 "global_concurrency_exceeded",
                 chat_id=chat_id,
@@ -214,7 +214,7 @@ class SecurityManager:
         # base_dir 바깥으로 나가는지 확인
         try:
             resolved.relative_to(base_resolved)
-        except ValueError:
+        except ValueError as exc:
             self._logger.warning(
                 "path_traversal_blocked",
                 requested=path,
@@ -222,7 +222,7 @@ class SecurityManager:
             )
             raise SecurityViolationError(
                 f"Path traversal detected: {path}"
-            )
+            ) from exc
 
         # 차단 경로 패턴 체크
         for pattern in self._blocked_paths:

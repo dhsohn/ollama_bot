@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
-from datetime import datetime, timezone
-from pathlib import Path
 import shutil
-from typing import Any, Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable
+from dataclasses import dataclass
+from datetime import UTC, datetime, timezone
+from pathlib import Path
+from typing import Any
 
 import aiosqlite
 
@@ -135,7 +136,7 @@ class MigrationRunner:
             )
             return
 
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         backup = source.with_name(f"{source.name}.pre_migration_{stamp}.bak")
 
         await self._db.execute("PRAGMA wal_checkpoint(TRUNCATE)")

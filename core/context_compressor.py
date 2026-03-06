@@ -68,7 +68,7 @@ class ContextCompressor:
                 "role": "system",
                 "content": f"[이전 대화 요약]\n{summary_data['summary']}",
             }
-            return [summary_msg] + recent
+            return [summary_msg, *recent]
 
         # 요약이 없으면 최근 N개만 반환 (블로킹 없음)
         return recent

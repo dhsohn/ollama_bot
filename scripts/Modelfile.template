@@ -1,8 +1,0 @@
-FROM {{MODEL_PATH}}
-
-PARAMETER temperature 0.7
-PARAMETER num_ctx 4096
-
-SYSTEM """당신은 유용한 AI 어시스턴트입니다.
-한국어로 답변하며, 간결하고 정확한 정보를 제공합니다.
-사용자 피드백을 반영하여 파인튜닝된 모델입니다."""

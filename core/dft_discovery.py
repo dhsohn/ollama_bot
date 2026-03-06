@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from contextlib import suppress
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -51,7 +52,7 @@ def _discover_orca_outputs_targets(
     recent_completed_window_minutes: int | None,
 ) -> list[Path]:
     targets: dict[str, Path] = {}
-    now_utc = datetime.now(timezone.utc)
+    now_utc = datetime.now(UTC)
 
     # run_state 전용 정책: run_report는 완전히 무시한다.
     for state_path in kb_path.rglob("run_state.json"):
@@ -144,7 +145,7 @@ def _is_recent_completed_output(
         return (-allowed_future_skew) <= age <= window
 
     try:
-        mtime_dt = datetime.fromtimestamp(output_path.stat().st_mtime, tz=timezone.utc)
+        mtime_dt = datetime.fromtimestamp(output_path.stat().st_mtime, tz=UTC)
     except OSError:
         return False
     age = now_utc - mtime_dt
@@ -162,8 +163,8 @@ def _parse_iso_datetime_utc(value: Any) -> datetime | None:
     except ValueError:
         return None
     if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
+        return dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
 
 
 def _add_if_valid_target(
@@ -204,7 +205,5 @@ def _log_warning(logger: Any | None, event: str, **kwargs: Any) -> None:
         logger.warning(event, **kwargs)
     except Exception:
         # 로거 인터페이스 차이(예: mock) 대비
-        try:
+        with suppress(Exception):
             logger.warning(f"{event}: {kwargs}")
-        except Exception:
-            pass

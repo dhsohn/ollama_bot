@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from functools import partial
-from typing import Any, Callable, TypeVar
+from typing import Any, TypeVar
 
 _T = TypeVar("_T")
 

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import os
 import tempfile
-from pathlib import Path
 import zipfile
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import numpy as np
@@ -18,7 +18,7 @@ from core.rag.context_builder import RAGContextBuilder
 from core.rag.indexer import RAGIndexer
 from core.rag.pipeline import RAGPipeline
 from core.rag.retriever import RAGRetriever
-from core.rag.types import ChunkMetadata, RAGTrace, RetrievedItem, Chunk
+from core.rag.types import Chunk, ChunkMetadata, RAGTrace, RetrievedItem
 
 
 @pytest.fixture

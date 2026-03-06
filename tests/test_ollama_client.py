@@ -10,9 +10,9 @@ import pytest
 from core.config import OllamaConfig
 from core.llm_types import ChatStreamState
 from core.ollama_client import (
+    ModelNotFoundError,
     OllamaClient,
     OllamaClientError,
-    ModelNotFoundError,
 )
 
 
@@ -57,7 +57,7 @@ class TestChat:
     @pytest.mark.asyncio
     async def test_chat_timeout_retries(self, ollama_client: OllamaClient) -> None:
         mock_async_client = AsyncMock()
-        mock_async_client.chat = AsyncMock(side_effect=asyncio.TimeoutError())
+        mock_async_client.chat = AsyncMock(side_effect=TimeoutError())
         ollama_client._client = mock_async_client
 
         with pytest.raises(OllamaClientError, match="failed after"):
@@ -169,9 +169,11 @@ class TestInitialize:
         mock_async_client = AsyncMock()
         mock_async_client.list = AsyncMock(return_value=mock_response)
 
-        with patch("core.ollama_client.AsyncClient", return_value=mock_async_client):
-            with pytest.raises(ModelNotFoundError, match="Default model"):
-                await ollama_client.initialize()
+        with (
+            patch("core.ollama_client.AsyncClient", return_value=mock_async_client),
+            pytest.raises(ModelNotFoundError, match="Default model"),
+        ):
+            await ollama_client.initialize()
 
 
 class TestChatStream:
