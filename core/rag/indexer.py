@@ -109,7 +109,8 @@ class RAGIndexer:
                 단일 경로(str) 또는 다중 경로(list[str]).
                 다중 경로일 경우 합집합 기준으로 인덱싱/정리를 수행한다.
         """
-        assert self._db is not None
+        if self._db is None:
+            raise RuntimeError("RAGIndexer가 아직 초기화되지 않았습니다.")
         t0 = time.monotonic()
 
         requested_dirs = [kb_paths] if isinstance(kb_paths, str) else list(kb_paths)
@@ -298,7 +299,8 @@ class RAGIndexer:
 
     async def get_chunk_by_id(self, row_id: int) -> Chunk | None:
         """row_id로 청크를 조회한다."""
-        assert self._db is not None
+        if self._db is None:
+            raise RuntimeError("RAGIndexer가 아직 초기화되지 않았습니다.")
         async with self._db.execute(
             "SELECT * FROM rag_chunks WHERE id = ?", (row_id,),
         ) as cursor:
@@ -311,7 +313,8 @@ class RAGIndexer:
         """여러 row_id로 청크를 조회한다."""
         if not row_ids:
             return []
-        assert self._db is not None
+        if self._db is None:
+            raise RuntimeError("RAGIndexer가 아직 초기화되지 않았습니다.")
         placeholders = ",".join("?" for _ in row_ids)
         async with self._db.execute(
             f"SELECT * FROM rag_chunks WHERE id IN ({placeholders})",
@@ -322,9 +325,24 @@ class RAGIndexer:
         chunk_map = {row["id"]: self._row_to_chunk(row) for row in rows}
         return [chunk_map[rid] for rid in row_ids if rid in chunk_map]
 
+    async def get_chunks_map_by_ids(self, row_ids: list[int]) -> dict[int, Chunk]:
+        """여러 row_id로 청크를 조회하여 {row_id: Chunk} dict를 반환한다."""
+        if not row_ids:
+            return {}
+        if self._db is None:
+            raise RuntimeError("RAGIndexer가 아직 초기화되지 않았습니다.")
+        placeholders = ",".join("?" for _ in row_ids)
+        async with self._db.execute(
+            f"SELECT * FROM rag_chunks WHERE id IN ({placeholders})",
+            row_ids,
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return {row["id"]: self._row_to_chunk(row) for row in rows}
+
     async def get_all_chunks(self) -> list[Chunk]:
         """현재 인덱스의 모든 청크를 source/chunk 순으로 반환한다."""
-        assert self._db is not None
+        if self._db is None:
+            raise RuntimeError("RAGIndexer가 아직 초기화되지 않았습니다.")
         chunks: list[Chunk] = []
         async with self._db.execute(
             "SELECT * FROM rag_chunks ORDER BY source_path, chunk_id, id"
@@ -339,7 +357,8 @@ class RAGIndexer:
         로컬 변수에 먼저 빌드한 뒤 atomic swap하여,
         리로드 중 search()가 불완전 인덱스를 참조하는 것을 방지한다.
         """
-        assert self._db is not None
+        if self._db is None:
+            raise RuntimeError("RAGIndexer가 아직 초기화되지 않았습니다.")
         new_row_ids: list[int] = []
         embeddings_list: list[np.ndarray] = []
         new_chunk_meta: list[dict[str, Any]] = []

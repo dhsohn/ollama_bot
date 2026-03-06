@@ -210,11 +210,7 @@ class MemoryManager:
                     ")",
                     (chat_id, chat_id, limit),
                 )
-            else:
-                await db.execute(
-                    "DELETE FROM conversations WHERE chat_id = ?",
-                    (chat_id,),
-                )
+            # limit <= 0 이면 무제한 — 트리밍하지 않는다.
 
     async def get_conversation(
         self,

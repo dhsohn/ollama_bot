@@ -74,14 +74,9 @@ class RAGRetriever:
         if not search_results:
             return []
 
-        # 3) 청크 일괄 조회
+        # 3) 청크 일괄 조회 — dict로 정확한 rid→chunk 매핑
         row_ids = [rid for rid, _ in search_results]
-        chunks = await self._indexer.get_chunks_by_ids(row_ids)
-
-        # row_id → chunk 매핑 (순서 보존)
-        chunk_by_rid: dict[int, Chunk] = {}
-        for rid, chunk in zip(row_ids, chunks):
-            chunk_by_rid[rid] = chunk
+        chunk_by_rid: dict[int, Chunk] = await self._indexer.get_chunks_map_by_ids(row_ids)
 
         # 4) 동일 문서 인접 chunk 중복 제거 (score 순으로 처리)
         doc_selected: defaultdict[str, list[int]] = defaultdict(list)

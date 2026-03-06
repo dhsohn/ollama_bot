@@ -201,6 +201,9 @@ def _count_xyz_structures(path: Path) -> int | None:
         except ValueError:
             i += 1
             continue
+        if n_atoms <= 0:
+            i += 1
+            continue
         count += 1
         i += n_atoms + 2  # 원자 수 줄 + 코멘트 줄 + 좌표 줄들
     return count if count > 0 else None

@@ -93,7 +93,7 @@ class DocumentChunker:
             return []
 
         doc_id = hashlib.md5(file_path.encode()).hexdigest()[:12]
-        content_hash = hashlib.sha256(text.encode()).hexdigest()[:16]
+        content_hash = self.content_hash(file_path)
         mtime = os.path.getmtime(file_path)
 
         if ext in (".py",):

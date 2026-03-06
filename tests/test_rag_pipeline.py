@@ -328,32 +328,32 @@ class TestRAGRetriever:
             (3, 0.93),
             (4, 0.92),
         ])
-        indexer.get_chunks_by_ids = AsyncMock(return_value=[
-            Chunk(
+        indexer.get_chunks_map_by_ids = AsyncMock(return_value={
+            1: Chunk(
                 text="doc-a-10",
                 metadata=ChunkMetadata(
                     doc_id="doc-a", source_path="kb/a.md", chunk_id=10,
                 ),
             ),
-            Chunk(
+            2: Chunk(
                 text="doc-a-11",
                 metadata=ChunkMetadata(
                     doc_id="doc-a", source_path="kb/a.md", chunk_id=11,
                 ),
             ),
-            Chunk(
+            3: Chunk(
                 text="doc-a-14",
                 metadata=ChunkMetadata(
                     doc_id="doc-a", source_path="kb/a.md", chunk_id=14,
                 ),
             ),
-            Chunk(
+            4: Chunk(
                 text="doc-b-0",
                 metadata=ChunkMetadata(
                     doc_id="doc-b", source_path="kb/b.md", chunk_id=0,
                 ),
             ),
-        ])
+        })
 
         retriever = RAGRetriever(indexer, mock_client, "test-embed")
         items = await retriever.retrieve("query", k0=10)
@@ -371,32 +371,32 @@ class TestRAGRetriever:
             (3, 0.93),
             (4, 0.92),
         ])
-        indexer.get_chunks_by_ids = AsyncMock(return_value=[
-            Chunk(
+        indexer.get_chunks_map_by_ids = AsyncMock(return_value={
+            1: Chunk(
                 text="doc-a-0",
                 metadata=ChunkMetadata(
                     doc_id="doc-a", source_path="kb/a.md", chunk_id=0,
                 ),
             ),
-            Chunk(
+            2: Chunk(
                 text="doc-a-2",
                 metadata=ChunkMetadata(
                     doc_id="doc-a", source_path="kb/a.md", chunk_id=2,
                 ),
             ),
-            Chunk(
+            3: Chunk(
                 text="doc-a-4",
                 metadata=ChunkMetadata(
                     doc_id="doc-a", source_path="kb/a.md", chunk_id=4,
                 ),
             ),
-            Chunk(
+            4: Chunk(
                 text="doc-b-0",
                 metadata=ChunkMetadata(
                     doc_id="doc-b", source_path="kb/b.md", chunk_id=0,
                 ),
             ),
-        ])
+        })
 
         retriever = RAGRetriever(indexer, mock_client, "test-embed")
         items = await retriever.retrieve("query", k0=10)

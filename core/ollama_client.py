@@ -103,9 +103,12 @@ class OllamaClient:
 
     async def close(self) -> None:
         """클라이언트 리소스를 정리한다."""
+        client = self._client
         self._client = None
         self._auto_reconnect_enabled = False
         self._is_healthy = False
+        if client is not None and hasattr(client, "_client"):
+            await client._client.aclose()
 
     def _mark_healthy(self) -> None:
         self._is_healthy = True
@@ -158,7 +161,13 @@ class OllamaClient:
                 )
                 return False
 
+            old_client = self._client
             self._client = candidate
+            if old_client is not None and hasattr(old_client, "_client"):
+                try:
+                    await old_client._client.aclose()
+                except Exception:
+                    pass
             self._mark_healthy()
             self._logger.info(
                 "ollama_reconnected",

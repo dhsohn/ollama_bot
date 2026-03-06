@@ -947,9 +947,10 @@ async def _build_runtime(
             ) from exc
 
         scheduler.set_dependencies(engine=engine, telegram=telegram)
-        assert scheduler.dependencies_ready(), (
-            "Scheduler dependencies must be wired before automation loading."
-        )
+        if not scheduler.dependencies_ready():
+            raise StartupError(
+                "Scheduler dependencies must be wired before automation loading."
+            )
         register_builtin_callables(
             scheduler=scheduler,
             engine=engine,
@@ -962,9 +963,10 @@ async def _build_runtime(
             sim_scheduler=sim_scheduler,
         )
         telegram.set_scheduler(scheduler)
-        assert telegram.has_scheduler(), (
-            "Telegram handler must receive scheduler before initialization."
-        )
+        if not telegram.has_scheduler():
+            raise StartupError(
+                "Telegram handler must receive scheduler before initialization."
+            )
 
         if sim_scheduler is not None:
             telegram.set_sim_scheduler(sim_scheduler)

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -109,21 +110,31 @@ class DFTIndex:
                 row["source_path"]: row["file_hash"] async for row in cursor
             }
 
-        # 파일 탐색
+        # 파일 탐색 (동기 파일 I/O를 스레드 풀로 위임)
         max_bytes = max_file_size_mb * 1024 * 1024
         discovered: dict[str, str] = {}  # path → hash
+
+        def _discover_and_hash() -> dict[str, str]:
+            result: dict[str, str] = {}
+            for kb_dir in kb_dirs:
+                kb_path = Path(kb_dir)
+                if not kb_path.is_dir():
+                    continue
+                for fpath in discover_orca_targets(kb_path, max_bytes=max_bytes, logger=self._logger):
+                    spath = str(fpath)
+                    h = hashlib.sha256()
+                    with open(fpath, "rb") as f:
+                        for chunk in iter(lambda: f.read(65536), b""):
+                            h.update(chunk)
+                    result[spath] = h.hexdigest()[:16]
+            return result
+
+        discovered = await asyncio.to_thread(_discover_and_hash)
+
+        # 존재하지 않는 디렉토리 경고 (로거는 메인 스레드에서 호출)
         for kb_dir in kb_dirs:
-            kb_path = Path(kb_dir)
-            if not kb_path.is_dir():
+            if not Path(kb_dir).is_dir():
                 self._logger.warning("dft_kb_dir_not_found", path=kb_dir)
-                continue
-            for fpath in discover_orca_targets(kb_path, max_bytes=max_bytes, logger=self._logger):
-                spath = str(fpath)
-                h = hashlib.sha256()
-                with open(fpath, "rb") as f:
-                    for chunk in iter(lambda: f.read(65536), b""):
-                        h.update(chunk)
-                discovered[spath] = h.hexdigest()[:16]
 
         # 변경 감지
         to_index = {
@@ -147,7 +158,7 @@ class DFTIndex:
             # 신규/변경 파일 인덱싱
             for source_path in to_index:
                 try:
-                    result = parse_orca_output(source_path)
+                    result = await asyncio.to_thread(parse_orca_output, source_path)
                     await self._upsert(db, result)
                     indexed += 1
                 except Exception as exc:
@@ -179,7 +190,7 @@ class DFTIndex:
         """단일 파일을 파싱하여 upsert한다. 성공 시 True."""
         db = self._require_db()
         try:
-            result = parse_orca_output(file_path)
+            result = await asyncio.to_thread(parse_orca_output, file_path)
             async with self._write_lock:
                 await self._upsert(db, result)
                 await db.commit()

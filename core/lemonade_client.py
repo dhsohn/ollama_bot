@@ -597,7 +597,14 @@ class LemonadeClient:
                     if finish_reason:
                         break
             self._mark_healthy()
-        except (httpx.HTTPError, asyncio.TimeoutError, OSError) as exc:
+        except asyncio.TimeoutError as exc:
+            # 애플리케이션 레벨 타임아웃(전체 스트림 시간 초과, 반복 콘텐츠 감지)은
+            # 연결 장애가 아니므로 unhealthy로 마킹하지 않는다.
+            error_text = self._format_exception(exc)
+            raise LemonadeClientError(
+                f"Lemonade streaming request failed for model '{target_model}': {error_text}"
+            ) from exc
+        except (httpx.HTTPError, OSError) as exc:
             self._mark_unhealthy(exc)
             await self.recover_connection()
             error_text = self._format_exception(exc)

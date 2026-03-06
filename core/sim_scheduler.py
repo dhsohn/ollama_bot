@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import shlex
 import shutil
 import signal
 import uuid
@@ -457,16 +458,19 @@ class SimJobScheduler:
         if executable.startswith(("~", ".", "/")):
             executable = str(Path(executable).expanduser().resolve())
 
+        safe_input = shlex.quote(job["input_file"])
+        safe_output = shlex.quote(output_file)
+        safe_executable = shlex.quote(executable)
         cmd = tool_config.cli_template.format(
-            executable=executable,
-            input_file=job["input_file"],
-            output_file=output_file,
+            executable=safe_executable,
+            input_file=safe_input,
+            output_file=safe_output,
         )
         if tool_config.command_prefix.strip():
             prefix = tool_config.command_prefix.format(
-                executable=executable,
-                input_file=job["input_file"],
-                output_file=output_file,
+                executable=safe_executable,
+                input_file=safe_input,
+                output_file=safe_output,
             )
             cmd = f"{prefix} {cmd}"
 

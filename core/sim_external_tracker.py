@@ -485,7 +485,9 @@ class SimExternalTracker:
                             )
                     continue
 
-            inferred_status, inferred_error = self._infer_missing_delegated_terminal_state(job)
+            inferred_status, inferred_error = await asyncio.to_thread(
+                self._infer_missing_delegated_terminal_state, job,
+            )
             if inferred_status == "failed":
                 error_msg = inferred_error or "실행 실패"
                 await self._store.update_status(
@@ -655,12 +657,12 @@ class SimExternalTracker:
                         tracked_pids_expanded.add(process_pid)
                         break
 
-        external_jobs.extend(
-            self._scan_lockfile_external_jobs(
-                tracked_pids=tracked_pids_expanded,
-                seen_external_pids=seen_external_pids,
-            )
+        lockfile_jobs = await asyncio.to_thread(
+            self._scan_lockfile_external_jobs,
+            tracked_pids=tracked_pids_expanded,
+            seen_external_pids=seen_external_pids,
         )
+        external_jobs.extend(lockfile_jobs)
 
         external_jobs.sort(key=lambda job: int(job.get("elapsed_seconds", 0)), reverse=True)
         return external_jobs

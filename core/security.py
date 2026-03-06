@@ -151,6 +151,10 @@ class SecurityManager:
             raise GlobalConcurrencyError(
                 "Too many concurrent requests globally"
             ) from exc
+        except asyncio.CancelledError:
+            # 세마포어 acquire 후 취소되면 슬롯이 영구 소실되므로 즉시 반환
+            self._global_semaphore.release()
+            raise
 
         self._global_in_flight += 1
 
