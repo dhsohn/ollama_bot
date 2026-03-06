@@ -20,7 +20,7 @@ from core.dft_discovery import discover_orca_targets
 from core.orca_parser import OptProgress, parse_opt_progress, parse_orca_output
 
 _RUNNING_PROGRESS_CALC_TYPES = ("opt", "ts", "neb", "irc")
-_AI_COMMENT_TIMEOUT_SECONDS = 30
+_AI_COMMENT_TIMEOUT_SECONDS = 60
 
 _DFT_SYSTEM_PROMPT = (
     "ORCA DFT 계산 모니터링 전문가. "

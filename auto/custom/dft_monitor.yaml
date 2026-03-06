@@ -2,7 +2,7 @@ name: "dft_monitor"
 description: "DFT 계산 파일 변경 감지 및 자동 인덱싱"
 version: "1.0"
 enabled: true
-schedule: "*/10 * * * *"
+schedule: "0 * * * *"
 action:
   type: "callable"
   target: "dft_monitor"
