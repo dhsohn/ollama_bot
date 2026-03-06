@@ -49,6 +49,8 @@ class SimExternalTracker:
         re.compile(r"(?:^|\s)--input(?:=|\s+)(?P<value>'[^']+'|\"[^\"]+\"|\S+)"),
         re.compile(r"(?:^|\s)--input-file(?:=|\s+)(?P<value>'[^']+'|\"[^\"]+\"|\S+)"),
         re.compile(r"(?:^|\s)-i(?:=|\s+)(?P<value>'[^']+'|\"[^\"]+\"|\S+)"),
+        # 위치 인자: .xyz/.inp/.coord 확장자 (crest, xtb 등)
+        re.compile(r"(?:^|\s)(?P<value>\S+\.(?:xyz|inp|coord))(?=\s|$)"),
     )
 
     def __init__(

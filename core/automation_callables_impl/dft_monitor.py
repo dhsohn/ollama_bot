@@ -11,8 +11,10 @@ import os
 import re
 from html import escape as _h
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable
 
+from core.crest_discovery import discover_crest_targets
+from core.crest_parser import CrestResult, parse_crest_output
 from core.dft_discovery import discover_orca_targets
 from core.orca_parser import OptProgress, parse_opt_progress, parse_orca_output
 
@@ -70,12 +72,16 @@ _META_REASONING_RE = re.compile(
 
 
 
+GetExternalDirs = Callable[[], Awaitable[list[str]]]
+
+
 def build_dft_monitor_callable(
     dft_index: Any,
     kb_dirs: list[str],
     logger: Any,
     state_file: str | None = None,
     engine: Any | None = None,
+    get_external_dirs: GetExternalDirs | None = None,
 ):
     """DFT 모니터 callable을 빌드한다.
 
@@ -85,6 +91,7 @@ def build_dft_monitor_callable(
         logger: 로거
         state_file: 상태 파일 경로
         engine: Engine 인스턴스 (LLM 한줄 해석용, 없으면 해석 생략)
+        get_external_dirs: 외부 시뮬레이션 작업 디렉토리 목록을 반환하는 콜백
 
     Returns:
         dft_monitor async callable
@@ -113,11 +120,36 @@ def build_dft_monitor_callable(
         state_dirty = False
         missing_kb_dirs: list[str] = []
 
-        if not kb_dirs:
+        # 외부 시뮬레이션 디렉토리 수집
+        external_dirs: list[str] = []
+        if get_external_dirs is not None:
+            try:
+                external_dirs = await get_external_dirs()
+            except Exception as exc:
+                logger.warning("dft_monitor_external_dirs_failed", error=str(exc))
+
+        # kb_dirs + 외부 디렉토리 합쳐서 스캔 (중복 제거)
+        all_dirs = list(kb_dirs)
+        seen_resolved: set[str] = set()
+        for d in all_dirs:
+            try:
+                seen_resolved.add(str(Path(d).resolve()))
+            except OSError:
+                pass
+        for d in external_dirs:
+            try:
+                resolved = str(Path(d).resolve())
+            except OSError:
+                continue
+            if resolved not in seen_resolved:
+                seen_resolved.add(resolved)
+                all_dirs.append(d)
+
+        if not all_dirs:
             logger.warning("dft_monitor_no_kb_dirs_configured")
             return ""
 
-        for kb_dir in kb_dirs:
+        for kb_dir in all_dirs:
             kb_path = Path(kb_dir)
             if not kb_path.is_dir():
                 missing_kb_dirs.append(kb_dir)
@@ -236,6 +268,56 @@ def build_dft_monitor_callable(
                 except Exception as exc:
                     logger.warning(
                         "dft_monitor_parse_error",
+                        path=spath,
+                        error=str(exc),
+                    )
+
+            # CREST 스캔 (ORCA와 중복 제외)
+            orca_scanned = set(scanned_mtimes.keys())
+            for fpath in discover_crest_targets(
+                kb_path,
+                max_bytes=max_bytes,
+                logger=logger,
+                exclude_paths=orca_scanned,
+            ):
+                spath = str(fpath)
+                try:
+                    current_mtime = os.path.getmtime(spath)
+                except OSError:
+                    continue
+                scanned_mtimes[spath] = current_mtime
+
+                if not _baseline_seeded:
+                    continue
+
+                last_mtime = _last_mtimes.get(spath)
+                if last_mtime is not None and current_mtime <= last_mtime:
+                    continue
+
+                try:
+                    cresult = parse_crest_output(spath)
+                    _last_mtimes[spath] = current_mtime
+                    state_dirty = True
+
+                    if cresult.status == "running":
+                        text = _format_crest_running(cresult)
+                    elif cresult.status == "failed":
+                        text = _format_crest_failed(cresult)
+                    else:
+                        text = _format_crest_completed(cresult)
+
+                    if text:
+                        new_results.append({"_progress_text": text})
+
+                    logger.info(
+                        "dft_monitor_crest_detected",
+                        path=spath,
+                        status=cresult.status,
+                        n_conformers=cresult.n_conformers,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "dft_monitor_crest_parse_error",
                         path=spath,
                         error=str(exc),
                     )
@@ -546,6 +628,60 @@ def _build_running_analysis_prompt(result: Any, source_path: str) -> str:
         f"메서드: {method_basis}, "
         f"에너지: {energy_str}\n\n"
         f"현재 상태를 한국어 300자 이내로 코멘트하라."
+    )
+
+
+def _format_crest_running(result: CrestResult) -> str:
+    """진행 중인 CREST 계산 알림 텍스트 (HTML)."""
+    method = _h(result.method)
+    n_atoms_str = f" | 원자 수: {result.n_atoms}" if result.n_atoms else ""
+    conformers_str = (
+        f"{result.n_conformers}개 구조 발견"
+        if result.n_conformers
+        else "구조 탐색 중"
+    )
+    energy_str = (
+        f"\n현재 최저 에너지: {result.best_energy_hartree:.6f} Eh"
+        if result.best_energy_hartree is not None
+        else ""
+    )
+    return (
+        f"🔄 <b>CREST 실행 중: {conformers_str}</b>\n"
+        f"메서드: {method}{n_atoms_str}"
+        f"{energy_str}\n"
+        f"📂 {_h(_short_path(result.source_path))}"
+    )
+
+
+def _format_crest_completed(result: CrestResult) -> str:
+    """완료된 CREST 계산 알림 텍스트 (HTML)."""
+    method = _h(result.method)
+    n_atoms_str = f" | 원자 수: {result.n_atoms}" if result.n_atoms else ""
+    conformers_str = (
+        f"{result.n_conformers}개 배좌이성질체"
+        if result.n_conformers
+        else "?"
+    )
+    energy_str = (
+        f"\n최저 에너지: {result.best_energy_hartree:.6f} Eh"
+        if result.best_energy_hartree is not None
+        else ""
+    )
+    return (
+        f"✅ <b>CREST 완료: {conformers_str} 발견</b>\n"
+        f"메서드: {method}{n_atoms_str}"
+        f"{energy_str}\n"
+        f"📂 {_h(_short_path(result.source_path))}"
+    )
+
+
+def _format_crest_failed(result: CrestResult) -> str:
+    """실패한 CREST 계산 알림 텍스트 (HTML)."""
+    error = _h(result.error_message or "알 수 없는 오류")
+    return (
+        f"🔴 <b>CREST 실패</b>\n"
+        f"오류: {error}\n"
+        f"📂 {_h(_short_path(result.source_path))}"
     )
 
 

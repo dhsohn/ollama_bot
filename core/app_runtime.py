@@ -959,6 +959,7 @@ async def _build_runtime(
             feedback=feedback,
             dft_index=dft_index,
             kb_dirs=config.rag.kb_dirs if config.rag.enabled else None,
+            sim_scheduler=sim_scheduler,
         )
         telegram.set_scheduler(scheduler)
         assert telegram.has_scheduler(), (
