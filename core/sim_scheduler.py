@@ -322,6 +322,7 @@ class SimJobScheduler:
         interval = self._config.queue_check_interval_seconds
         while not self._stop_event.is_set():
             try:
+                await self._check_unmanaged_running_jobs()
                 await self._sync_external_job_states()
                 await self._check_new_external_jobs()
                 await self._dispatch_pending_jobs()
@@ -609,6 +610,62 @@ class SimJobScheduler:
                     await self._notify_job_failed(job, exit_code)
 
     # ── 복구 ──
+
+    async def _check_unmanaged_running_jobs(self) -> None:
+        """봇이 직접 관리하지 않는 비-delegated running 작업의 PID를 점검한다.
+
+        봇 재시작 후 PID가 살아있어 requeue되지 않았지만 이후 종료된 작업을
+        run_state.json 기반으로 completed/failed 상태로 전환한다.
+        """
+        running_jobs = await self._store.get_running_jobs()
+        for job in running_jobs:
+            job_id = job["job_id"]
+            if self._is_delegated_job(job):
+                continue
+            if job_id in self._running_processes:
+                continue
+
+            pid = job.get("pid")
+            if pid and self._is_pid_alive(pid):
+                continue
+
+            inferred_status, inferred_error = (
+                self._external_tracker._infer_missing_delegated_terminal_state(job)
+            )
+            if inferred_status == "failed":
+                error_msg = inferred_error or "실행 실패"
+                await self._store.update_status(
+                    job_id, "failed",
+                    completed_at="CURRENT_TIMESTAMP",
+                    error_message=error_msg,
+                    pid=None,
+                )
+                await self._notify(
+                    f"[SIM] 작업 {job_id[:8]} 실패\n{error_msg}"
+                )
+                self._logger.info(
+                    "sim_unmanaged_job_failed", job_id=job_id, error=error_msg,
+                )
+            elif inferred_status == "completed":
+                await self._store.update_status(
+                    job_id, "completed",
+                    completed_at="CURRENT_TIMESTAMP",
+                    pid=None,
+                )
+                await self._notify_job_completed(job)
+                await self._run_completion_hooks(job_id)
+                self._logger.info("sim_unmanaged_job_completed", job_id=job_id)
+            else:
+                await self._store.update_status(
+                    job_id, "completed",
+                    completed_at="CURRENT_TIMESTAMP",
+                    error_message="작업 종료 감지 (성공/실패 미확인)",
+                    pid=None,
+                )
+                await self._notify_job_completed(job)
+                self._logger.info(
+                    "sim_unmanaged_job_completed_unknown", job_id=job_id,
+                )
 
     async def _recover_orphaned_jobs(self) -> None:
         """시작 시 DB에 running이지만 프로세스가 없는 작업을 복구한다."""

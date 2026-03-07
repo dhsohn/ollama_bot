@@ -825,6 +825,191 @@ async def test_stop_terminates_running_process_before_monitor_cancel(
 
 
 @pytest.mark.asyncio
+async def test_check_unmanaged_running_job_marks_completed_from_run_state(
+    tmp_path: Path,
+) -> None:
+    """봇이 관리하지 않는 running 작업의 PID가 죽고 run_state가 completed이면 완료 처리."""
+    scheduler, store = await _build_scheduler(tmp_path, "orca_auto")
+
+    input_dir = tmp_path / "orca_runs" / "mj_unmanaged"
+    input_dir.mkdir(parents=True)
+    (input_dir / "run_state.json").write_text(
+        '{"status": "completed", "final_result": {"status": "completed"}}',
+        encoding="utf-8",
+    )
+
+    job_id = await store.insert_job(
+        SimJob(
+            job_id="job-unmanaged-completed-1",
+            tool="orca_auto",
+            input_file=str(input_dir),
+            submitted_by=1,
+        )
+    )
+    await store.update_status(
+        job_id, "running",
+        pid=999999,
+        started_at="2026-03-05 00:00:00",
+        cli_command="orca_auto run-inp --foreground --reaction-dir '" + str(input_dir) + "'",
+    )
+
+    scheduler._is_pid_alive = lambda _pid: False  # type: ignore[method-assign]
+    scheduler._notify = AsyncMock()  # type: ignore[method-assign]
+
+    try:
+        await scheduler._check_unmanaged_running_jobs()
+        job = await store.get_job(job_id)
+        assert job is not None
+        assert job["status"] == "completed"
+        assert job["pid"] is None
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_check_unmanaged_running_job_marks_failed_from_run_state(
+    tmp_path: Path,
+) -> None:
+    """봇이 관리하지 않는 running 작업의 PID가 죽고 run_state가 failed이면 실패 처리."""
+    scheduler, store = await _build_scheduler(tmp_path, "orca_auto")
+
+    input_dir = tmp_path / "orca_runs" / "mj_fail"
+    input_dir.mkdir(parents=True)
+    (input_dir / "run_state.json").write_text(
+        '{"status": "failed", "error": "SCF convergence failure"}',
+        encoding="utf-8",
+    )
+
+    job_id = await store.insert_job(
+        SimJob(
+            job_id="job-unmanaged-failed-1",
+            tool="orca_auto",
+            input_file=str(input_dir),
+            submitted_by=1,
+        )
+    )
+    await store.update_status(
+        job_id, "running",
+        pid=999998,
+        started_at="2026-03-05 00:00:00",
+        cli_command="orca_auto run-inp --foreground --reaction-dir '" + str(input_dir) + "'",
+    )
+
+    scheduler._is_pid_alive = lambda _pid: False  # type: ignore[method-assign]
+    scheduler._notify = AsyncMock()  # type: ignore[method-assign]
+
+    try:
+        await scheduler._check_unmanaged_running_jobs()
+        job = await store.get_job(job_id)
+        assert job is not None
+        assert job["status"] == "failed"
+        assert "SCF convergence failure" in str(job["error_message"])
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_check_unmanaged_running_job_skips_alive_pid(
+    tmp_path: Path,
+) -> None:
+    """PID가 살아있으면 건너뛴다."""
+    scheduler, store = await _build_scheduler(tmp_path, "orca_auto")
+
+    job_id = await store.insert_job(
+        SimJob(
+            job_id="job-unmanaged-alive-1",
+            tool="orca_auto",
+            input_file="/tmp/alive_job",
+            submitted_by=1,
+        )
+    )
+    await store.update_status(
+        job_id, "running",
+        pid=999997,
+        started_at="2026-03-05 00:00:00",
+        cli_command="orca_auto run-inp --foreground",
+    )
+
+    scheduler._is_pid_alive = lambda _pid: True  # type: ignore[method-assign]
+
+    try:
+        await scheduler._check_unmanaged_running_jobs()
+        job = await store.get_job(job_id)
+        assert job is not None
+        assert job["status"] == "running"
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_check_unmanaged_running_job_skips_delegated(
+    tmp_path: Path,
+) -> None:
+    """delegated 작업은 건너뛴다 (sync_external_job_states가 처리)."""
+    scheduler, store = await _build_scheduler(tmp_path, "orca_auto")
+
+    job_id = await store.insert_job(
+        SimJob(
+            job_id="job-unmanaged-delegated-1",
+            tool="orca_auto",
+            input_file="/tmp/delegated_job",
+            submitted_by=1,
+        )
+    )
+    await store.update_status(
+        job_id, "running",
+        pid=999996,
+        started_at="2026-03-05 00:00:00",
+        cli_command="delegated:orca_auto run-inp",
+    )
+
+    scheduler._is_pid_alive = lambda _pid: False  # type: ignore[method-assign]
+
+    try:
+        await scheduler._check_unmanaged_running_jobs()
+        job = await store.get_job(job_id)
+        assert job is not None
+        assert job["status"] == "running"  # delegated는 변경되지 않음
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_check_unmanaged_running_job_skips_managed_process(
+    tmp_path: Path,
+) -> None:
+    """_running_processes에 있는 작업은 건너뛴다 (monitor_process가 처리)."""
+    scheduler, store = await _build_scheduler(tmp_path, "orca_auto")
+
+    job_id = await store.insert_job(
+        SimJob(
+            job_id="job-unmanaged-managed-1",
+            tool="orca_auto",
+            input_file="/tmp/managed_job",
+            submitted_by=1,
+        )
+    )
+    await store.update_status(
+        job_id, "running",
+        pid=999995,
+        started_at="2026-03-05 00:00:00",
+        cli_command="orca_auto run-inp --foreground",
+    )
+
+    scheduler._running_processes[job_id] = AsyncMock()  # type: ignore[assignment]
+    scheduler._is_pid_alive = lambda _pid: False  # type: ignore[method-assign]
+
+    try:
+        await scheduler._check_unmanaged_running_jobs()
+        job = await store.get_job(job_id)
+        assert job is not None
+        assert job["status"] == "running"  # managed이므로 변경되지 않음
+    finally:
+        scheduler._running_processes.pop(job_id, None)
+        await store.close()
+
+
+@pytest.mark.asyncio
 async def test_cancel_job_releases_slot_only_once_when_monitor_cancelled(
     tmp_path: Path,
 ) -> None:
