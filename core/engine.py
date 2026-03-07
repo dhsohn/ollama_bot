@@ -33,6 +33,23 @@ from core import (
     engine_tracking,
 )
 from core.config import AppSettings
+from core.constants import (
+    CONTEXT_HISTORY_MESSAGE_MAX_CHARS,
+    FULL_SCAN_REDUCE_GROUP_MAX_CHARS,
+    FULL_SCAN_REDUCE_MAX_PASSES,
+    FULL_SCAN_SEGMENT_MAX_CHARS,
+    REASONING_INTENTS,
+    REASONING_MODEL_ROLES,
+    REASONING_TIMEOUT_SECONDS,
+    SUMMARY_CHUNK_MAX_CHARS,
+    SUMMARY_CHUNK_OVERLAP_CHARS,
+    SUMMARY_CHUNK_TRIGGER_CHARS,
+    SUMMARY_MAP_MAX_TOKENS,
+    SUMMARY_MAP_TIMEOUT_SECONDS,
+    SUMMARY_REDUCE_MAX_TOKENS,
+    SUMMARY_REDUCE_TIMEOUT_SECONDS,
+)
+from core.enums import RoutingTier
 from core.llm_protocol import LLMClientProtocol
 from core.logging_setup import get_logger
 from core.memory import MemoryManager
@@ -87,7 +104,7 @@ class _PreparedFullRequest:
 class _StreamMeta:
     """최근 스트리밍 요청 메타데이터."""
 
-    tier: str = "full"
+    tier: RoutingTier = RoutingTier.FULL
     intent: str | None = None
     cache_id: int | None = None
     usage: Any = None  # ChatUsage | None
@@ -100,7 +117,7 @@ class _StreamMeta:
 class _RoutingDecision:
     """LLM 호출 전 라우팅 판단 결과."""
 
-    tier: str = "full"
+    tier: RoutingTier = RoutingTier.FULL
     skill: SkillDefinition | None = None
     instant: Any = None
     route: RouteResult | None = None
@@ -135,25 +152,7 @@ _INJECTION_RE = _re.compile(
 _CODE_BLOCK_RE = _re.compile(r"```.*?```", _re.DOTALL)
 _STREAM_META_TTL_SECONDS = 600.0
 _STREAM_META_MAX_ENTRIES = 2048
-_REASONING_TIMEOUT_SECONDS = 3600
-_REASONING_INTENTS = {"complex", "code"}
-_REASONING_MODEL_ROLES = {"reasoning", "coding", "vision"}
 _STREAM_REPEATED_CHUNK_ABORT_THRESHOLD = 30
-_CONTEXT_HISTORY_MESSAGE_MAX_CHARS = 4000
-_SUMMARY_CHUNK_TRIGGER_CHARS = 6000
-_SUMMARY_CHUNK_MAX_CHARS = 3200
-_SUMMARY_CHUNK_OVERLAP_CHARS = 320
-_SUMMARY_MAP_TIMEOUT_SECONDS = 180
-_SUMMARY_REDUCE_TIMEOUT_SECONDS = 600
-_SUMMARY_MAP_MAX_TOKENS = 384
-_SUMMARY_REDUCE_MAX_TOKENS = 1024
-_FULL_SCAN_SEGMENT_MAX_CHARS = 12_000
-_FULL_SCAN_MAP_MAX_TOKENS = 384
-_FULL_SCAN_REDUCE_MAX_TOKENS = 768
-_FULL_SCAN_FINAL_MAX_TOKENS = 1600
-_FULL_SCAN_PROGRESS_EVERY_SEGMENTS = 10
-_FULL_SCAN_REDUCE_GROUP_MAX_CHARS = 12_000
-_FULL_SCAN_REDUCE_MAX_PASSES = 6
 
 
 def _strip_prompt_injection(text: str) -> str:
@@ -260,7 +259,7 @@ class Engine:
                     chat_id, text, model_override, images=images,
                 )
 
-                if routing.tier == "skill":
+                if routing.tier is RoutingTier.SKILL:
                     skill = routing.skill
                     if skill is None:
                         raise RuntimeError("routing_decision_invalid: missing skill")
@@ -276,24 +275,24 @@ class Engine:
                     if not content:
                         raise RuntimeError("empty_response_from_llm")
                     await self._persist_turn(chat_id, text, content, skill=skill)
-                    self._log_request(t0, chat_id, "skill", usage, len(messages))
+                    self._log_request(t0, chat_id, RoutingTier.SKILL, usage, len(messages))
                     return content
 
-                if routing.tier == "instant":
+                if routing.tier is RoutingTier.INSTANT:
                     instant = routing.instant
                     if instant is None:
                         raise RuntimeError("routing_decision_invalid: missing instant")
                     await self._persist_turn(chat_id, text, instant.response)
-                    self._log_request(t0, chat_id, "instant", None, 0, rule=instant.rule_name)
+                    self._log_request(t0, chat_id, RoutingTier.INSTANT, None, 0, rule=instant.rule_name)
                     return instant.response
 
-                if routing.tier == "cache":
+                if routing.tier is RoutingTier.CACHE:
                     cached = routing.cached
                     if cached is None:
                         raise RuntimeError("routing_decision_invalid: missing cache")
                     await self._persist_turn(chat_id, text, cached.response)
                     self._log_request(
-                        t0, chat_id, "cache", None, 0,
+                        t0, chat_id, RoutingTier.CACHE, None, 0,
                         intent=routing.intent, cache_hit=True,
                     )
                     return cached.response
@@ -339,7 +338,7 @@ class Engine:
                 )
 
                 self._log_request(
-                    t0, chat_id, "full", usage, len(prepared_full.messages),
+                    t0, chat_id, RoutingTier.FULL, usage, len(prepared_full.messages),
                     intent=routing.intent,
                     rag_trace=prepared_full.rag_result.trace if prepared_full.rag_result else None,
                 )
@@ -540,7 +539,7 @@ class Engine:
         self,
         chat_id: int,
         *,
-        tier: str,
+        tier: RoutingTier,
         intent: str | None = None,
         cache_id: int | None = None,
         usage: Any = None,
@@ -580,7 +579,7 @@ class Engine:
         self,
         t0: float,
         chat_id: int,
-        tier: str,
+        tier: RoutingTier | str,
         usage=None,
         history_count: int = 0,
         *,

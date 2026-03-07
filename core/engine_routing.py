@@ -4,14 +4,16 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from core.async_utils import run_in_thread
+from core.constants import (
+    REASONING_INTENTS,
+    REASONING_MODEL_ROLES,
+    REASONING_TIMEOUT_SECONDS,
+)
+from core.enums import RoutingTier
 from core.text_utils import detect_output_anomalies, sanitize_model_output
 
 if TYPE_CHECKING:
     from core.engine import Engine
-
-_REASONING_TIMEOUT_SECONDS = 3600
-_REASONING_INTENTS = {"complex", "code"}
-_REASONING_MODEL_ROLES = {"reasoning", "coding", "vision"}
 
 
 async def classify_route(engine: Engine, text: str) -> Any | None:
@@ -30,15 +32,30 @@ async def decide_routing(
     images: list[bytes] | None = None,
     decision_factory: Callable[..., Any],
 ) -> Any:
-    """LLM 호출 전 라우팅 판정(스킬/즉시/인텐트/캐시)을 공통 처리한다."""
+    """계층형 라우팅 판정을 수행한다.
+
+    순서: Skill → Instant → SemanticCache → Full LLM.
+    각 계층에서 매칭되면 즉시 decision_factory로 결과를 생성하여 반환한다.
+
+    Args:
+        engine: 엔진 인스턴스.
+        chat_id: 텔레그램 채팅 ID.
+        text: 사용자 입력 텍스트.
+        model_override: 모델 오버라이드 (캐시 컨텍스트에 사용).
+        images: 첨부 이미지 (있으면 캐시 우회).
+        decision_factory: RoutingDecision 생성 팩토리.
+
+    Returns:
+        라우팅 판정 결과 (decision_factory가 생성한 객체).
+    """
     skill = engine._skills.match_trigger(text)
     if skill is not None:
-        return decision_factory(tier="skill", skill=skill)
+        return decision_factory(tier=RoutingTier.SKILL, skill=skill)
 
     if engine._instant_responder is not None:
         instant = engine._instant_responder.match(text)
         if instant is not None:
-            return decision_factory(tier="instant", instant=instant)
+            return decision_factory(tier=RoutingTier.INSTANT, instant=instant)
 
     route = await classify_route(engine, text)
     intent = route.intent if route else None
@@ -67,9 +84,9 @@ async def decide_routing(
                         error=str(exc),
                     )
             else:
-                return decision_factory(tier="cache", route=route, cached=cached)
+                return decision_factory(tier=RoutingTier.CACHE, route=route, cached=cached)
 
-    return decision_factory(tier="full", route=route)
+    return decision_factory(tier=RoutingTier.FULL, route=route)
 
 
 def build_cache_context(
@@ -104,11 +121,12 @@ def resolve_inference_timeout(
     model_role: str | None,
     has_images: bool = False,
 ) -> int:
+    """추론 타임아웃을 결정한다. 이미지·추론 모델·복잡 인텐트 시 확장된 타임아웃을 반환한다."""
     timeout = max(1, int(base_timeout))
     if has_images:
-        return max(timeout, _REASONING_TIMEOUT_SECONDS)
+        return max(timeout, REASONING_TIMEOUT_SECONDS)
     role = (model_role or "").strip().lower()
     intent_name = (intent or "").strip().lower()
-    if role in _REASONING_MODEL_ROLES or intent_name in _REASONING_INTENTS:
-        return max(timeout, _REASONING_TIMEOUT_SECONDS)
+    if role in REASONING_MODEL_ROLES or intent_name in REASONING_INTENTS:
+        return max(timeout, REASONING_TIMEOUT_SECONDS)
     return timeout

@@ -2,19 +2,20 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from core.constants import (
+    SUMMARY_CHUNK_MAX_CHARS,
+    SUMMARY_CHUNK_OVERLAP_CHARS,
+    SUMMARY_CHUNK_TRIGGER_CHARS,
+    SUMMARY_MAP_MAX_TOKENS,
+    SUMMARY_MAP_TIMEOUT_SECONDS,
+    SUMMARY_REDUCE_MAX_TOKENS,
+    SUMMARY_REDUCE_TIMEOUT_SECONDS,
+)
 from core.skill_manager import SkillDefinition
 from core.text_utils import sanitize_model_output
 
 if TYPE_CHECKING:
     from core.engine import Engine
-
-_SUMMARY_CHUNK_TRIGGER_CHARS = 6000
-_SUMMARY_CHUNK_MAX_CHARS = 3200
-_SUMMARY_CHUNK_OVERLAP_CHARS = 320
-_SUMMARY_MAP_TIMEOUT_SECONDS = 180
-_SUMMARY_REDUCE_TIMEOUT_SECONDS = 600
-_SUMMARY_MAP_MAX_TOKENS = 384
-_SUMMARY_REDUCE_MAX_TOKENS = 1024
 
 
 def is_summarize_skill(skill: SkillDefinition) -> bool:
@@ -32,23 +33,23 @@ def extract_skill_user_input(messages: list[dict[str, str]]) -> str:
 def should_use_chunked_summary(*, skill: SkillDefinition, input_text: str) -> bool:
     if not is_summarize_skill(skill):
         return False
-    return len(input_text.strip()) >= _SUMMARY_CHUNK_TRIGGER_CHARS
+    return len(input_text.strip()) >= SUMMARY_CHUNK_TRIGGER_CHARS
 
 
 def split_text_for_summary(text: str) -> list[str]:
     source = text.strip()
     if not source:
         return []
-    if len(source) <= _SUMMARY_CHUNK_MAX_CHARS:
+    if len(source) <= SUMMARY_CHUNK_MAX_CHARS:
         return [source]
 
     chunks: list[str] = []
     cursor = 0
     total_len = len(source)
-    min_split_offset = int(_SUMMARY_CHUNK_MAX_CHARS * 0.55)
+    min_split_offset = int(SUMMARY_CHUNK_MAX_CHARS * 0.55)
 
     while cursor < total_len:
-        max_end = min(total_len, cursor + _SUMMARY_CHUNK_MAX_CHARS)
+        max_end = min(total_len, cursor + SUMMARY_CHUNK_MAX_CHARS)
         end = max_end
 
         if max_end < total_len:
@@ -72,7 +73,7 @@ def split_text_for_summary(text: str) -> list[str]:
         if end >= total_len:
             break
 
-        next_cursor = max(0, end - _SUMMARY_CHUNK_OVERLAP_CHARS)
+        next_cursor = max(0, end - SUMMARY_CHUNK_OVERLAP_CHARS)
         if next_cursor <= cursor:
             next_cursor = end
         cursor = next_cursor
@@ -149,8 +150,8 @@ async def run_chunked_summary_pipeline(
         raise RuntimeError("chunked_summary_not_applicable")
 
     base_timeout = int(timeout_override or skill.timeout)
-    map_timeout = max(base_timeout, _SUMMARY_MAP_TIMEOUT_SECONDS)
-    reduce_timeout = max(base_timeout, _SUMMARY_REDUCE_TIMEOUT_SECONDS)
+    map_timeout = max(base_timeout, SUMMARY_MAP_TIMEOUT_SECONDS)
+    reduce_timeout = max(base_timeout, SUMMARY_REDUCE_TIMEOUT_SECONDS)
 
     if model_override:
         map_model_candidate = model_override
@@ -207,7 +208,7 @@ async def run_chunked_summary_pipeline(
             ],
             model=map_model,
             timeout=map_timeout,
-            max_tokens=_SUMMARY_MAP_MAX_TOKENS,
+            max_tokens=SUMMARY_MAP_MAX_TOKENS,
         )
         map_summary = sanitize_model_output(map_response.content).strip()
         if not map_summary:
@@ -249,7 +250,7 @@ async def run_chunked_summary_pipeline(
         ],
         model=reduce_model,
         timeout=reduce_timeout,
-        max_tokens=_SUMMARY_REDUCE_MAX_TOKENS,
+        max_tokens=SUMMARY_REDUCE_MAX_TOKENS,
     )
     final_summary = sanitize_model_output(reduce_response.content).strip()
     if not final_summary:

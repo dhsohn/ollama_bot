@@ -3,14 +3,13 @@ from __future__ import annotations
 import re as _re
 from typing import TYPE_CHECKING
 
+from core.constants import CONTEXT_HISTORY_MESSAGE_MAX_CHARS
 from core.skill_manager import SkillDefinition
 from core.text_utils import sanitize_model_output
 
 if TYPE_CHECKING:
     from core.engine import Engine
     from core.intent_router import ContextStrategy
-
-_CONTEXT_HISTORY_MESSAGE_MAX_CHARS = 4000
 _INJECTION_RE = _re.compile(
     r"\[/?(?:system|user|assistant|INST)\]"
     r"|<\|(?:im_start|im_end|system|user|assistant)\|>"
@@ -52,7 +51,21 @@ async def build_context(
     skill: SkillDefinition | None = None,
     strategy: ContextStrategy | None = None,
 ) -> list[dict[str, str]]:
-    """LLM에 전달할 메시지 목록을 조립한다."""
+    """LLM에 전달할 메시지 목록을 조립한다.
+
+    시스템 프롬프트에 선호도·가이드라인·DICL 예시·인텐트 접미사·언어 정책을 주입하고,
+    대화 히스토리와 사용자 입력을 조합하여 최종 메시지 목록을 반환한다.
+
+    Args:
+        engine: 엔진 인스턴스.
+        chat_id: 텔레그램 채팅 ID.
+        text: 사용자 입력 텍스트.
+        skill: 활성 스킬 (스킬 트리거 시).
+        strategy: 인텐트 라우팅 전략 (히스토리 길이·토큰 제한 등).
+
+    Returns:
+        role/content 딕셔너리 목록 (system, history, user 순서).
+    """
     system, history = await build_base_context(
         engine,
         chat_id,
@@ -130,9 +143,9 @@ def sanitize_history_for_prompt(
         if not content:
             continue
 
-        if len(content) > _CONTEXT_HISTORY_MESSAGE_MAX_CHARS:
+        if len(content) > CONTEXT_HISTORY_MESSAGE_MAX_CHARS:
             content = (
-                content[:_CONTEXT_HISTORY_MESSAGE_MAX_CHARS].rstrip()
+                content[:CONTEXT_HISTORY_MESSAGE_MAX_CHARS].rstrip()
                 + "\n...(중략)"
             )
             truncated_messages += 1
@@ -143,7 +156,7 @@ def sanitize_history_for_prompt(
         engine._logger.debug(
             "history_messages_truncated_for_prompt",
             truncated=truncated_messages,
-            max_chars=_CONTEXT_HISTORY_MESSAGE_MAX_CHARS,
+            max_chars=CONTEXT_HISTORY_MESSAGE_MAX_CHARS,
         )
     return sanitized_history
 

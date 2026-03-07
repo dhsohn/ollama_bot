@@ -6,6 +6,7 @@ import time
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING
 
+from core.enums import RoutingTier
 from core.llm_types import ChatStreamState
 from core.skill_manager import SkillDefinition
 from core.text_utils import sanitize_model_output
@@ -36,7 +37,7 @@ class EngineStreamOrchestrator:
             engine._cleanup_stream_meta()
             engine._last_stream_meta.pop(chat_id, None)
             turn_persisted = False
-            routing_tier: str | None = None
+            routing_tier: RoutingTier | str | None = None
             active_skill: SkillDefinition | None = None
             try:
                 routing = await engine._decide_routing(
@@ -45,7 +46,7 @@ class EngineStreamOrchestrator:
                 routing_tier = routing.tier
                 active_skill = getattr(routing, "skill", None)
 
-                if routing.tier == "skill":
+                if routing.tier is RoutingTier.SKILL:
                     skill = routing.skill
                     if skill is None:
                         raise RuntimeError("routing_decision_invalid: missing skill")
@@ -98,7 +99,7 @@ class EngineStreamOrchestrator:
                                     ):
                                         engine._logger.warning(
                                             "stream_repeating_chunk_abort",
-                                            tier="skill",
+                                            tier=RoutingTier.SKILL,
                                             chat_id=chat_id,
                                             repeated_chunks=skill_repeated_stream_chunk_count,
                                         )
@@ -113,14 +114,14 @@ class EngineStreamOrchestrator:
                             if full_response.strip():
                                 engine._logger.warning(
                                     "stream_interrupted_partial_response",
-                                    tier="skill",
+                                    tier=RoutingTier.SKILL,
                                     chat_id=chat_id,
                                     error=str(exc),
                                 )
                             else:
                                 engine._logger.warning(
                                     "stream_failed_fallback_to_chat",
-                                    tier="skill",
+                                    tier=RoutingTier.SKILL,
                                     chat_id=chat_id,
                                     error=str(exc),
                                 )
@@ -140,7 +141,7 @@ class EngineStreamOrchestrator:
                         if not full_response.strip() and skill_stream_error is None:
                             engine._logger.warning(
                                 "stream_empty_fallback_to_chat",
-                                tier="skill",
+                                tier=RoutingTier.SKILL,
                                 chat_id=chat_id,
                             )
                             chat_response = await engine._llm_client.chat(
@@ -161,24 +162,24 @@ class EngineStreamOrchestrator:
                     turn_persisted = True
                     engine._set_stream_meta(
                         chat_id,
-                        tier="skill",
+                        tier=RoutingTier.SKILL,
                         usage=usage,
                     )
                     engine._log_request(t0, chat_id, "skill", usage, len(messages))
                     return
 
-                if routing.tier == "instant":
+                if routing.tier is RoutingTier.INSTANT:
                     instant = routing.instant
                     if instant is None:
                         raise RuntimeError("routing_decision_invalid: missing instant")
                     await engine._persist_turn(chat_id, text, instant.response)
                     turn_persisted = True
-                    engine._set_stream_meta(chat_id, tier="instant")
+                    engine._set_stream_meta(chat_id, tier=RoutingTier.INSTANT)
                     engine._log_request(t0, chat_id, "instant", None, 0, rule=instant.rule_name)
                     yield instant.response
                     return
 
-                if routing.tier == "cache":
+                if routing.tier is RoutingTier.CACHE:
                     cached = routing.cached
                     if cached is None:
                         raise RuntimeError("routing_decision_invalid: missing cache")
@@ -186,7 +187,7 @@ class EngineStreamOrchestrator:
                     turn_persisted = True
                     engine._set_stream_meta(
                         chat_id,
-                        tier="cache",
+                        tier=RoutingTier.CACHE,
                         intent=routing.intent,
                         cache_id=cached.cache_id,
                     )
@@ -238,7 +239,7 @@ class EngineStreamOrchestrator:
                             ):
                                 engine._logger.warning(
                                     "stream_repeating_chunk_abort",
-                                    tier="full",
+                                    tier=RoutingTier.FULL,
                                     chat_id=chat_id,
                                     repeated_chunks=full_repeated_stream_chunk_count,
                                 )
@@ -254,14 +255,14 @@ class EngineStreamOrchestrator:
                     if full_response.strip():
                         engine._logger.warning(
                             "stream_interrupted_partial_response",
-                            tier="full",
+                            tier=RoutingTier.FULL,
                             chat_id=chat_id,
                             error=str(exc),
                         )
                     else:
                         engine._logger.warning(
                             "stream_failed_fallback_to_chat",
-                            tier="full",
+                            tier=RoutingTier.FULL,
                             chat_id=chat_id,
                             error=str(exc),
                         )
@@ -280,7 +281,7 @@ class EngineStreamOrchestrator:
                 if not full_response.strip() and stream_error is None:
                     engine._logger.warning(
                         "stream_empty_fallback_to_chat",
-                        tier="full",
+                        tier=RoutingTier.FULL,
                         chat_id=chat_id,
                     )
                     chat_response = await engine._llm_client.chat(
@@ -311,7 +312,7 @@ class EngineStreamOrchestrator:
 
                 engine._set_stream_meta(
                     chat_id,
-                    tier="full",
+                    tier=RoutingTier.FULL,
                     intent=routing.intent,
                     cache_id=cache_id,
                     usage=usage,

@@ -10,6 +10,7 @@ import re
 from typing import Any
 
 from core.dft_index import DFTIndex
+from core.enums import DFTIntent
 from core.logging_setup import get_logger
 from core.orca_parser import HARTREE_TO_KCALMOL
 
@@ -17,23 +18,23 @@ from core.orca_parser import HARTREE_TO_KCALMOL
 # 의도 인식 패턴
 # ---------------------------------------------------------------------------
 
-_INTENT_PATTERNS: list[tuple[re.Pattern, str]] = [
+_INTENT_PATTERNS: list[tuple[re.Pattern, DFTIntent]] = [
     # 통계/현황
-    (re.compile(r"통계|현황|summary|stats|몇\s*개|얼마나|전체", re.IGNORECASE), "stats"),
+    (re.compile(r"통계|현황|summary|stats|몇\s*개|얼마나|전체", re.IGNORECASE), DFTIntent.STATS),
     # 실패한 계산
-    (re.compile(r"실패|fail|수렴.{0,4}안|not.*converg|error", re.IGNORECASE), "failed"),
+    (re.compile(r"실패|fail|수렴.{0,4}안|not.*converg|error", re.IGNORECASE), DFTIntent.FAILED),
     # 에너지 비교 / 상대 에너지
-    (re.compile(r"비교|compare|상대\s*에너지|relative", re.IGNORECASE), "compare"),
+    (re.compile(r"비교|compare|상대\s*에너지|relative", re.IGNORECASE), DFTIntent.COMPARE),
     # 에너지 낮은 구조
-    (re.compile(r"에너지.{0,8}낮|lowest.*energy|가장.{0,6}안정|most\s*stable|minimum", re.IGNORECASE), "lowest_energy"),
+    (re.compile(r"에너지.{0,8}낮|lowest.*energy|가장.{0,6}안정|most\s*stable|minimum", re.IGNORECASE), DFTIntent.LOWEST_ENERGY),
     # 최근 계산
-    (re.compile(r"최근|recent|마지막|latest|새로운|new", re.IGNORECASE), "recent"),
+    (re.compile(r"최근|recent|마지막|latest|새로운|new", re.IGNORECASE), DFTIntent.RECENT),
     # imaginary frequency
-    (re.compile(r"imaginary|음의\s*주파수|허수|im.*freq", re.IGNORECASE), "imaginary_freq"),
+    (re.compile(r"imaginary|음의\s*주파수|허수|im.*freq", re.IGNORECASE), DFTIntent.IMAGINARY_FREQ),
     # calc_type 필터
-    (re.compile(r"\bfreq\b|진동|vibra|주파수", re.IGNORECASE), "by_calctype_freq"),
-    (re.compile(r"\bopt\b|최적화|구조\s*최적|geometry\s*opt", re.IGNORECASE), "by_calctype_opt"),
-    (re.compile(r"\bts\b|전이\s*상태|transition\s*state|saddle", re.IGNORECASE), "by_calctype_ts"),
+    (re.compile(r"\bfreq\b|진동|vibra|주파수", re.IGNORECASE), DFTIntent.BY_CALCTYPE_FREQ),
+    (re.compile(r"\bopt\b|최적화|구조\s*최적|geometry\s*opt", re.IGNORECASE), DFTIntent.BY_CALCTYPE_OPT),
+    (re.compile(r"\bts\b|전이\s*상태|transition\s*state|saddle", re.IGNORECASE), DFTIntent.BY_CALCTYPE_TS),
 ]
 
 # 메서드 추출 패턴 — 한국어 조사(로, 을, 의 등) 바로 뒤에서도 매칭되도록
@@ -99,31 +100,31 @@ class DFTQueryEngine:
         )
 
         try:
-            if intent == "stats":
+            if intent is DFTIntent.STATS:
                 return await self._format_stats()
-            if intent == "failed":
+            if intent is DFTIntent.FAILED:
                 return await self._format_query_results(
                     await self._index.query({"status": "failed", "limit": 20}),
                     title="실패한 DFT 계산",
                 )
-            if intent == "compare":
+            if intent is DFTIntent.COMPARE:
                 return await self._format_comparison(formula=formula, method=method)
-            if intent == "lowest_energy":
+            if intent is DFTIntent.LOWEST_ENERGY:
                 return await self._format_query_results(
                     await self._index.get_lowest_energy(formula=formula, limit=10),
                     title="에너지가 낮은 계산 결과",
                 )
-            if intent == "recent":
+            if intent is DFTIntent.RECENT:
                 return await self._format_query_results(
                     await self._index.get_recent(limit=10),
                     title="최근 DFT 계산",
                 )
-            if intent == "imaginary_freq":
+            if intent is DFTIntent.IMAGINARY_FREQ:
                 return await self._format_query_results(
                     await self._index.query({"has_imaginary_freq": True, "limit": 20}),
                     title="Imaginary frequency가 있는 계산",
                 )
-            if intent == "by_calctype_freq":
+            if intent is DFTIntent.BY_CALCTYPE_FREQ:
                 filters: dict[str, Any] = {"calc_type": "freq", "limit": 20}
                 if formula:
                     filters["formula"] = formula
@@ -132,7 +133,7 @@ class DFTQueryEngine:
                     filters["calc_type"] = "opt+freq"
                     results = await self._index.query(filters)
                 return await self._format_query_results(results, title="Frequency 계산")
-            if intent == "by_calctype_opt":
+            if intent is DFTIntent.BY_CALCTYPE_OPT:
                 filters = {"calc_type": "opt", "limit": 20}
                 if formula:
                     filters["formula"] = formula
@@ -141,7 +142,7 @@ class DFTQueryEngine:
                     filters["calc_type"] = "opt+freq"
                     results = await self._index.query(filters)
                 return await self._format_query_results(results, title="최적화 계산")
-            if intent == "by_calctype_ts":
+            if intent is DFTIntent.BY_CALCTYPE_TS:
                 filters = {"calc_type": "ts", "limit": 20}
                 results = await self._index.query(filters)
                 if not results:
@@ -178,11 +179,11 @@ class DFTQueryEngine:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _detect_intent(text: str) -> str:
+    def _detect_intent(text: str) -> DFTIntent:
         for pattern, intent in _INTENT_PATTERNS:
             if pattern.search(text):
                 return intent
-        return "general"
+        return DFTIntent.GENERAL
 
     @staticmethod
     def _extract_method(text: str) -> str | None:

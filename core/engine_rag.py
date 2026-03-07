@@ -6,22 +6,23 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
+from core.constants import (
+    FULL_SCAN_FINAL_MAX_TOKENS,
+    FULL_SCAN_MAP_MAX_TOKENS,
+    FULL_SCAN_PROGRESS_EVERY_SEGMENTS,
+    FULL_SCAN_REDUCE_GROUP_MAX_CHARS,
+    FULL_SCAN_REDUCE_MAX_PASSES,
+    FULL_SCAN_REDUCE_MAX_TOKENS,
+    FULL_SCAN_SEGMENT_MAX_CHARS,
+    REASONING_TIMEOUT_SECONDS,
+    SUMMARY_MAP_TIMEOUT_SECONDS,
+    SUMMARY_REDUCE_TIMEOUT_SECONDS,
+)
 from core.text_utils import sanitize_model_output
 
 if TYPE_CHECKING:
     from core.engine import Engine
     from core.intent_router import ContextStrategy
-
-_SUMMARY_MAP_TIMEOUT_SECONDS = 180
-_SUMMARY_REDUCE_TIMEOUT_SECONDS = 600
-_REASONING_TIMEOUT_SECONDS = 3600
-_FULL_SCAN_SEGMENT_MAX_CHARS = 12_000
-_FULL_SCAN_MAP_MAX_TOKENS = 384
-_FULL_SCAN_REDUCE_MAX_TOKENS = 768
-_FULL_SCAN_FINAL_MAX_TOKENS = 1600
-_FULL_SCAN_PROGRESS_EVERY_SEGMENTS = 10
-_FULL_SCAN_REDUCE_GROUP_MAX_CHARS = 12_000
-_FULL_SCAN_REDUCE_MAX_PASSES = 6
 
 
 async def emit_full_scan_progress(
@@ -173,7 +174,11 @@ async def prepare_full_request(
     strategy: ContextStrategy | None,
     stream: bool,
 ) -> dict[str, Any]:
-    """Tier 4(full LLM) 요청 준비를 공통 처리한다."""
+    """Tier 4(full LLM) 요청 준비를 공통 처리한다.
+
+    컨텍스트 빌드, RAG 실행, ContextProvider 주입, 모델 선택, 타임아웃 계산을
+    통합 처리하여 LLM 호출에 필요한 messages/timeout/max_tokens/target_model을 반환한다.
+    """
     target_model = model_override or engine._config.lemonade.default_model
     rag_result = None
 
@@ -323,7 +328,7 @@ async def analyze_all_corpus(
 
     segments = build_full_scan_segments(
         chunks,
-        max_chars=_FULL_SCAN_SEGMENT_MAX_CHARS,
+        max_chars=FULL_SCAN_SEGMENT_MAX_CHARS,
         segment_factory=lambda **kwargs: kwargs,
     )
     total_segments = len(segments)
@@ -337,9 +342,9 @@ async def analyze_all_corpus(
         },
     )
 
-    map_timeout = max(int(engine._config.bot.response_timeout), _SUMMARY_MAP_TIMEOUT_SECONDS)
-    reduce_timeout = max(int(engine._config.bot.response_timeout), _SUMMARY_REDUCE_TIMEOUT_SECONDS)
-    final_timeout = max(int(engine._config.bot.response_timeout), _REASONING_TIMEOUT_SECONDS)
+    map_timeout = max(int(engine._config.bot.response_timeout), SUMMARY_MAP_TIMEOUT_SECONDS)
+    reduce_timeout = max(int(engine._config.bot.response_timeout), SUMMARY_REDUCE_TIMEOUT_SECONDS)
+    final_timeout = max(int(engine._config.bot.response_timeout), REASONING_TIMEOUT_SECONDS)
 
     map_model_candidate = engine._resolve_model_for_role("low_cost")
     if map_model_candidate is None:
@@ -394,7 +399,7 @@ async def analyze_all_corpus(
                 ],
                 model=map_model,
                 timeout=map_timeout,
-                max_tokens=_FULL_SCAN_MAP_MAX_TOKENS,
+                max_tokens=FULL_SCAN_MAP_MAX_TOKENS,
                 temperature=0.0,
                 response_format="json",
             )
@@ -432,7 +437,7 @@ async def analyze_all_corpus(
         if (
             index == 1
             or index == total_segments
-            or index % _FULL_SCAN_PROGRESS_EVERY_SEGMENTS == 0
+            or index % FULL_SCAN_PROGRESS_EVERY_SEGMENTS == 0
         ):
             await emit_full_scan_progress(
                 progress_callback,
@@ -463,10 +468,10 @@ async def analyze_all_corpus(
 
     reduced_blocks = list(evidence_lines)
     reduce_pass = 0
-    while reduce_pass < _FULL_SCAN_REDUCE_MAX_PASSES:
+    while reduce_pass < FULL_SCAN_REDUCE_MAX_PASSES:
         groups = pack_blocks_for_reduction(
             reduced_blocks,
-            max_chars=_FULL_SCAN_REDUCE_GROUP_MAX_CHARS,
+            max_chars=FULL_SCAN_REDUCE_GROUP_MAX_CHARS,
         )
         if len(groups) <= 1:
             reduced_blocks = groups
@@ -507,7 +512,7 @@ async def analyze_all_corpus(
                     ],
                     model=reduce_model,
                     timeout=reduce_timeout,
-                    max_tokens=_FULL_SCAN_REDUCE_MAX_TOKENS,
+                    max_tokens=FULL_SCAN_REDUCE_MAX_TOKENS,
                     temperature=0.0,
                 )
             except Exception as exc:
@@ -554,7 +559,7 @@ async def analyze_all_corpus(
         ],
         model=final_model,
         timeout=final_timeout,
-        max_tokens=_FULL_SCAN_FINAL_MAX_TOKENS,
+        max_tokens=FULL_SCAN_FINAL_MAX_TOKENS,
         temperature=0.0,
     )
     answer = sanitize_model_output(final_resp.content).strip()

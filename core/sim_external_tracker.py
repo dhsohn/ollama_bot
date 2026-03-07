@@ -280,6 +280,7 @@ class SimExternalTracker:
         return cli.startswith("delegated:")
 
     async def list_tracked_delegated_jobs(self) -> list[dict[str, Any]]:
+        """큐에서 추적 중인 위임(delegated) 실행 작업 목록을 반환한다."""
         return [
             job
             for job in await self._store.get_jobs_by_status("running")
@@ -524,6 +525,7 @@ class SimExternalTracker:
         notify_completed: NotifyJobCompleted,
         notify_failed: NotifyJobFailed,
     ) -> None:
+        """위임 작업의 프로세스 상태를 점검하고 완료/실패 시 콜백을 호출한다."""
         tracked_jobs = await self.list_tracked_delegated_jobs()
         if not tracked_jobs:
             return
@@ -602,6 +604,7 @@ class SimExternalTracker:
             await notify_completed(job)
 
     async def external_running_snapshot(self) -> ExternalRunningSnapshot:
+        """외부 실행 중인 작업의 집계 스냅샷을 반환한다."""
         tracked_external_jobs = await self.list_tracked_delegated_jobs()
         tracked_external_pids = {
             pid

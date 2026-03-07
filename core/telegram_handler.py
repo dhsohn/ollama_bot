@@ -181,6 +181,11 @@ class TelegramHandler:
         return commands
 
     async def initialize(self) -> Application:
+        """텔레그램 Application을 생성하고 핸들러를 등록한다.
+
+        Returns:
+            초기화된 telegram.ext.Application 인스턴스.
+        """
         self._app = ApplicationBuilder().token(self._config.telegram_bot_token).build()
 
         for handler in self._build_command_handlers():
@@ -281,6 +286,7 @@ class TelegramHandler:
     @_auth_required
     @_global_slot_required
     async def _handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """자유 텍스트/이미지 메시지를 수신하여 엔진에 전달하고 스트리밍 응답을 반환한다."""
         await telegram_messages.handle_message(self, update, context)
 
     async def _handle_message_impl(
@@ -292,6 +298,7 @@ class TelegramHandler:
         force_continuation: bool = False,
         auto_continuation_turn: int = 0,
     ) -> None:
+        """메시지 처리 핵심 구현. 스트리밍·폴백·자동 이어보기를 처리한다."""
         await telegram_messages.handle_message_impl(
             self,
             update,
@@ -490,6 +497,7 @@ class TelegramHandler:
         text: str,
         parse_mode: str | None = None,
     ) -> None:
+        """지정 채팅에 메시지를 전송한다. 긴 메시지는 자동 분할된다."""
         if self._app is None:
             raise RuntimeError("TelegramHandler가 아직 초기화되지 않았습니다.")
         for part in self._split_message(text):
