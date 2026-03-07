@@ -385,6 +385,42 @@ async def test_state_file_normalizes_path_aliases_across_restart(tmp_path: Path)
     assert await monitor_real() == ""
 
 
+@pytest.mark.asyncio
+async def test_running_dedup_when_mtime_changes_between_scans(tmp_path: Path) -> None:
+    """external_dirs가 kb_dirs의 하위 디렉토리일 때, 파일 mtime이 스캔 도중 변해도 1건만 보고한다."""
+    kb_dir = tmp_path / "orca_runs"
+    sub_dir = kb_dir / "products"
+    sub_dir.mkdir(parents=True)
+
+    out_file = sub_dir / "products.out"
+    out_file.write_text(_RUNNING_OPT_OUT, encoding="utf-8")
+    (sub_dir / "run_state.json").write_text('{"status": "running"}', encoding="utf-8")
+
+    state_file = tmp_path / "automation" / "state.json"
+    dft_index = AsyncMock()
+    dft_index.upsert_single = AsyncMock(return_value=True)
+    logger = MagicMock()
+
+    # external_dirs가 kb_dir의 하위 디렉토리를 반환 (겹치는 디렉토리)
+    monitor = build_dft_monitor_callable(
+        dft_index=dft_index,
+        kb_dirs=[str(kb_dir)],
+        logger=logger,
+        state_file=str(state_file),
+        get_external_dirs=AsyncMock(return_value=[str(sub_dir)]),
+    )
+
+    await monitor()  # baseline
+
+    out_file.write_text(_RUNNING_OPT_OUT + "\n# changed\n", encoding="utf-8")
+    mtime = os.path.getmtime(out_file)
+    os.utime(out_file, (mtime + 5.0, mtime + 5.0))
+
+    result = await monitor()
+    assert "RUNNING Progress: 1건의 진행 중인 계산" in result
+    assert result.count("OPT Progress") == 1
+
+
 # ---------------------------------------------------------------------------
 # LLM 한줄 해석 테스트
 # ---------------------------------------------------------------------------

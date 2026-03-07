@@ -125,6 +125,7 @@ def build_dft_monitor_callable(
         max_bytes = max_file_size_mb * 1024 * 1024
         new_results: list[dict[str, str]] = []
         scanned_mtimes: dict[str, float] = {}
+        processed_this_scan: set[str] = set()
         orca_scanned_paths: set[str] = set()
         state_dirty = False
         missing_kb_dirs: list[str] = []
@@ -194,6 +195,11 @@ def build_dft_monitor_callable(
                 last_mtime = _last_mtimes.get(canonical_spath)
                 if last_mtime is not None and current_mtime <= last_mtime:
                     continue
+
+                # 같은 스캔에서 이미 처리한 파일 (겹치는 디렉토리 대비)
+                if canonical_spath in processed_this_scan:
+                    continue
+                processed_this_scan.add(canonical_spath)
 
                 # 새 파일 또는 변경된 파일 발견
                 try:
@@ -324,6 +330,10 @@ def build_dft_monitor_callable(
                 last_mtime = _last_mtimes.get(canonical_spath)
                 if last_mtime is not None and current_mtime <= last_mtime:
                     continue
+
+                if canonical_spath in processed_this_scan:
+                    continue
+                processed_this_scan.add(canonical_spath)
 
                 try:
                     cresult = parse_crest_output(spath)
