@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from core.config import SimQueueConfig, SimToolConfig
+from core.sim_external_tracker import SimExternalTracker
 from core.sim_job_store import SimJob, SimJobStore
 from core.sim_resource_manager import ResourceManager
 from core.sim_scheduler import SimJobScheduler
@@ -220,6 +221,110 @@ async def test_detects_external_running_jobs_from_process_table(
         assert "--reaction-dir /tmp/STRUC1" in jobs[0]["cli_command"]
         assert jobs[1]["job_id"] == "ext-1002"
         assert jobs[1]["tool"] == "crest"
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_process_detection_skips_orca_auto_like_command_without_input(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = SimQueueConfig(
+        enabled=True,
+        tools={
+            "orca_auto": SimToolConfig(
+                enabled=True,
+                executable="./bin/orca_auto",
+                cli_template="{executable} run-inp --reaction-dir '{input_file}' > {output_file}",
+            ),
+        },
+    )
+    store = SimJobStore()
+    await store.initialize(str(tmp_path / "sim_jobs.db"))
+    resources = ResourceManager(max_concurrent=4)
+    scheduler = SimJobScheduler(config=config, store=store, resources=resources)
+
+    class _FakePsProcess:
+        returncode = 0
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            lines = [
+                f"{os.getpid()} 1 10 python -m apps.ollama_bot.main",
+                "1001 1 120 /home/test/orca_auto/.venv/bin/python3 -m background.worker",
+            ]
+            return "\n".join(lines).encode(), b""
+
+    async def _fake_create_subprocess_exec(*_args: object, **_kwargs: object) -> _FakePsProcess:
+        return _FakePsProcess()
+
+    monkeypatch.setattr(
+        "core.sim_external_tracker.asyncio.create_subprocess_exec",
+        _fake_create_subprocess_exec,
+    )
+    monkeypatch.setattr(SimExternalTracker, "_read_proc_cmdline", lambda _pid: "")
+    monkeypatch.setattr(SimExternalTracker, "_read_proc_cwd", lambda _pid: "")
+
+    try:
+        jobs = await scheduler.get_external_running_jobs()
+        assert jobs == []
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_process_detection_uses_proc_cmdline_when_ps_args_are_truncated(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = SimQueueConfig(
+        enabled=True,
+        tools={
+            "orca_auto": SimToolConfig(
+                enabled=True,
+                executable="./bin/orca_auto",
+                cli_template="{executable} run-inp --reaction-dir '{input_file}' > {output_file}",
+            ),
+        },
+    )
+    store = SimJobStore()
+    await store.initialize(str(tmp_path / "sim_jobs.db"))
+    resources = ResourceManager(max_concurrent=4)
+    scheduler = SimJobScheduler(config=config, store=store, resources=resources)
+
+    class _FakePsProcess:
+        returncode = 0
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            lines = [
+                f"{os.getpid()} 1 10 python -m apps.ollama_bot.main",
+                "1001 1 120 /home/test/orca_auto/.venv/bin/python3 -m core.cli run-inp",
+            ]
+            return "\n".join(lines).encode(), b""
+
+    async def _fake_create_subprocess_exec(*_args: object, **_kwargs: object) -> _FakePsProcess:
+        return _FakePsProcess()
+
+    monkeypatch.setattr(
+        "core.sim_external_tracker.asyncio.create_subprocess_exec",
+        _fake_create_subprocess_exec,
+    )
+    monkeypatch.setattr(
+        SimExternalTracker,
+        "_read_proc_cmdline",
+        lambda _pid: (
+            "/home/test/orca_auto/.venv/bin/python3 -m core.cli "
+            "run-inp --reaction-dir /tmp/STRUC_FALLBACK"
+        ),
+    )
+    monkeypatch.setattr(SimExternalTracker, "_read_proc_cwd", lambda _pid: "")
+
+    try:
+        jobs = await scheduler.get_external_running_jobs()
+        assert len(jobs) == 1
+        assert jobs[0]["job_id"] == "ext-1001"
+        assert jobs[0]["tool"] == "orca_auto"
+        assert jobs[0]["input_file"] == "/tmp/STRUC_FALLBACK"
     finally:
         await store.close()
 

@@ -125,6 +125,7 @@ def build_dft_monitor_callable(
         max_bytes = max_file_size_mb * 1024 * 1024
         new_results: list[dict[str, str]] = []
         scanned_mtimes: dict[str, float] = {}
+        orca_scanned_paths: set[str] = set()
         state_dirty = False
         missing_kb_dirs: list[str] = []
         started_at = time.monotonic()
@@ -181,14 +182,16 @@ def build_dft_monitor_callable(
                 recent_completed_window_minutes=recent_completed_window_minutes,
             ):
                 spath = str(fpath)
+                canonical_spath = _canonical_path_key(spath)
                 current_mtime = os.path.getmtime(spath)
-                scanned_mtimes[spath] = current_mtime
+                scanned_mtimes[canonical_spath] = current_mtime
+                orca_scanned_paths.add(spath)
 
                 # 첫 실행(기존 상태파일 없음)에서는 baseline만 채우고 알림하지 않는다.
                 if not _baseline_seeded:
                     continue
 
-                last_mtime = _last_mtimes.get(spath)
+                last_mtime = _last_mtimes.get(canonical_spath)
                 if last_mtime is not None and current_mtime <= last_mtime:
                     continue
 
@@ -202,6 +205,7 @@ def build_dft_monitor_callable(
                         try:
                             opt_prog = parse_opt_progress(spath)
                             if opt_prog.steps:
+                                opt_prog.source_path = canonical_spath
                                 progress_text = _format_opt_progress(opt_prog)
                                 if progress_text:
                                     # LLM 한줄 해석 시도
@@ -224,12 +228,12 @@ def build_dft_monitor_callable(
 
                         # OPT step 파싱 불가(또는 비-OPT 타입) 시 요약 스냅샷 + AI 코멘트
                         if not progress_text:
-                            progress_text = _format_running_snapshot(result, spath)
+                            progress_text = _format_running_snapshot(result, canonical_spath)
                             ai_timeout = _resolve_ai_comment_timeout()
                             ai_comment = ""
                             if ai_timeout is not None:
                                 ai_comment = await _get_ai_comment_for_running(
-                                    result, spath, engine, model, model_role,
+                                    result, canonical_spath, engine, model, model_role,
                                     temperature, max_tokens, logger,
                                     timeout_seconds=ai_timeout,
                                 )
@@ -242,13 +246,13 @@ def build_dft_monitor_callable(
                             })
 
                         # running 계산은 인덱스에 upsert하지 않음
-                        _last_mtimes[spath] = current_mtime
+                        _last_mtimes[canonical_spath] = current_mtime
                         state_dirty = True
                         continue
 
                     success = await dft_index.upsert_single(spath)
                     if success:
-                        _last_mtimes[spath] = current_mtime
+                        _last_mtimes[canonical_spath] = current_mtime
                         state_dirty = True
 
                         # 알림 정보 수집
@@ -281,7 +285,7 @@ def build_dft_monitor_callable(
                             "energy": energy_str,
                             "status": status_emoji,
                             "calc_type": result.calc_type,
-                            "path": _short_path(spath),
+                            "path": _short_path(canonical_spath),
                             "note": note_str,
                         })
 
@@ -300,30 +304,31 @@ def build_dft_monitor_callable(
                     )
 
             # CREST 스캔 (ORCA와 중복 제외)
-            orca_scanned = set(scanned_mtimes.keys())
             for fpath in discover_crest_targets(
                 kb_path,
                 max_bytes=max_bytes,
                 logger=logger,
-                exclude_paths=orca_scanned,
+                exclude_paths=orca_scanned_paths,
             ):
                 spath = str(fpath)
+                canonical_spath = _canonical_path_key(spath)
                 try:
                     current_mtime = os.path.getmtime(spath)
                 except OSError:
                     continue
-                scanned_mtimes[spath] = current_mtime
+                scanned_mtimes[canonical_spath] = current_mtime
 
                 if not _baseline_seeded:
                     continue
 
-                last_mtime = _last_mtimes.get(spath)
+                last_mtime = _last_mtimes.get(canonical_spath)
                 if last_mtime is not None and current_mtime <= last_mtime:
                     continue
 
                 try:
                     cresult = parse_crest_output(spath)
-                    _last_mtimes[spath] = current_mtime
+                    cresult.source_path = canonical_spath
+                    _last_mtimes[canonical_spath] = current_mtime
                     state_dirty = True
 
                     if cresult.status == "running":
@@ -726,6 +731,14 @@ def _short_path(path: str) -> str:
     return "/".join(parts[-3:])
 
 
+def _canonical_path_key(path: str | Path) -> str:
+    """같은 파일의 경로 alias를 하나의 canonical key로 정규화한다."""
+    try:
+        return str(Path(path).expanduser().resolve(strict=False))
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return str(Path(path).expanduser().absolute())
+
+
 def _load_state(state_file: str | None, logger: Any) -> dict[str, float]:
     """디스크에 저장된 dft_monitor 상태를 로드한다."""
     if not state_file:
@@ -739,9 +752,13 @@ def _load_state(state_file: str | None, logger: Any) -> dict[str, float]:
         for k, v in raw.items():
             if isinstance(k, str):
                 try:
-                    state[k] = float(v)
+                    normalized_key = _canonical_path_key(k)
+                    value = float(v)
                 except (TypeError, ValueError):
                     continue
+                previous = state.get(normalized_key)
+                if previous is None or value > previous:
+                    state[normalized_key] = value
         return state
     except FileNotFoundError:
         return {}

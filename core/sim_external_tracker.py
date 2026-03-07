@@ -90,10 +90,85 @@ class SimExternalTracker:
             match = pattern.search(command)
             if not match:
                 continue
-            value = match.group("value").strip().strip("'\"")
+            value = cls._normalize_input_hint(match.group("value"))
             if value:
                 return value
-        return "-"
+        return ""
+
+    @staticmethod
+    def _normalize_input_hint(value: Any) -> str:
+        text = str(value or "").strip().strip("'\"")
+        if not text:
+            return ""
+        if text.startswith("~"):
+            return str(Path(text).expanduser())
+        if text.startswith("/"):
+            try:
+                return str(Path(text).resolve(strict=False))
+            except OSError:
+                return text
+        return text
+
+    @staticmethod
+    def _read_proc_cmdline(pid: int) -> str:
+        if pid <= 0:
+            return ""
+        try:
+            raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+        except OSError:
+            return ""
+        if not raw:
+            return ""
+        parts = [
+            chunk.decode("utf-8", errors="ignore").strip()
+            for chunk in raw.split(b"\0")
+            if chunk
+        ]
+        return " ".join(part for part in parts if part)
+
+    @staticmethod
+    def _read_proc_cwd(pid: int) -> str:
+        if pid <= 0:
+            return ""
+        try:
+            cwd = Path(f"/proc/{pid}/cwd").resolve(strict=False)
+        except OSError:
+            return ""
+        if not cwd.is_dir():
+            return ""
+        return str(cwd)
+
+    @staticmethod
+    def _looks_like_simulation_dir(path_raw: str) -> bool:
+        if not path_raw:
+            return False
+        path = Path(path_raw).expanduser()
+        if not path.is_dir():
+            return False
+        for marker in ("run_state.json", "run.lock", "crest_best.xyz", "crest_conformers.xyz"):
+            if (path / marker).exists():
+                return True
+        for pattern in ("*.inp", "*.xyz", "*.coord", "*.out"):
+            if next(path.glob(pattern), None) is not None:
+                return True
+        return False
+
+    @classmethod
+    def _resolve_process_input_hint(cls, pid: int, command: str) -> str:
+        input_hint = cls._extract_input_hint(command)
+        if input_hint:
+            return input_hint
+
+        cmdline = cls._read_proc_cmdline(pid)
+        if cmdline:
+            input_hint = cls._extract_input_hint(cmdline)
+            if input_hint:
+                return input_hint
+
+        cwd = cls._read_proc_cwd(pid)
+        if cls._looks_like_simulation_dir(cwd):
+            return cwd
+        return ""
 
     @staticmethod
     def _resolve_scan_root(raw_path: str) -> Path:
@@ -619,8 +694,16 @@ class SimExternalTracker:
                         if tool_name is None:
                             continue
 
+                        input_hint = self._resolve_process_input_hint(pid, command)
+                        if not input_hint:
+                            self._logger.debug(
+                                "sim_external_process_skipped_missing_input",
+                                pid=pid,
+                                tool=tool_name,
+                            )
+                            continue
+
                         seen_external_pids.add(pid)
-                        input_hint = self._extract_input_hint(command)
                         external_jobs.append(
                             {
                                 "job_id": f"ext-{pid}",

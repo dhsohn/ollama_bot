@@ -313,6 +313,78 @@ async def test_completed_and_running_mixed(tmp_path: Path) -> None:
     assert "RUNNING Progress: 1건의 진행 중인 계산" in result
 
 
+@pytest.mark.asyncio
+async def test_running_progress_deduplicates_symlink_alias_paths(tmp_path: Path) -> None:
+    """같은 output을 alias 경로와 실제 경로로 동시에 스캔해도 1건만 표시한다."""
+    kb_dir = tmp_path / "kb"
+    run_dir = kb_dir / "run_dir"
+    run_dir.mkdir(parents=True)
+    alias_dir = tmp_path / "run_alias"
+    alias_dir.symlink_to(run_dir, target_is_directory=True)
+
+    out_file = run_dir / "running.out"
+    out_file.write_text(_RUNNING_OPT_OUT, encoding="utf-8")
+    (run_dir / "run_state.json").write_text('{"status": "running"}', encoding="utf-8")
+
+    state_file = tmp_path / "automation" / "state.json"
+    dft_index = AsyncMock()
+    dft_index.upsert_single = AsyncMock(return_value=True)
+    logger = MagicMock()
+
+    monitor = build_dft_monitor_callable(
+        dft_index=dft_index,
+        kb_dirs=[str(kb_dir)],
+        logger=logger,
+        state_file=str(state_file),
+        get_external_dirs=AsyncMock(return_value=[str(alias_dir)]),
+    )
+
+    await monitor()  # baseline
+
+    out_file.write_text(_RUNNING_OPT_OUT + "\n# changed\n", encoding="utf-8")
+    mtime = os.path.getmtime(out_file)
+    os.utime(out_file, (mtime + 5.0, mtime + 5.0))
+
+    result = await monitor()
+    assert "RUNNING Progress: 1건의 진행 중인 계산" in result
+    assert result.count("OPT Progress") == 1
+
+
+@pytest.mark.asyncio
+async def test_state_file_normalizes_path_aliases_across_restart(tmp_path: Path) -> None:
+    """이전 실행이 alias 경로를 저장했어도 재시작 후 실제 경로를 중복 새 계산으로 보지 않는다."""
+    kb_dir = tmp_path / "kb"
+    run_dir = kb_dir / "run_dir"
+    run_dir.mkdir(parents=True)
+    alias_dir = tmp_path / "run_alias"
+    alias_dir.symlink_to(run_dir, target_is_directory=True)
+
+    out_file = run_dir / "running.out"
+    out_file.write_text(_RUNNING_OPT_OUT, encoding="utf-8")
+    (run_dir / "run_state.json").write_text('{"status": "running"}', encoding="utf-8")
+
+    state_file = tmp_path / "automation" / "state.json"
+    dft_index = AsyncMock()
+    dft_index.upsert_single = AsyncMock(return_value=True)
+    logger = MagicMock()
+
+    monitor_alias = build_dft_monitor_callable(
+        dft_index=dft_index,
+        kb_dirs=[str(alias_dir)],
+        logger=logger,
+        state_file=str(state_file),
+    )
+    assert await monitor_alias() == ""
+
+    monitor_real = build_dft_monitor_callable(
+        dft_index=dft_index,
+        kb_dirs=[str(run_dir)],
+        logger=logger,
+        state_file=str(state_file),
+    )
+    assert await monitor_real() == ""
+
+
 # ---------------------------------------------------------------------------
 # LLM 한줄 해석 테스트
 # ---------------------------------------------------------------------------
