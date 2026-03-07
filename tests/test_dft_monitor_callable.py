@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 from pathlib import Path
@@ -11,8 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from core.automation_callables_impl.dft_monitor import (
-    _extract_comment,
-    _is_thinking_line,
+    _rule_based_comment,
     build_dft_monitor_callable,
 )
 
@@ -79,7 +77,7 @@ async def test_baseline_seed_prevents_restart_spam(tmp_path: Path) -> None:
     os.utime(out_file, (mtime + 5.0, mtime + 5.0))
 
     third_result = await monitor_2()
-    assert "DFT Monitor: 1건의 새 계산 감지" in third_result
+    assert "DFT Monitor: 1건의 계산 업데이트" in third_result
     assert "✅" in third_result
     assert "<b>" in third_result
     assert "<pre>" in third_result
@@ -131,7 +129,7 @@ async def test_detects_run_state_only_output_update(tmp_path: Path) -> None:
     os.utime(out_file, (mtime + 5.0, mtime + 5.0))
 
     result = await monitor()
-    assert "DFT Monitor: 1건의 새 계산 감지" in result
+    assert "DFT Monitor: 1건의 계산 업데이트" in result
     assert "input.out" in result
     dft_index.upsert_single.assert_awaited_once_with(str(out_file))
 
@@ -175,23 +173,6 @@ _RUNNING_OPT_OUT = "\n".join([
     "RMS step            0.004000  2.0000e-03    NO",
 ])
 
-
-def _build_running_special_out(calc_keyword: str) -> str:
-    """OPT step 테이블 없이 running 상태를 만들기 위한 ORCA 출력 템플릿."""
-    return "\n".join([
-        f"! B3LYP def2-SVP {calc_keyword}",
-        "* xyz 0 1",
-        "C 0.0 0.0 0.0",
-        "H 0.0 0.0 1.0",
-        "*",
-        "",
-        "CARTESIAN COORDINATES (ANGSTROEM)",
-        "----------------------------",
-        " C    0.000000    0.000000    0.000000",
-        " H    0.000000    0.000000    1.000000",
-        "",
-        "FINAL SINGLE POINT ENERGY      -100.200000000",
-    ])
 
 
 @pytest.mark.asyncio
@@ -309,7 +290,7 @@ async def test_completed_and_running_mixed(tmp_path: Path) -> None:
     os.utime(running_file, (mtime_r + 5.0, mtime_r + 5.0))
 
     result = await monitor()
-    assert "DFT Monitor: 1건의 새 계산 감지" in result
+    assert "DFT Monitor: 1건의 계산 업데이트" in result
     assert "RUNNING Progress: 1건의 진행 중인 계산" in result
 
 
@@ -422,13 +403,13 @@ async def test_running_dedup_when_mtime_changes_between_scans(tmp_path: Path) ->
 
 
 # ---------------------------------------------------------------------------
-# LLM 한줄 해석 테스트
+# 규칙 기반 코멘트 테스트
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_ai_comment_included_when_engine_provided(tmp_path: Path) -> None:
-    """engine이 있으면 AI 한줄 해석이 progress 알림에 포함된다."""
+async def test_rule_based_comment_in_progress_notification(tmp_path: Path) -> None:
+    """진행 중인 최적화 계산에 규칙 기반 코멘트가 포함된다."""
     kb_dir = tmp_path / "kb"
     kb_dir.mkdir(parents=True)
     out_file = kb_dir / "opt_run.out"
@@ -441,17 +422,11 @@ async def test_ai_comment_included_when_engine_provided(tmp_path: Path) -> None:
     dft_index.upsert_single = AsyncMock(return_value=True)
     logger = MagicMock()
 
-    mock_engine = AsyncMock()
-    mock_engine.process_prompt = AsyncMock(
-        return_value="에너지가 단조 감소 중이며 수렴에 근접하고 있습니다."
-    )
-
     monitor = build_dft_monitor_callable(
         dft_index=dft_index,
         kb_dirs=[str(kb_dir)],
         logger=logger,
         state_file=str(state_file),
-        engine=mock_engine,
     )
 
     # baseline
@@ -463,249 +438,76 @@ async def test_ai_comment_included_when_engine_provided(tmp_path: Path) -> None:
     os.utime(out_file, (mtime + 5.0, mtime + 5.0))
 
     result = await monitor()
-    assert "💬" in result
-    assert "<i>" in result
-    assert "에너지가 단조 감소" in result
-    mock_engine.process_prompt.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_ai_comment_graceful_on_engine_failure(tmp_path: Path) -> None:
-    """engine.process_prompt 실패 시에도 progress 알림은 정상 전송된다."""
-    kb_dir = tmp_path / "kb"
-    kb_dir.mkdir(parents=True)
-    out_file = kb_dir / "opt_run.out"
-    out_file.write_text(_RUNNING_OPT_OUT, encoding="utf-8")
-    (kb_dir / "run_state.json").write_text('{"status": "running"}', encoding="utf-8")
-
-    state_file = tmp_path / "automation" / "state.json"
-
-    dft_index = AsyncMock()
-    dft_index.upsert_single = AsyncMock(return_value=True)
-    logger = MagicMock()
-
-    mock_engine = AsyncMock()
-    mock_engine.process_prompt = AsyncMock(side_effect=RuntimeError("LLM unavailable"))
-
-    monitor = build_dft_monitor_callable(
-        dft_index=dft_index,
-        kb_dirs=[str(kb_dir)],
-        logger=logger,
-        state_file=str(state_file),
-        engine=mock_engine,
-    )
-
-    # baseline
-    await monitor()
-
-    # 파일 변경
-    out_file.write_text(_RUNNING_OPT_OUT + "\n# updated\n", encoding="utf-8")
-    mtime = os.path.getmtime(out_file)
-    os.utime(out_file, (mtime + 5.0, mtime + 5.0))
-
-    result = await monitor()
-    # AI 코멘트 없이 progress 테이블은 정상 출력
     assert "OPT Progress" in result
-    assert "Step" in result
-    assert "💬" not in result
-
-
-@pytest.mark.asyncio
-async def test_ai_comment_budget_prevents_global_timeout(tmp_path: Path) -> None:
-    """잡 timeout 예산이 작을 때 AI 코멘트를 제한해 전체 작업 timeout을 방지한다."""
-    kb_dir = tmp_path / "kb"
-    run_a = kb_dir / "run_a"
-    run_b = kb_dir / "run_b"
-    run_a.mkdir(parents=True)
-    run_b.mkdir(parents=True)
-
-    out_a = run_a / "opt_a.out"
-    out_b = run_b / "opt_b.out"
-    out_a.write_text(_RUNNING_OPT_OUT, encoding="utf-8")
-    out_b.write_text(_RUNNING_OPT_OUT, encoding="utf-8")
-    (run_a / "run_state.json").write_text('{"status": "running"}', encoding="utf-8")
-    (run_b / "run_state.json").write_text('{"status": "running"}', encoding="utf-8")
-
-    state_file = tmp_path / "automation" / "state.json"
-    dft_index = AsyncMock()
-    dft_index.upsert_single = AsyncMock(return_value=True)
-    logger = MagicMock()
-
-    async def _slow_comment(**kwargs: object) -> str:
-        _ = kwargs
-        await asyncio.sleep(10)
-        return "느린 응답"
-
-    mock_engine = AsyncMock()
-    mock_engine.process_prompt = AsyncMock(side_effect=_slow_comment)
-
-    monitor = build_dft_monitor_callable(
-        dft_index=dft_index,
-        kb_dirs=[str(kb_dir)],
-        logger=logger,
-        state_file=str(state_file),
-        engine=mock_engine,
-    )
-
-    await monitor()  # baseline
-
-    out_a.write_text(_RUNNING_OPT_OUT + "\n# updated\n", encoding="utf-8")
-    mtime_a = os.path.getmtime(out_a)
-    os.utime(out_a, (mtime_a + 5.0, mtime_a + 5.0))
-
-    out_b.write_text(_RUNNING_OPT_OUT + "\n# updated\n", encoding="utf-8")
-    mtime_b = os.path.getmtime(out_b)
-    os.utime(out_b, (mtime_b + 5.0, mtime_b + 5.0))
-
-    result = await asyncio.wait_for(monitor(timeout=17), timeout=18)
-    assert "RUNNING Progress: 2건의 진행 중인 계산" in result
-    assert "💬" not in result
-    assert mock_engine.process_prompt.await_count == 1
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("calc_keyword", "expected_calc_type"),
-    [
-        ("OPTTS", "ts"),
-        ("NEB", "neb"),
-        ("IRC", "irc"),
-    ],
-)
-async def test_running_ts_neb_irc_include_ai_comment(
-    tmp_path: Path,
-    calc_keyword: str,
-    expected_calc_type: str,
-) -> None:
-    """running TS/NEB/IRC 계산도 AI 한줄 코멘트를 포함해 알림한다."""
-    kb_dir = tmp_path / "kb"
-    kb_dir.mkdir(parents=True)
-    out_file = kb_dir / f"{expected_calc_type}_run.out"
-    out_file.write_text(_build_running_special_out(calc_keyword), encoding="utf-8")
-    (kb_dir / "run_state.json").write_text('{"status": "running"}', encoding="utf-8")
-
-    state_file = tmp_path / "automation" / "state.json"
-
-    dft_index = AsyncMock()
-    dft_index.upsert_single = AsyncMock(return_value=True)
-    logger = MagicMock()
-
-    mock_engine = AsyncMock()
-    mock_engine.process_prompt = AsyncMock(
-        return_value="진행 경향은 안정적이며 다음 스텝에서 수렴 여부를 확인하세요."
-    )
-
-    monitor = build_dft_monitor_callable(
-        dft_index=dft_index,
-        kb_dirs=[str(kb_dir)],
-        logger=logger,
-        state_file=str(state_file),
-        engine=mock_engine,
-    )
-
-    # baseline
-    await monitor()
-
-    # 파일 변경
-    out_file.write_text(
-        _build_running_special_out(calc_keyword) + "\n# updated\n",
-        encoding="utf-8",
-    )
-    mtime = os.path.getmtime(out_file)
-    os.utime(out_file, (mtime + 5.0, mtime + 5.0))
-
-    result = await monitor()
-    assert "RUNNING Progress" in result
-    assert expected_calc_type in result
     assert "💬" in result
     assert "<i>" in result
-    dft_index.upsert_single.assert_not_awaited()
-    mock_engine.process_prompt.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
-# _extract_comment 사고 과정 필터링 테스트
+# _rule_based_comment 단위 테스트
 # ---------------------------------------------------------------------------
 
-
-@pytest.mark.parametrize(
-    ("raw", "expected"),
-    [
-        # 정상 한줄 코멘트 → 그대로 반환
-        ("에너지가 단조 감소 중입니다.", "에너지가 단조 감소 중입니다."),
-        # 사고 과정 + 코멘트 → 사고 과정 건너뛰기
-        (
-            "분석: dE가 감소하고 있으므로\n에너지가 단조 감소 중입니다.",
-            "에너지가 단조 감소 중입니다.",
-        ),
-        # 여러 줄에서 사고 과정 제거 후 나머지 합침
-        (
-            "먼저 데이터를 살펴보면\n확인 결과\n수렴이 안정적으로 진행 중입니다.",
-            "수렴이 안정적으로 진행 중입니다.",
-        ),
-        # 영어 사고 과정 접두어
-        (
-            "Let me analyze the data.\nThe optimization is converging well.",
-            "The optimization is converging well.",
-        ),
-        # 빈 응답
-        ("", ""),
-        ("  \n  ", ""),
-        # 사고 과정만 있는 경우 → 빈 문자열 반환 (사고 유출 방지)
-        ("분석: 데이터 확인\n검토: 수렴 패턴", ""),
-        # 영어 메타 추론 유출 → 빈 문자열 반환
-        (
-            'The user says: "아래 ORCA" They want a comment in Korean.',
-            "",
-        ),
-        (
-            "We need to produce a comment based on the given data.\n"
-            "수렴이 안정적으로 진행 중입니다.",
-            "수렴이 안정적으로 진행 중입니다.",
-        ),
-        # 중국어 사고 과정 + 한국어 코멘트 → 사고 과정 건너뛰기
-        (
-            "首先分析一下数据\uFF0C能量在下降\n에너지가 안정적으로 수렴 중입니다.",
-            "에너지가 안정적으로 수렴 중입니다.",
-        ),
-        # 중국어 사고 과정만 → 빈 문자열
-        ("用户要求写一个韩语评论。根据数据来看计算正在进行。", ""),
-        # 긴 코멘트도 유지 (글자수 제한 없음)
-        ("A" * 201, "A" * 201),
-        # 정상 코멘트 → 유지
-        ("wB97X-D3/def2-TZVP 수준의 구조 최적화가 진행 중이며, 에너지가 안정화되고 있습니다.", "wB97X-D3/def2-TZVP 수준의 구조 최적화가 진행 중이며, 에너지가 안정화되고 있습니다."),
-    ],
-)
-def test_extract_comment_filters_thinking(raw: str, expected: str) -> None:
-    """_extract_comment가 사고 과정을 필터링하고 최종 코멘트를 추출한다."""
-    assert _extract_comment(raw) == expected
+from core.orca_parser import OptProgress, OptStep
 
 
 @pytest.mark.parametrize(
-    ("line", "expected"),
+    ("steps", "expected_fragments"),
     [
-        # 영어 메타 추론 감지
-        ('The user says: "코멘트를 작성하세요"', True),
-        ("They want a comment in Korean about the data.", True),
-        ("We need to produce a comment based on the given data.", True),
-        ("We don't know next check point from data.", True),
-        ("Probably just mention that the calculation is running.", True),
-        ("This seems to be missing data.", True),
-        # 중국어 사고 과정 접두어
-        ("首先分析一下数据", True),
-        ("让我看看这个计算结果", True),
-        ("用户要求写一个韩语评论", True),
-        ("我们需要根据数据生成评论", True),
-        ("根据给定的ORCA数据来看", True),
-        ("这意味着优化正在进行中", True),
-        # 한국어 사고 과정 접두어
-        ("분석: dE가 감소하고 있으므로", True),
-        ("먼저 데이터를 살펴보면", True),
-        # 정상 코멘트 → False
-        ("에너지가 단조 감소 중입니다.", False),
-        ("wB97X-D3 수준에서 구조 최적화가 진행 중입니다.", False),
+        # 빈 스텝 → 빈 문자열
+        ([], []),
+        # 에너지 감소 + 수렴 근접
+        (
+            [
+                OptStep(cycle=1, energy_hartree=-100.1, energy_change=-0.02, max_gradient=0.005,
+                        converged_flags={"Energy change": False, "MAX gradient": False, "RMS gradient": False, "MAX step": False, "RMS step": False}),
+                OptStep(cycle=2, energy_hartree=-100.12, energy_change=-0.01, max_gradient=0.001,
+                        converged_flags={"Energy change": False, "MAX gradient": False, "RMS gradient": False, "MAX step": False, "RMS step": False}),
+            ],
+            ["에너지 안정적 감소"],
+        ),
+        # 모든 수렴 조건 충족
+        (
+            [
+                OptStep(cycle=1, energy_hartree=-100.1, energy_change=-1e-7, max_gradient=1e-5,
+                        converged_flags={"Energy change": True, "MAX gradient": True, "RMS gradient": True, "MAX step": True, "RMS step": True}),
+            ],
+            ["수렴 완료"],
+        ),
+        # 에너지 진동
+        (
+            [
+                OptStep(cycle=1, energy_hartree=-100.1, energy_change=-0.01, max_gradient=0.005,
+                        converged_flags={}),
+                OptStep(cycle=2, energy_hartree=-100.09, energy_change=0.01, max_gradient=0.004,
+                        converged_flags={}),
+                OptStep(cycle=3, energy_hartree=-100.1, energy_change=-0.01, max_gradient=0.003,
+                        converged_flags={}),
+            ],
+            ["에너지 진동"],
+        ),
+        # dE 수렴 임계값 이내
+        (
+            [
+                OptStep(cycle=1, energy_hartree=-100.1, energy_change=-1e-7, max_gradient=0.01,
+                        converged_flags={"Energy change": True, "MAX gradient": False}),
+            ],
+            ["dE 수렴 임계값 이내"],
+        ),
     ],
 )
-def test_is_thinking_line(line: str, expected: bool) -> None:
-    """_is_thinking_line이 사고 과정 줄을 정확히 감지한다."""
-    assert _is_thinking_line(line) == expected
+def test_rule_based_comment(steps: list, expected_fragments: list[str]) -> None:
+    """_rule_based_comment가 규칙에 따라 올바른 코멘트를 생성한다."""
+    progress = OptProgress(
+        source_path="/tmp/test.out",
+        formula="CH4",
+        method="B3LYP",
+        basis_set="def2-SVP",
+        calc_type="opt",
+        steps=steps,
+    )
+    result = _rule_based_comment(progress)
+    if not expected_fragments:
+        assert result == ""
+    else:
+        for fragment in expected_fragments:
+            assert fragment in result

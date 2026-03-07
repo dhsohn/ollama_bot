@@ -125,7 +125,6 @@ def register_builtin_callables(
                 kb_dirs=kb_dirs or [],
                 logger=logger,
                 state_file=str(Path(data_dir) / "automation" / "dft_monitor_state.json"),
-                engine=engine,
                 get_external_dirs=get_external_dirs,
             ),
         )
