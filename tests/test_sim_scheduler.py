@@ -330,6 +330,45 @@ async def test_process_detection_uses_proc_cmdline_when_ps_args_are_truncated(
 
 
 @pytest.mark.asyncio
+async def test_start_seeds_existing_external_jobs_without_duplicate_detection_notice(
+    tmp_path: Path,
+) -> None:
+    scheduler, store = await _build_scheduler(tmp_path, "orca_auto")
+    scheduler.get_external_running_jobs = AsyncMock(  # type: ignore[method-assign]
+        return_value=[
+            {
+                "job_id": "ext-1001",
+                "tool": "orca_auto",
+                "status": "running",
+                "pid": 1001,
+                "input_file": "/home/test/orca_runs/reactants",
+                "source": "process",
+            }
+        ]
+    )
+    scheduler._recover_orphaned_jobs = AsyncMock()  # type: ignore[method-assign]
+    scheduler._notify = AsyncMock()  # type: ignore[method-assign]
+
+    loop_gate = asyncio.Event()
+
+    async def _fake_scheduling_loop() -> None:
+        await loop_gate.wait()
+
+    scheduler._scheduling_loop = _fake_scheduling_loop  # type: ignore[method-assign]
+
+    try:
+        await scheduler.start()
+        assert "ext-1001" in scheduler._known_external_jobs
+
+        await scheduler._check_new_external_jobs()
+        scheduler._notify.assert_not_awaited()
+    finally:
+        loop_gate.set()
+        await scheduler.stop()
+        await store.close()
+
+
+@pytest.mark.asyncio
 async def test_queue_status_includes_external_running_count(tmp_path: Path) -> None:
     scheduler, store = await _build_scheduler(tmp_path, "orca_auto")
     scheduler.get_external_running_jobs = AsyncMock(  # type: ignore[method-assign]

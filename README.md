@@ -61,6 +61,21 @@ ollama pull dengcao/bge-reranker-v2-m3:latest
 bash scripts/run_bot.sh
 ```
 
+- 포그라운드 실행. 터미널을 붙여 둔 상태에서 로그를 직접 볼 때 사용.
+
+### 업데이트/재시작
+
+```bash
+bash scripts/run_bot.sh --restart
+bash scripts/run_bot.sh --restart --pull
+```
+
+- `--restart`: 현재 프로젝트에서 실행 중인 기존 봇을 종료하고 새 봇을 백그라운드로 다시 시작
+- `--restart --pull`: 현재 브랜치에 대해 `git pull --ff-only` 후 재시작
+- `--pull`은 working tree가 깨끗할 때만 동작
+- 재시작 로그: `data/logs/manual_restart.log`
+- `ollama-bot` systemd user service가 활성 상태면 수동 kill 대신 `systemctl --user restart ollama-bot`를 사용
+
 ### systemd 자동 시작
 
 ```bash
@@ -168,7 +183,7 @@ ollama_bot/
 
 | 스크립트 | 용도 |
 |---|---|
-| `scripts/run_bot.sh` | 봇 실행 (포그라운드) |
+| `scripts/run_bot.sh` | 봇 실행/재시작 (`--restart`, `--pull`) |
 | `scripts/setup.sh` | 초기 설정 (`.env`, 디렉터리, 모델 점검) |
 | `scripts/install_boot_service.sh` | systemd 서비스 설치 (봇 + hosts 갱신) |
 | `scripts/update_wsl_hosts.sh` | WSL 게이트웨이 IP → `/etc/hosts` 별칭 갱신 (`HOSTNAME_ALIAS` 지원) |

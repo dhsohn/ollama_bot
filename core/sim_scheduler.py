@@ -267,6 +267,22 @@ class SimJobScheduler:
     async def start(self) -> None:
         """스케줄링 루프를 시작하고 orphan 작업을 복구한다."""
         await self._recover_orphaned_jobs()
+        try:
+            external_jobs = await self.get_external_running_jobs()
+        except Exception as exc:
+            self._known_external_jobs = {}
+            self._logger.warning("sim_external_seed_failed", error=str(exc))
+        else:
+            self._known_external_jobs = {
+                str(job.get("job_id") or ""): job
+                for job in external_jobs
+                if str(job.get("job_id") or "")
+            }
+            if self._known_external_jobs:
+                self._logger.info(
+                    "sim_external_jobs_seeded",
+                    count=len(self._known_external_jobs),
+                )
         self._stop_event.clear()
         self._scheduler_task = asyncio.create_task(
             self._scheduling_loop(),
