@@ -135,6 +135,7 @@ stop_existing_bot() {
     collect_existing_bot_pids
     if [[ "${#COLLECTED_PIDS[@]}" -eq 0 ]]; then
         echo "[run_bot.sh] 실행 중인 기존 봇이 없습니다."
+        rm -f "${LOCK_FILE}"
         return
     fi
 
@@ -159,7 +160,20 @@ stop_existing_bot() {
     if [[ "${#remaining[@]}" -gt 0 ]]; then
         echo "[run_bot.sh] 종료 지연으로 SIGKILL 전송: ${remaining[*]}"
         kill -9 "${remaining[@]}" 2>/dev/null || true
+        sleep 1
     fi
+
+    # 종료 후 잔여 프로세스 재확인
+    collect_existing_bot_pids
+    if [[ "${#COLLECTED_PIDS[@]}" -gt 0 ]]; then
+        local -a stragglers=("${!COLLECTED_PIDS[@]}")
+        echo "[run_bot.sh] 잔여 프로세스 강제 종료: ${stragglers[*]}"
+        kill -9 "${stragglers[@]}" 2>/dev/null || true
+        sleep 1
+    fi
+
+    # lock 파일 삭제하여 새 봇이 깨끗한 상태에서 시작하도록 보장
+    rm -f "${LOCK_FILE}"
 }
 
 start_background_bot() {
