@@ -34,8 +34,6 @@ def security_config() -> SecurityConfig:
 @pytest.fixture
 def app_settings(security_config: SecurityConfig) -> AppSettings:
     return AppSettings(
-        telegram_bot_token="test_token_123",
-        allowed_telegram_users="111,222",
         log_level="DEBUG",
         data_dir="/tmp/test_data",
         bot=BotConfig(max_conversation_length=10),
@@ -44,7 +42,10 @@ def app_settings(security_config: SecurityConfig) -> AppSettings:
             default_model="test-model",
             system_prompt="You are a test assistant.",
         ),
-        telegram=TelegramConfig(),
+        telegram=TelegramConfig(
+            bot_token="test_token_123",
+            allowed_users="111,222",
+        ),
         security=security_config,
         memory=MemoryConfig(),
     )

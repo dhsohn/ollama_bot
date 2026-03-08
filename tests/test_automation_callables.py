@@ -31,13 +31,12 @@ from core.security import SecurityManager
 @pytest.fixture
 def app_settings(tmp_path: Path) -> AppSettings:
     return AppSettings(
-        telegram_bot_token="test_token",
         data_dir=str(tmp_path),
         bot=BotConfig(),
         lemonade=LemonadeConfig(),
         security=SecurityConfig(allowed_users=[111]),
         memory=MemoryConfig(),
-        telegram=TelegramConfig(),
+        telegram=TelegramConfig(bot_token="test_token"),
     )
 
 
@@ -1166,13 +1165,12 @@ class TestMemoryHygieneCallable:
         """user 2명 + max_llm_calls=1 → user A Phase 2 소진, user B는 Phase 1만."""
         # 두 사용자용 설정
         settings = AppSettings(
-            telegram_bot_token="test_token",
             data_dir=str(tmp_path),
             bot=BotConfig(),
             lemonade=LemonadeConfig(),
             security=SecurityConfig(allowed_users=[111, 222]),
             memory=MemoryConfig(),
-            telegram=TelegramConfig(),
+            telegram=TelegramConfig(bot_token="test_token"),
         )
         auto_dir = tmp_path / "auto"
         (auto_dir / "_builtin").mkdir(parents=True)

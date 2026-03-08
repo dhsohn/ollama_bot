@@ -42,7 +42,6 @@ def security_config() -> SecurityConfig:
 @pytest.fixture
 def app_settings(security_config: SecurityConfig) -> AppSettings:
     return AppSettings(
-        telegram_bot_token="test",
         bot=BotConfig(max_conversation_length=10),
         lemonade=LemonadeConfig(
             default_model="test-model",
@@ -50,7 +49,7 @@ def app_settings(security_config: SecurityConfig) -> AppSettings:
         ),
         security=security_config,
         memory=MemoryConfig(),
-        telegram=TelegramConfig(),
+        telegram=TelegramConfig(bot_token="test"),
     )
 
 

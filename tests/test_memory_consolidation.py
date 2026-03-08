@@ -31,13 +31,12 @@ from core.security import SecurityManager
 @pytest.fixture
 def app_settings(tmp_path: Path) -> AppSettings:
     return AppSettings(
-        telegram_bot_token="test_token",
         data_dir=str(tmp_path),
         bot=BotConfig(),
         lemonade=LemonadeConfig(),
         security=SecurityConfig(allowed_users=[111]),
         memory=MemoryConfig(),
-        telegram=TelegramConfig(),
+        telegram=TelegramConfig(bot_token="test_token"),
     )
 
 

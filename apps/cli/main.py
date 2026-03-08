@@ -13,7 +13,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -26,9 +25,6 @@ if _project_root not in sys.path:
 
 async def _init_components():
     """설정 기반 LLM 클라이언트와 선택적 RAGPipeline을 초기화한다."""
-    os.environ.setdefault("TELEGRAM_BOT_TOKEN", "cli-mode")
-    os.environ.setdefault("ALLOWED_TELEGRAM_USERS", "0")
-
     from core.config import OllamaConfig, load_config
     from core.lemonade_client import LemonadeClient
     from core.ollama_client import OllamaClient

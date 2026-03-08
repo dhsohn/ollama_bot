@@ -89,20 +89,20 @@ async def _open_sqlite_db(path: Path) -> aiosqlite.Connection:
 def validate_required_settings(config: AppSettings, logger: Any) -> None:
     """필수 런타임 설정을 검사한다."""
     if (
-        not config.telegram_bot_token
-        or config.telegram_bot_token == "your_telegram_bot_token_here"
+        not config.telegram.bot_token
+        or config.telegram.bot_token == "your_telegram_bot_token_here"
     ):
         logger.error("telegram_bot_token_not_set")
         raise StartupError(
-            "오류: TELEGRAM_BOT_TOKEN이 설정되지 않았습니다.\n"
-            ".env 파일에 유효한 텔레그램 봇 토큰을 입력하세요."
+            "오류: telegram.bot_token이 설정되지 않았습니다.\n"
+            "config/config.yaml의 telegram.bot_token에 유효한 봇 토큰을 입력하세요."
         )
 
     if not config.security.allowed_users:
         logger.error("allowed_users_not_set")
         raise StartupError(
-            "오류: ALLOWED_TELEGRAM_USERS가 비어 있습니다.\n"
-            "private chat에서 허용할 사용자 ID를 .env에 설정하세요."
+            "오류: telegram.allowed_users가 비어 있습니다.\n"
+            "config/config.yaml의 telegram.allowed_users에 허용할 사용자 ID를 설정하세요."
         )
 
 

@@ -29,7 +29,6 @@ from core.skill_manager import SkillDefinition, SkillManager
 @pytest.fixture
 def app_settings() -> AppSettings:
     return AppSettings(
-        telegram_bot_token="test",
         bot=BotConfig(max_conversation_length=10),
         lemonade=LemonadeConfig(
             default_model="test-model",
@@ -37,7 +36,7 @@ def app_settings() -> AppSettings:
         ),
         security=SecurityConfig(allowed_users=[111]),
         memory=MemoryConfig(),
-        telegram=TelegramConfig(),
+        telegram=TelegramConfig(bot_token="test"),
     )
 
 

@@ -44,7 +44,6 @@ Wants=network-online.target
 [Service]
 Type=exec
 WorkingDirectory=${PROJECT_ROOT}
-EnvironmentFile=${PROJECT_ROOT}/.env
 Environment=HF_HOME=${PROJECT_ROOT}/data/hf_cache
 Environment=FASTEMBED_CACHE_PATH=${PROJECT_ROOT}/data/hf_cache/fastembed
 ExecStart=${PROJECT_ROOT}/.venv/bin/python -m apps.ollama_bot.main

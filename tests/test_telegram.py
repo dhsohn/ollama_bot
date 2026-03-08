@@ -24,13 +24,12 @@ from core.telegram_handler import TelegramHandler
 @pytest.fixture
 def app_config() -> AppSettings:
     return AppSettings(
-        telegram_bot_token="test_token",
         data_dir="/tmp/test",
         bot=BotConfig(),
         lemonade=LemonadeConfig(),
         security=SecurityConfig(allowed_users=[111, 222]),
         memory=MemoryConfig(),
-        telegram=TelegramConfig(),
+        telegram=TelegramConfig(bot_token="test_token"),
     )
 
 
@@ -845,13 +844,12 @@ class TestFeedbackButtons:
     def no_feedback_handler(self, mock_engine, security) -> TelegramHandler:
         """feedback=None인 핸들러."""
         config = AppSettings(
-            telegram_bot_token="test_token",
             data_dir="/tmp/test",
             bot=BotConfig(),
             lemonade=LemonadeConfig(),
             security=SecurityConfig(allowed_users=[111, 222]),
             memory=MemoryConfig(),
-            telegram=TelegramConfig(),
+            telegram=TelegramConfig(bot_token="test_token"),
             feedback=FeedbackConfig(enabled=False),
         )
         return TelegramHandler(config=config, engine=mock_engine, security=security, feedback=None)
@@ -1315,13 +1313,12 @@ class TestFeedbackButtons:
     ) -> None:
         """collect_reason 경로에서도 인증/레이트리밋이 1회만 적용된다."""
         config = AppSettings(
-            telegram_bot_token="test_token",
             data_dir="/tmp/test",
             bot=BotConfig(),
             lemonade=LemonadeConfig(),
             security=SecurityConfig(allowed_users=[111], rate_limit=1),
             memory=MemoryConfig(),
-            telegram=TelegramConfig(),
+            telegram=TelegramConfig(bot_token="test_token"),
             feedback=FeedbackConfig(enabled=True, collect_reason=True),
         )
         handler = TelegramHandler(

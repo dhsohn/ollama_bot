@@ -39,6 +39,8 @@ lemonade:
   heavy_model_load_timeout_seconds: 420
 
 telegram:
+  bot_token: "your_telegram_bot_token_here"
+  allowed_users: "your_telegram_chat_id_here"
   polling_interval: 1
   max_message_length: 4096
 
@@ -153,4 +155,3 @@ rag:
     - ".sh"
     - ".out"
     - ".log"
-

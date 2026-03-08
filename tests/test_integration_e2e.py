@@ -170,7 +170,6 @@ async def e2e_runtime(tmp_path: Path, monkeypatch):
     )
 
     config = AppSettings(
-        telegram_bot_token="test-token",
         data_dir=str(tmp_path),
         bot=BotConfig(max_conversation_length=10, response_timeout=60),
         lemonade=LemonadeConfig(
@@ -179,7 +178,7 @@ async def e2e_runtime(tmp_path: Path, monkeypatch):
         ),
         security=SecurityConfig(allowed_users=[111]),
         memory=MemoryConfig(),
-        telegram=TelegramConfig(),
+        telegram=TelegramConfig(bot_token="test-token"),
     )
 
     memory = MemoryManager(config.memory, str(tmp_path), max_conversation_length=10)
@@ -519,7 +518,6 @@ class TestRAGIntegration:
     async def rag_runtime(self, tmp_path: Path, monkeypatch):
         """RAG 파이프라인이 주입된 Engine 런타임."""
         config = AppSettings(
-            telegram_bot_token="test-token",
             data_dir=str(tmp_path),
             bot=BotConfig(max_conversation_length=10, response_timeout=60),
             lemonade=LemonadeConfig(
@@ -528,7 +526,7 @@ class TestRAGIntegration:
             ),
             security=SecurityConfig(allowed_users=[111]),
             memory=MemoryConfig(),
-            telegram=TelegramConfig(),
+            telegram=TelegramConfig(bot_token="test-token"),
         )
 
         memory = MemoryManager(config.memory, str(tmp_path), max_conversation_length=10)

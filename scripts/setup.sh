@@ -13,7 +13,7 @@ usage() {
 Usage: bash scripts/setup.sh [options]
 
 기본 동작:
-  - .env 생성/확인
+  - config/config.yaml 생성/확인
   - .venv 확인
   - data/, kb/ 디렉토리 준비
   - retrieval 모델 상태 점검
@@ -92,12 +92,12 @@ cd "${PROJECT_ROOT}"
 
 echo "=== ollama_bot setup ==="
 
-# .env 생성
-if [ ! -f .env ]; then
-    cp .env.example .env
-    echo ".env 파일이 생성되었습니다. 환경에 맞게 편집하세요."
+# config.yaml 생성
+if [ ! -f config/config.yaml ]; then
+    cp config/config.yaml.example config/config.yaml
+    echo "config/config.yaml 파일이 생성되었습니다. 환경에 맞게 편집하세요."
 else
-    echo ".env 파일이 이미 존재합니다."
+    echo "config/config.yaml 파일이 이미 존재합니다."
 fi
 
 # venv 확인
@@ -137,7 +137,7 @@ fi
 
 echo ""
 echo "=== setup 완료 ==="
-echo "1. .env 파일을 환경에 맞게 편집하세요."
+echo "1. config/config.yaml 파일을 환경에 맞게 편집하세요."
 echo "2. config/config.yaml의 lemonade/ollama host 및 모델값을 확인하세요."
 echo "3. 실행: bash scripts/run_bot.sh"
 echo "4. (선택) 부팅 자동 실행: bash scripts/install_boot_service.sh"

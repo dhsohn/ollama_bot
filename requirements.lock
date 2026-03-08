@@ -76,13 +76,8 @@ pydantic==2.10.6
     # via
     #   -r requirements.txt
     #   ollama
-    #   pydantic-settings
 pydantic-core==2.27.2
     # via pydantic
-pydantic-settings==2.8.1
-    # via -r requirements.txt
-python-dotenv==1.0.1
-    # via pydantic-settings
 python-telegram-bot==21.6
     # via -r requirements.txt
 pyyaml==6.0.3

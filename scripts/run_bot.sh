@@ -9,7 +9,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
-ENV_FILE="${PROJECT_ROOT}/.env"
+CONFIG_FILE="${PROJECT_ROOT}/config/config.yaml"
 VENV_DIR="${PROJECT_ROOT}/.venv"
 LOCK_FILE="${PROJECT_ROOT}/data/ollama_bot.runtime.lock"
 RESTART_LOG="${PROJECT_ROOT}/data/logs/manual_restart.log"
@@ -34,9 +34,9 @@ EOF
 }
 
 ensure_prereqs() {
-    if [[ ! -f "${ENV_FILE}" ]]; then
-        echo "[run_bot.sh] ERROR: ${ENV_FILE} 파일이 없습니다." >&2
-        echo "  .env.example을 복사하여 설정하세요: cp .env.example .env" >&2
+    if [[ ! -f "${CONFIG_FILE}" ]]; then
+        echo "[run_bot.sh] ERROR: ${CONFIG_FILE} 파일이 없습니다." >&2
+        echo "  config.yaml.example을 복사하여 설정하세요: cp config/config.yaml.example config/config.yaml" >&2
         exit 1
     fi
 
@@ -48,10 +48,9 @@ ensure_prereqs() {
 }
 
 load_env() {
-    set -a
-    # shellcheck disable=SC1090
-    source "${ENV_FILE}"
-    set +a
+    # config.yaml에서 설정을 로드하므로 별도 env 소싱 불필요.
+    # 런타임 환경변수 설정이 필요한 경우 여기에 추가.
+    :
 }
 
 ensure_runtime_dirs() {

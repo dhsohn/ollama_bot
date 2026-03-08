@@ -105,13 +105,12 @@ async def integration_runtime(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(semantic_cache_module, "TextEmbedding", lambda *args, **kwargs: _FakeEncoder())
 
     config = AppSettings(
-        telegram_bot_token="test-token",
         data_dir=str(tmp_path),
         bot=BotConfig(max_conversation_length=10, response_timeout=60),
         lemonade=LemonadeConfig(default_model="test-model", system_prompt="integration prompt"),
         security=SecurityConfig(allowed_users=[111]),
         memory=MemoryConfig(),
-        telegram=TelegramConfig(),
+        telegram=TelegramConfig(bot_token="test-token"),
     )
 
     memory = MemoryManager(config.memory, str(tmp_path), max_conversation_length=10)

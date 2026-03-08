@@ -12,8 +12,6 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
-from dotenv import load_dotenv
-
 from core.config import load_config
 from core.logging_setup import get_logger, setup_logging
 from core.runtime_env import (
@@ -21,7 +19,6 @@ from core.runtime_env import (
     is_wsl_environment,
     iter_wsl_bridge_candidates,
     normalize_host_token,
-    runtime_env_files,
 )
 from core.runtime_env import (
     resolve_wsl_loopback_host as _resolve_wsl_loopback_host_impl,
@@ -43,7 +40,6 @@ from core.runtime_lifecycle import shutdown_runtime as _shutdown_runtime
 from core.runtime_tasks import llm_recovery_loop as _llm_recovery_loop
 from core.runtime_tasks import memory_maintenance_loop as _memory_maintenance_loop
 
-_runtime_env_files = runtime_env_files
 _is_wsl_environment = is_wsl_environment
 _normalize_host_token = normalize_host_token
 _iter_wsl_bridge_candidates = iter_wsl_bridge_candidates
@@ -72,15 +68,8 @@ async def async_main(
     app_name: str,
 ) -> None:
     """비동기 메인 루프."""
-    env_files = _runtime_env_files()
-    if isinstance(env_files, str):
-        load_dotenv(env_files, override=False)
-    elif env_files:
-        for env_file in env_files:
-            load_dotenv(env_file, override=False)
-
     try:
-        config = load_config(env_file=env_files)
+        config = load_config()
     except ValueError as exc:
         print(
             f"오류: 설정값이 잘못되었습니다. {exc}",

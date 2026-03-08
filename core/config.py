@@ -1,18 +1,16 @@
 """Pydantic 기반 중앙 설정 로더.
 
-.env 파일과 config.yaml을 병합하여 검증된 AppSettings를 반환한다.
+config.yaml 단일 파일로부터 검증된 AppSettings를 반환한다.
 모든 모듈은 이 설정 객체를 생성자 주입으로 받는다.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
-from pydantic import BaseModel, Field, field_validator, model_validator
-from pydantic_settings import BaseSettings
+from pydantic import BaseModel, Field, field_validator
 
 
 class BotConfig(BaseModel):
@@ -65,6 +63,8 @@ class LemonadeConfig(BaseModel):
 
 
 class TelegramConfig(BaseModel):
+    bot_token: str = ""
+    allowed_users: str = ""
     polling_interval: int = 1
     max_message_length: int = 4096
 
@@ -270,10 +270,8 @@ class RAGConfig(BaseModel):
 
 
 class AppSettings(BaseModel):
-    """루트 설정. 런타임 설정은 YAML에서, 텔레그램 시크릿은 .env에서 로드한다."""
+    """루트 설정. config.yaml 단일 파일에서 로드한다."""
 
-    telegram_bot_token: str = ""
-    allowed_telegram_users: str = ""
     strict_startup: bool = False
     log_level: str = "INFO"
     data_dir: str = "data"
@@ -294,62 +292,27 @@ class AppSettings(BaseModel):
     rag: RAGConfig = Field(default_factory=RAGConfig)
 
 
-class _TelegramEnvSecrets(BaseSettings):
-    """텔레그램 관련 시크릿만 .env에서 로드한다."""
-
-    telegram_bot_token: str = ""
-    allowed_telegram_users: str = ""
-
-    model_config = {
-        "env_file": ".env",
-        "env_file_encoding": "utf-8",
-        "extra": "ignore",
-    }
-
-
 def load_config(
     config_path: str = "config/config.yaml",
-    env_file: str | Sequence[str] | None = ".env",
 ) -> AppSettings:
-    """config.yaml과 .env(텔레그램 시크릿 전용)를 병합하여 AppSettings를 반환한다."""
+    """config.yaml 단일 파일에서 AppSettings를 로드한다."""
     yaml_data: dict = {}
     config_file = Path(config_path)
     if config_file.exists():
         with open(config_file, encoding="utf-8") as f:
             yaml_data = yaml.safe_load(f) or {}
 
-    # .env 계열 파일로부터 BaseSettings를 로드한다.
-    env_kwargs: dict = {}
-    env_files: list[str] = []
-    if env_file is not None:
-        if isinstance(env_file, str):
-            candidates = [env_file]
-        else:
-            candidates = [str(item) for item in env_file]
-        env_files = [candidate for candidate in candidates if candidate and Path(candidate).exists()]
-
-    if len(env_files) == 1:
-        env_kwargs["_env_file"] = env_files[0]
-    elif len(env_files) > 1:
-        env_kwargs["_env_file"] = tuple(env_files)
-    else:
-        env_kwargs["_env_file"] = None
-
-    # 일반 런타임 설정은 YAML 기준으로만 로드한다.
     if not isinstance(yaml_data, dict):
         raise ValueError("config.yaml 최상위 구조는 mapping(dict)이어야 합니다.")
     settings = AppSettings.model_validate(yaml_data)
 
-    # .env는 텔레그램 관련 시크릿만 반영한다.
-    env_secrets = _TelegramEnvSecrets(**env_kwargs)
-    if env_secrets.telegram_bot_token:
-        settings.telegram_bot_token = env_secrets.telegram_bot_token
-    if env_secrets.allowed_telegram_users:
-        settings.allowed_telegram_users = env_secrets.allowed_telegram_users
-
-    # ALLOWED_TELEGRAM_USERS CSV → security.allowed_users 리스트
-    if settings.allowed_telegram_users:
-        raw_ids = [uid.strip() for uid in settings.allowed_telegram_users.split(",") if uid.strip()]
+    # telegram.allowed_users CSV → security.allowed_users 리스트
+    if settings.telegram.allowed_users:
+        raw_ids = [
+            uid.strip()
+            for uid in settings.telegram.allowed_users.split(",")
+            if uid.strip()
+        ]
         user_ids: list[int] = []
         invalid_ids: list[str] = []
         for raw in raw_ids:
@@ -359,7 +322,7 @@ def load_config(
                 invalid_ids.append(raw)
         if invalid_ids:
             raise ValueError(
-                "ALLOWED_TELEGRAM_USERS에는 정수 Chat ID만 사용할 수 있습니다: "
+                "telegram.allowed_users에는 정수 Chat ID만 사용할 수 있습니다: "
                 f"{', '.join(invalid_ids)}"
             )
         settings.security.allowed_users = user_ids

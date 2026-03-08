@@ -177,7 +177,7 @@ class TelegramHandler:
         Returns:
             초기화된 telegram.ext.Application 인스턴스.
         """
-        self._app = ApplicationBuilder().token(self._config.telegram_bot_token).build()
+        self._app = ApplicationBuilder().token(self._config.telegram.bot_token).build()
 
         for handler in self._build_command_handlers():
             self._app.add_handler(handler)

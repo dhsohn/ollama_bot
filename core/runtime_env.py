@@ -10,24 +10,6 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 
-def runtime_env_files() -> str | tuple[str, ...] | None:
-    """런타임에서 사용할 env 파일 목록을 결정한다."""
-    env_files_csv = os.environ.get("APP_ENV_FILES", "").strip()
-    if env_files_csv:
-        env_files = tuple(
-            item.strip()
-            for item in env_files_csv.split(",")
-            if item.strip()
-        )
-        if env_files:
-            return env_files
-
-    env_file = os.environ.get("APP_ENV_FILE", "").strip()
-    if env_file:
-        return env_file
-
-    return ".env"
-
 
 def is_wsl_environment() -> bool:
     """현재 런타임이 WSL인지 판별한다."""
