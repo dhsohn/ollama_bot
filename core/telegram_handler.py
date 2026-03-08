@@ -6,14 +6,10 @@
 
 from __future__ import annotations
 
-import inspect
 import time
-from collections.abc import Callable
-from contextlib import suppress
 from typing import TYPE_CHECKING, Any
 
 from telegram import BotCommand, Update
-from telegram.constants import ChatType
 from telegram.ext import (
     Application,
     ApplicationBuilder,
@@ -30,82 +26,21 @@ from core.engine import Engine
 from core.feedback_manager import FeedbackManager
 from core.i18n import t
 from core.logging_setup import get_logger
-from core.security import (
-    AuthenticationError,
-    GlobalConcurrencyError,
-    RateLimitError,
-    SecurityManager,
-)
+from core.security import SecurityManager
+from core.telegram_decorators import auth_required as _auth_required
+from core.telegram_decorators import global_slot_required as _global_slot_required
 from core.telegram_message_renderer import escape_html, split_message, stream_and_render
+from core.telegram_utils import (
+    coerce_error_list,
+    format_memory_gb,
+    format_reload_warnings,
+    get_auto_reload_errors,
+    get_skill_reload_errors,
+)
 from core.text_utils import detect_output_anomalies
 
 if TYPE_CHECKING:
     from core.semantic_cache import SemanticCache
-
-
-def _auth_required(func: Callable) -> Callable:
-    """private chat + 인증 + 레이트리밋을 적용하는 데코레이터."""
-
-    async def wrapper(self: TelegramHandler, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        if not update.effective_chat or not update.effective_message:
-            return
-
-        chat = update.effective_chat
-        message = update.effective_message
-
-        if chat.type != ChatType.PRIVATE:
-            self._logger.warning(
-                "non_private_chat_blocked",
-                chat_id=chat.id,
-                chat_type=chat.type,
-            )
-            lang = self._config.bot.language
-            with suppress(Exception):
-                await message.reply_text(t("private_chat_only", lang))
-            return
-
-        chat_id = chat.id
-
-        try:
-            self._authorize_chat_id(chat_id)
-        except AuthenticationError:
-            self._logger.warning("unauthorized_access", chat_id=chat_id)
-            return
-        except RateLimitError:
-            lang = self._config.bot.language
-            await update.effective_message.reply_text(
-                t("rate_limited", lang)
-            )
-            return
-
-        return await func(self, update, context)
-
-    return wrapper
-
-
-def _global_slot_required(func: Callable) -> Callable:
-    """전역 동시성 슬롯을 적용하는 데코레이터."""
-
-    async def wrapper(self: TelegramHandler, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        if not update.effective_chat:
-            return
-
-        chat_id = update.effective_chat.id
-        try:
-            async with self._security.global_slot(chat_id):
-                return await func(self, update, context)
-        except GlobalConcurrencyError:
-            lang = self._config.bot.language
-            msg = t("concurrency_limited", lang)
-            query = update.callback_query
-            if query is not None:
-                await query.answer(msg, show_alert=True)
-                return
-            if update.effective_message is not None:
-                await update.effective_message.reply_text(msg)
-            return
-
-    return wrapper
 
 
 class TelegramHandler:
@@ -488,73 +423,23 @@ class TelegramHandler:
 
     @staticmethod
     def _format_memory_gb(value_mb: object) -> str:
-        mb = 0.0
-        if isinstance(value_mb, bool):
-            mb = 0.0
-        elif isinstance(value_mb, int | float):
-            mb = max(0.0, float(value_mb))
-        elif isinstance(value_mb, str):
-            try:
-                mb = max(0.0, float(value_mb.strip()))
-            except ValueError:
-                mb = 0.0
-
-        gb = mb / 1024.0
-        rounded = round(gb)
-        if abs(gb - rounded) < 1e-9:
-            return f"{int(rounded)}GB"
-        if gb >= 10:
-            return f"{gb:.1f}GB"
-        return f"{gb:.2f}GB"
+        return format_memory_gb(value_mb)
 
     @staticmethod
     def _coerce_error_list(value: object) -> list[str]:
-        if isinstance(value, list):
-            return [str(item) for item in value]
-        return []
+        return coerce_error_list(value)
 
     def _get_skill_reload_errors(self) -> list[str]:
-        getter = getattr(self._engine, "get_last_skill_load_errors", None)
-        if not callable(getter):
-            return []
-        try:
-            errors = getter()
-        except Exception:
-            return []
-        if inspect.isawaitable(errors):
-            closer = getattr(errors, "close", None)
-            if callable(closer):
-                closer()
-            return []
-        return self._coerce_error_list(errors)
+        return get_skill_reload_errors(self._engine)
 
     def _get_auto_reload_errors(self) -> list[str]:
-        if self._scheduler is None:
-            return []
-        getter = getattr(self._scheduler, "get_last_load_errors", None)
-        if not callable(getter):
-            return []
-        try:
-            errors = getter()
-        except Exception:
-            return []
-        if inspect.isawaitable(errors):
-            closer = getattr(errors, "close", None)
-            if callable(closer):
-                closer()
-            return []
-        return self._coerce_error_list(errors)
+        return get_auto_reload_errors(self._scheduler)
 
     @staticmethod
     def _format_reload_warnings(
         errors: list[str], max_items: int = 3, lang: str = "ko",
     ) -> str:
-        preview = errors[:max_items]
-        lines = [t("reload_warnings", lang, count=len(errors))]
-        lines.extend(f"- {item}" for item in preview)
-        if len(errors) > max_items:
-            lines.append(t("reload_more", lang, count=len(errors) - max_items))
-        return "\n".join(lines)
+        return format_reload_warnings(errors, max_items=max_items, lang=lang)
 
     def _split_message(self, text: str, max_length: int | None = None) -> list[str]:
         max_length = max_length or self._max_message_length
