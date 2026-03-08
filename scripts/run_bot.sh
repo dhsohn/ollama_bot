@@ -280,10 +280,8 @@ if [[ "${MODE}" == "restart" ]]; then
     if is_systemd_service_enabled; then
         # systemd 서비스가 enabled이면 항상 systemd를 통해 재시작한다.
         # enabled 상태에서 수동 시작하면 systemd가 별도로 봇을 띄워 중복 실행된다.
-        if ! is_systemd_service_active; then
-            # 수동 프로세스가 남아 있을 수 있으므로 먼저 정리한다.
-            stop_existing_bot
-        fi
+        # systemd가 active여도 수동 프로세스가 남아 있을 수 있으므로 항상 정리한다.
+        stop_existing_bot
         restart_via_systemd
         exit 0
     fi
