@@ -114,7 +114,7 @@ class TestRunSkillChat:
             {"role": "user", "content": "short text"},
         ]
 
-        content, usage, model = await run_skill_chat(
+        content, _usage, model = await run_skill_chat(
             engine, skill=skill, messages=messages, model_override=None,
         )
         assert content == "result"
@@ -134,7 +134,7 @@ class TestRunSkillChat:
         skill = _make_skill()
         messages = [{"role": "user", "content": "input"}]
 
-        content, usage, model = await run_skill_chat(
+        content, _usage, _model = await run_skill_chat(
             engine, skill=skill, messages=messages,
             model_override="override-model",
             model_role_override="reasoning",
@@ -209,7 +209,7 @@ class TestRunChunkedSummaryPipeline:
         engine._llm_client = AsyncMock()
         engine._llm_client.chat = AsyncMock(side_effect=[map_resp, map_resp, reduce_resp])
 
-        content, usage, model = await run_chunked_summary_pipeline(
+        content, _usage, model = await run_chunked_summary_pipeline(
             engine,
             skill=_make_skill(),
             messages=[
@@ -285,7 +285,7 @@ class TestRunChunkedSummaryPipeline:
         engine._llm_client = AsyncMock()
         engine._llm_client.chat = AsyncMock(side_effect=[map_resp, map_resp, reduce_resp])
 
-        content, _, model = await run_chunked_summary_pipeline(
+        _content, _, model = await run_chunked_summary_pipeline(
             engine,
             skill=_make_skill(),
             messages=[{"role": "user", "content": "long text"}],

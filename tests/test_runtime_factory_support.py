@@ -13,8 +13,8 @@ from core.config import (
     BotConfig,
     LemonadeConfig,
     MemoryConfig,
-    OpenAIConfig,
     OllamaConfig,
+    OpenAIConfig,
     SecurityConfig,
     TelegramConfig,
 )
