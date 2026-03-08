@@ -414,8 +414,7 @@ def test_rag_kb_dirs_loaded_from_yaml(tmp_path: Path) -> None:
                 "rag:",
                 "  enabled: true",
                 "  kb_dirs:",
-                "    - \"/app/orca_runs\"",
-                "    - \"/app/orca_outputs\"",
+                "    - \"./kb\"",
             ]
         ),
         encoding="utf-8",
@@ -427,7 +426,7 @@ def test_rag_kb_dirs_loaded_from_yaml(tmp_path: Path) -> None:
 
     settings = load_config(config_path=str(config_path), env_file=str(env_path))
     assert settings.rag.enabled is True
-    assert settings.rag.kb_dirs == ["/app/orca_runs", "/app/orca_outputs"]
+    assert settings.rag.kb_dirs == ["./kb"]
 
 
 def test_strict_startup_default_false(tmp_path: Path) -> None:

@@ -13,7 +13,6 @@ __pycache__/
 # Runtime data
 data/
 kb/
-orca_runs/
 
 # IDE / OS
 .DS_Store

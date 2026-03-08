@@ -93,7 +93,7 @@ data/
   ├─ memory.db          # 대화 히스토리 + 장기 메모리 (SQLite, WAL 모드)
   ├─ semantic_cache.db  # 시맨틱 캐시 (SQLite)
   ├─ feedback.db        # 피드백 데이터 (SQLite)
-  └─ sim_jobs/          # 시뮬레이션 작업 데이터
+  └─ reports/           # 자동화 리포트
 ```
 
 ### 데이터 관리
@@ -149,7 +149,7 @@ telegram_handler (UI)
 공유 레이어:
   ├─ config.py      (Pydantic 설정)
   ├─ constants.py   (공유 상수)
-  ├─ enums.py       (RoutingTier, DFTIntent)
+  ├─ enums.py       (RoutingTier)
   ├─ memory.py      (대화 저장)
   └─ llm_protocol.py (LLM 클라이언트 Protocol)
 ```

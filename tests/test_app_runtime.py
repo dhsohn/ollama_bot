@@ -42,11 +42,11 @@ def test_optional_component_failure_raises_in_strict_mode() -> None:
             config,
             logger,
             degraded,
-            component="sim_scheduler",
-            error=RuntimeError("sim init failed"),
+            component="test_component",
+            error=RuntimeError("init failed"),
         )
 
-    assert degraded == [{"component": "sim_scheduler", "error": "sim init failed"}]
+    assert degraded == [{"component": "test_component", "error": "init failed"}]
 
 
 def test_log_degraded_startup_summary_noop_when_empty() -> None:

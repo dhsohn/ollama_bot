@@ -24,7 +24,7 @@ from telegram.ext import (
     filters,
 )
 
-from core import telegram_commands, telegram_feedback, telegram_messages, telegram_sim
+from core import telegram_commands, telegram_feedback, telegram_messages
 from core.config import AppSettings
 from core.engine import Engine
 from core.feedback_manager import FeedbackManager
@@ -40,7 +40,6 @@ from core.text_utils import detect_output_anomalies
 
 if TYPE_CHECKING:
     from core.semantic_cache import SemanticCache
-    from core.sim_scheduler import SimJobScheduler
 
 
 def _auth_required(func: Callable) -> Callable:
@@ -126,7 +125,6 @@ class TelegramHandler:
         self._logger = get_logger("telegram")
         self._max_message_length = config.telegram.max_message_length
         self._scheduler = None
-        self._sim_scheduler: SimJobScheduler | None = None
         self._preview_cache: dict[tuple[int, int], dict] = {}
         self._pending_reason: dict[int, dict] = {}
         self._pending_continuation: dict[int, dict[str, Any]] = {}
@@ -136,9 +134,6 @@ class TelegramHandler:
 
     def has_scheduler(self) -> bool:
         return self._scheduler is not None
-
-    def set_sim_scheduler(self, sim_scheduler: SimJobScheduler) -> None:
-        self._sim_scheduler = sim_scheduler
 
     @property
     def _feedback_enabled(self) -> bool:
@@ -160,8 +155,6 @@ class TelegramHandler:
         ]
         if self._feedback_enabled:
             handlers.append(CommandHandler("feedback", self._cmd_feedback))
-        if self._sim_scheduler is not None:
-            handlers.append(CommandHandler("sim", self._cmd_sim))
         return handlers
 
     def _build_bot_commands(self) -> list[BotCommand]:
@@ -176,8 +169,6 @@ class TelegramHandler:
         ]
         if self._feedback_enabled:
             commands.append(BotCommand("feedback", "피드백 통계"))
-        if self._sim_scheduler is not None:
-            commands.append(BotCommand("sim", "시뮬레이션 큐 관리"))
         return commands
 
     async def initialize(self) -> Application:
@@ -444,45 +435,6 @@ class TelegramHandler:
         context: ContextTypes.DEFAULT_TYPE,
     ) -> None:
         await telegram_feedback.handle_reason_or_message(self, update, context)
-
-    @_auth_required
-    @_global_slot_required
-    async def _cmd_sim(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        await telegram_sim.cmd_sim(self, update, context)
-
-    async def _get_sim_scheduler(self, update: Update) -> SimJobScheduler | None:
-        return await telegram_sim.get_sim_scheduler(self, update)
-
-    async def _sim_submit(self, update: Update, args: list[str]) -> None:
-        await telegram_sim.sim_submit(self, update, args)
-
-    @staticmethod
-    def _sim_elapsed_text(job: dict[str, Any]) -> str:
-        return telegram_sim.sim_elapsed_text(job)
-
-    async def _sim_list(self, update: Update, args: list[str]) -> None:
-        await telegram_sim.sim_list(self, update, args)
-
-    async def _sim_clear(self, update: Update, args: list[str]) -> None:
-        await telegram_sim.sim_clear(self, update, args)
-
-    async def _sim_status(self, update: Update, args: list[str]) -> None:
-        await telegram_sim.sim_status(self, update, args)
-
-    async def _sim_info(self, update: Update, args: list[str]) -> None:
-        await telegram_sim.sim_info(self, update, args)
-
-    async def _sim_cancel(self, update: Update, args: list[str]) -> None:
-        await telegram_sim.sim_cancel(self, update, args)
-
-    async def _sim_priority(self, update: Update, args: list[str]) -> None:
-        await telegram_sim.sim_priority(self, update, args)
-
-    async def _sim_retry(self, update: Update, args: list[str]) -> None:
-        await telegram_sim.sim_retry(self, update, args)
-
-    async def _sim_tools(self, update: Update, args: list[str]) -> None:
-        await telegram_sim.sim_tools(self, update, args)
 
     async def _error_handler(self, update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
         self._logger.error(

@@ -56,7 +56,6 @@ class RuntimeState:
     feedback: FeedbackManager | None = None
     semantic_cache: Any = None
     rag_startup_index_task: asyncio.Task[Any] | None = None
-    sim_scheduler: Any = None
     degraded_components: list[dict[str, str]] = field(default_factory=list)
 
 
@@ -158,69 +157,6 @@ def _record_degraded_component(
         component=component,
         error=error_text,
     )
-
-
-async def _init_dft(
-    config: AppSettings,
-    cleanup_stack: AsyncExitStack,
-    logger: Any,
-    degraded_components: list[dict[str, str]],
-) -> tuple[Any, Any]:
-    """DFT 인덱스와 컨텍스트 프로바이더를 초기화한다."""
-    if not config.dft.enabled:
-        return None, None
-    try:
-        from core.dft_index import DFTIndex
-        from core.dft_query import DFTContextProvider, DFTQueryEngine
-
-        dft_db_path = str(Path(config.data_dir) / "rag_index" / "dft.db")
-        dft_index = DFTIndex()
-        await dft_index.initialize(dft_db_path)
-        cleanup_stack.push_async_callback(dft_index.close)
-
-        dft_query_engine = DFTQueryEngine(dft_index)
-        dft_context_provider = DFTContextProvider(dft_query_engine)
-
-        if config.dft.auto_index_on_startup and config.rag.kb_dirs:
-            kb_dirs = [d for d in config.rag.kb_dirs if Path(d).is_dir()]
-            if kb_dirs:
-                result = await dft_index.index_calculations(
-                    kb_dirs,
-                    max_file_size_mb=config.dft.max_file_size_mb,
-                )
-                logger.info("dft_startup_index_complete", **result)
-
-        logger.info("dft_index_initialized")
-        return dft_index, dft_context_provider
-    except Exception as exc:
-        handle_optional_component_failure(
-            config,
-            logger,
-            degraded_components,
-            component="dft_index",
-            error=exc,
-        )
-        return None, None
-
-
-def build_dft_completion_hook(dft_index: Any, logger: Any):
-    """SimScheduler용 DFT 인덱싱 완료 훅을 생성한다."""
-
-    async def _hook(job: dict) -> None:
-        if job.get("tool") not in ("orca_auto",):
-            return
-        output_file = job.get("output_file")
-        if not output_file:
-            return
-        success = await dft_index.upsert_single(output_file)
-        if success:
-            logger.info(
-                "sim_job_output_indexed",
-                job_id=job.get("job_id", ""),
-                output_file=output_file,
-            )
-
-    return _hook
 
 
 def handle_optional_component_failure(
@@ -649,51 +585,6 @@ async def build_runtime(
                 )
                 rag_pipeline = None
 
-        dft_index, dft_context_provider = await _init_dft(
-            config,
-            cleanup_stack,
-            logger,
-            degraded_components,
-        )
-
-        sim_scheduler = None
-        if config.sim_queue.enabled:
-            try:
-                from core.sim_job_store import SimJobStore
-                from core.sim_resource_manager import ResourceManager
-                from core.sim_scheduler import SimJobScheduler
-
-                sim_db_path = str(Path(config.data_dir) / "sim_queue" / "sim_jobs.db")
-                sim_store = SimJobStore()
-                await sim_store.initialize(sim_db_path)
-                cleanup_stack.push_async_callback(sim_store.close)
-
-                sim_resources = ResourceManager(
-                    max_concurrent=config.sim_queue.max_concurrent_jobs,
-                )
-
-                sim_scheduler = SimJobScheduler(
-                    config=config.sim_queue,
-                    store=sim_store,
-                    resources=sim_resources,
-                )
-                sim_scheduler.set_allowed_users(config.security.allowed_users)
-                if dft_index is not None:
-                    sim_scheduler.add_completion_hook(
-                        build_dft_completion_hook(dft_index, logger),
-                    )
-                logger.info("sim_scheduler_initialized")
-            except Exception as exc:
-                handle_optional_component_failure(
-                    config,
-                    logger,
-                    degraded_components,
-                    component="sim_scheduler",
-                    error=exc,
-                )
-                sim_scheduler = None
-
-        context_providers = [dft_context_provider] if dft_context_provider else []
         engine = Engine(
             config=config,
             llm_client=llm,
@@ -705,7 +596,6 @@ async def build_runtime(
             intent_router=intent_router,
             context_compressor=context_compressor,
             rag_pipeline=rag_pipeline,
-            context_providers=context_providers,
         )
 
         telegram = TelegramHandler(
@@ -741,19 +631,12 @@ async def build_runtime(
             allowed_users=config.security.allowed_users,
             data_dir=config.data_dir,
             feedback=feedback,
-            dft_index=dft_index,
-            kb_dirs=config.rag.kb_dirs if config.rag.enabled else None,
-            sim_scheduler=sim_scheduler,
         )
         telegram.set_scheduler(scheduler)
         if not telegram.has_scheduler():
             raise StartupError(
                 "Telegram handler must receive scheduler before initialization."
             )
-
-        if sim_scheduler is not None:
-            telegram.set_sim_scheduler(sim_scheduler)
-            sim_scheduler.set_telegram(telegram)
 
         try:
             auto_count = await scheduler.load_automations(strict=True)
@@ -789,7 +672,6 @@ async def build_runtime(
             feedback=feedback,
             semantic_cache=semantic_cache,
             rag_startup_index_task=rag_startup_index_task,
-            sim_scheduler=sim_scheduler,
             degraded_components=degraded_components,
         )
     except Exception:

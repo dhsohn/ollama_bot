@@ -850,7 +850,7 @@ class TestRAGReindexCallable:
     ) -> None:
         engine = AsyncMock()
         engine.reindex_rag_corpus = AsyncMock(return_value={
-            "roots": ["/app/orca_runs", "/app/orca_outputs"],
+            "roots": ["./kb"],
             "indexed": 12,
             "skipped": 44,
             "removed": 2,

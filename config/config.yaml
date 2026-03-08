@@ -18,7 +18,7 @@ lemonade:
   max_tokens: 4096
   prompt_version: "v1"
   system_prompt: |
-    당신은 과학 계산(DFT, ORCA 등)과 프로그래밍, 일상 대화에 능숙한 AI 어시스턴트입니다.
+    당신은 프로그래밍과 일상 대화에 능숙한 개인 AI 어시스턴트입니다.
 
     ## 답변 원칙
     - 질문을 먼저 분석하고, 단계적으로 사고한 뒤 답변하세요.
@@ -126,12 +126,10 @@ rag:
   enabled: true
   startup_index_enabled: true
   kb_dirs:
-    - "/home/daehyupsohn/orca_runs"
+    - "./kb"
   max_file_size_mb: 5
   trigger_keywords:
-    - "orca"
     - "결과"
-    - "dft"
   chunk_min_tokens: 400
   chunk_max_tokens: 900
   chunk_overlap_ratio: 0.15
@@ -156,33 +154,3 @@ rag:
     - ".out"
     - ".log"
 
-dft:
-  enabled: true
-  auto_index_on_startup: true
-  max_file_size_mb: 64
-
-# ── 시뮬레이션 작업 큐 ──
-
-sim_queue:
-  enabled: true
-  max_concurrent_jobs: 4
-  default_retry_count: 2
-  max_retry_count: 5
-  retry_delay_seconds: 30
-  queue_check_interval_seconds: 5
-  job_work_dir: "data/sim_jobs"
-  tools:
-    orca_auto:
-      enabled: true
-      executable: "orca_auto"
-      cli_template: "{executable} run-inp --reaction-dir '{input_file}'"
-      command_prefix: ""
-      output_extension: ".out"
-    crest:
-      enabled: true
-      executable: "crest"
-      cli_template: "{executable} {input_file} --T 8 > {output_file} 2>&1"
-      command_prefix: "conda run -n base"
-      output_extension: ".out"
-      env_vars:
-        OMP_STACKSIZE: "1G"

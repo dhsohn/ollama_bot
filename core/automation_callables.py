@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from core.automation_callables_impl.common import (
     CONSOLIDATION_MERGE_SCHEMA as _CONSOLIDATION_MERGE_SCHEMA,
 )
@@ -48,9 +46,6 @@ def register_builtin_callables(
     allowed_users: list[int],
     data_dir: str = "data",
     feedback: FeedbackManager | None = None,
-    dft_index: object | None = None,
-    kb_dirs: list[str] | None = None,
-    sim_scheduler: object | None = None,
 ) -> None:
     """내장 자동화 callable을 스케줄러에 등록한다."""
     logger = get_logger("automation_callables")
@@ -107,61 +102,6 @@ def register_builtin_callables(
             logger=logger,
         ),
     )
-
-    # DFT 모니터 callable
-    if dft_index is not None:
-        from core.automation_callables_impl.dft_monitor import (
-            build_dft_monitor_callable,
-        )
-
-        get_external_dirs = None
-        if sim_scheduler is not None:
-            get_external_dirs = _build_get_external_dirs(sim_scheduler)
-
-        scheduler.register_callable(
-            "dft_monitor",
-            build_dft_monitor_callable(
-                dft_index=dft_index,
-                kb_dirs=kb_dirs or [],
-                logger=logger,
-                state_file=str(Path(data_dir) / "automation" / "dft_monitor_state.json"),
-                get_external_dirs=get_external_dirs,
-            ),
-        )
-    else:
-        async def _dft_monitor_noop(**kwargs) -> str:
-            return ""
-        scheduler.register_callable("dft_monitor", _dft_monitor_noop)
-
-
-
-def _build_get_external_dirs(sim_scheduler: object):
-    """SimJobScheduler에서 외부 실행 중인 시뮬레이션의 작업 디렉토리를 반환하는 콜백을 생성한다."""
-
-    async def get_external_dirs() -> list[str]:
-        jobs = await sim_scheduler.get_external_running_jobs()  # type: ignore[attr-defined]
-        dirs: list[str] = []
-        for job in jobs:
-            input_file = job.get("input_file", "")
-            if input_file and input_file != "-":
-                p = Path(input_file).expanduser()
-                candidate = p if p.is_dir() else p.parent
-                if candidate.is_dir():
-                    dirs.append(str(candidate))
-                    continue
-
-            # input_file이 없는 경우 (예: crest): PID의 CWD로 폴백
-            pid = job.get("pid")
-            if pid and isinstance(pid, int) and pid > 0:
-                try:
-                    cwd = Path(f"/proc/{pid}/cwd").resolve()
-                    if cwd.is_dir():
-                        dirs.append(str(cwd))
-                except OSError:
-                    pass
-        return dirs
-
-    return get_external_dirs
 
 
 __all__ = [

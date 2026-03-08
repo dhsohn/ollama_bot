@@ -50,8 +50,6 @@ async def cmd_help(
     ]
     if self._feedback_enabled:
         commands.insert(6, ("/feedback", "피드백 통계"))
-    if self._sim_scheduler is not None:
-        commands.append(("/sim", "시뮬레이션 큐 관리"))
 
     table_lines = ["명령어       설명", "─" * 25]
     for cmd, desc in commands:

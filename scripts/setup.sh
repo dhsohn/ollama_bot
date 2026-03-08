@@ -108,7 +108,7 @@ fi
 
 # 데이터 디렉토리 생성
 mkdir -p data/conversations data/memory data/logs data/reports data/hf_cache/fastembed
-mkdir -p kb/orca_runs kb/orca_outputs
+mkdir -p kb
 
 lemonade_host="$(extract_yaml_value "lemonade" "host")"
 ollama_host="$(extract_yaml_value "ollama" "host")"

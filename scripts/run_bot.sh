@@ -61,8 +61,7 @@ ensure_runtime_dirs() {
         "${PROJECT_ROOT}/data/logs" \
         "${PROJECT_ROOT}/data/reports" \
         "${PROJECT_ROOT}/data/hf_cache/fastembed" \
-        "${PROJECT_ROOT}/kb/orca_runs" \
-        "${PROJECT_ROOT}/kb/orca_outputs"
+        "${PROJECT_ROOT}/kb"
 }
 
 prepare_runtime_environment() {

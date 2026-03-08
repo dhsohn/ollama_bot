@@ -23,12 +23,6 @@ async def shutdown_runtime(
     app = runtime.app
     logger.info("shutting_down")
 
-    if runtime.sim_scheduler is not None:
-        try:
-            await runtime.sim_scheduler.stop()
-        except Exception as exc:
-            logger.error("sim_scheduler_stop_failed", error=str(exc))
-
     if scheduler_started:
         try:
             runtime.scheduler.stop()
@@ -95,9 +89,6 @@ async def run_runtime(runtime: RuntimeState) -> None:
 
             runtime.scheduler.start()
             scheduler_started = True
-
-            if runtime.sim_scheduler is not None:
-                await runtime.sim_scheduler.start()
 
             memory_maintenance_task = asyncio.create_task(
                 memory_maintenance_loop(

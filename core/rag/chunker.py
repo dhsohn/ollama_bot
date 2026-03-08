@@ -32,22 +32,10 @@ _JS_FUNC_RE = re.compile(
 # 마크다운 헤더 패턴
 _MD_HEADER_RE = re.compile(r"^(#{1,6})\s+(.+)$", re.MULTILINE)
 
-# ORCA 출력 파일 섹션 헤더 패턴
-_ORCA_SECTION_HEADERS: list[tuple[re.Pattern, str]] = [
-    (re.compile(r"^\s*INPUT FILE\s*$", re.MULTILINE), "INPUT FILE"),
-    (re.compile(r"^\s*CARTESIAN COORDINATES \(ANGSTROEM\)\s*$", re.MULTILINE), "CARTESIAN COORDINATES"),
-    (re.compile(r"^\s*ORBITAL ENERGIES\s*$", re.MULTILINE), "ORBITAL ENERGIES"),
-    (re.compile(r"^\s*MULLIKEN (?:ATOMIC CHARGES|POPULATION)\s*", re.MULTILINE), "MULLIKEN POPULATION"),
-    (re.compile(r"^\s*LOEWDIN (?:ATOMIC CHARGES|POPULATION)\s*", re.MULTILINE), "LOEWDIN POPULATION"),
-    (re.compile(r"^\s*SCF ITERATIONS\s*$", re.MULTILINE), "SCF ITERATIONS"),
-    (re.compile(r"^\s*GEOMETRY OPTIMIZATION (?:CYCLE|RUN)\s*", re.MULTILINE), "GEOMETRY OPTIMIZATION"),
-    (re.compile(r"^\s*VIBRATIONAL FREQUENCIES\s*$", re.MULTILINE), "VIBRATIONAL FREQUENCIES"),
-    (re.compile(r"^\s*NORMAL MODES\s*$", re.MULTILINE), "NORMAL MODES"),
-    (re.compile(r"^\s*IR SPECTRUM\s*$", re.MULTILINE), "IR SPECTRUM"),
-    (re.compile(r"^\s*THERMOCHEMISTRY\s*", re.MULTILINE), "THERMOCHEMISTRY"),
-    (re.compile(r"^\s*DIPOLE MOMENT\s*$", re.MULTILINE), "DIPOLE MOMENT"),
-    (re.compile(r"^\s*FINAL SINGLE POINT ENERGY\s+", re.MULTILINE), "FINAL ENERGY"),
-    (re.compile(r"^\s*TOTAL RUN TIME\s*:", re.MULTILINE), "TOTAL RUN TIME"),
+# 구조화된 로그/출력 파일(.out, .log) 섹션 헤더 패턴
+_STRUCTURED_OUTPUT_HEADERS: list[tuple[re.Pattern, str]] = [
+    (re.compile(r"^={3,}\s*.+\s*={3,}$", re.MULTILINE), "SECTION SEPARATOR"),
+    (re.compile(r"^-{3,}\s*.+\s*-{3,}$", re.MULTILINE), "SUBSECTION SEPARATOR"),
 ]
 
 
@@ -103,7 +91,7 @@ class DocumentChunker:
         elif ext == ".md":
             raw_chunks = self._chunk_markdown(text)
         elif ext in (".out", ".log"):
-            raw_chunks = self._chunk_orca(text)
+            raw_chunks = self._chunk_structured_output(text)
         else:
             raw_chunks = self._chunk_text(text)
 
@@ -254,15 +242,15 @@ class DocumentChunker:
 
         return chunks
 
-    def _chunk_orca(self, text: str) -> list[tuple[str, str | None]]:
-        """ORCA 출력 파일을 섹션 단위로 청킹한다.
+    def _chunk_structured_output(self, text: str) -> list[tuple[str, str | None]]:
+        """구조화된 출력 파일(.out, .log)을 섹션 단위로 청킹한다.
 
-        알려진 ORCA 섹션 헤더를 인식하여 의미 단위로 분리한다.
-        대형 섹션(최적화 사이클 등)은 추가 분할한다.
+        구분선 패턴을 인식하여 의미 단위로 분리한다.
+        대형 섹션은 추가 분할한다.
         """
         # 모든 섹션 시작점 수집
         boundaries: list[tuple[int, str]] = []
-        for pattern, label in _ORCA_SECTION_HEADERS:
+        for pattern, label in _STRUCTURED_OUTPUT_HEADERS:
             for m in pattern.finditer(text):
                 boundaries.append((m.start(), label))
 
@@ -279,10 +267,10 @@ class DocumentChunker:
             preamble = text[: boundaries[0][0]].strip()
             if preamble:
                 if len(preamble) <= self._max_chars:
-                    chunks.append((preamble, "ORCA HEADER"))
+                    chunks.append((preamble, "HEADER"))
                 else:
                     for ct, _ in self._chunk_text(preamble):
-                        chunks.append((ct, "ORCA HEADER"))
+                        chunks.append((ct, "HEADER"))
 
         # 각 섹션
         for i, (start, label) in enumerate(boundaries):

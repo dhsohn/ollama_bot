@@ -269,45 +269,6 @@ class RAGConfig(BaseModel):
         return value
 
 
-class DFTConfig(BaseModel):
-    """DFT 계산 결과 인덱스 설정."""
-
-    enabled: bool = True
-    auto_index_on_startup: bool = True
-    max_file_size_mb: int = 64
-
-
-class SimToolConfig(BaseModel):
-    """시뮬레이션 도구별 설정."""
-
-    enabled: bool = True
-    executable: str
-    cli_template: str
-    command_prefix: str = ""
-    output_extension: str = ".out"
-    env_vars: dict[str, str] = Field(default_factory=dict)
-
-
-class SimQueueConfig(BaseModel):
-    """시뮬레이션 작업 큐 설정."""
-
-    enabled: bool = False
-    max_concurrent_jobs: int = 4
-    default_retry_count: int = 2
-    max_retry_count: int = 5
-    retry_delay_seconds: int = 30
-    queue_check_interval_seconds: int = 5
-    job_work_dir: str = "data/sim_jobs"
-    tools: dict[str, SimToolConfig] = Field(default_factory=dict)
-
-    @field_validator("max_concurrent_jobs")
-    @classmethod
-    def validate_positive_ints(cls, value: int) -> int:
-        if value < 1:
-            raise ValueError("max_concurrent_jobs must be >= 1")
-        return value
-
-
 class AppSettings(BaseModel):
     """루트 설정. 런타임 설정은 YAML에서, 텔레그램 시크릿은 .env에서 로드한다."""
 
@@ -331,8 +292,6 @@ class AppSettings(BaseModel):
     context_compressor: ContextCompressorConfig = Field(default_factory=ContextCompressorConfig)
     ollama: RetrievalProviderConfig = Field(default_factory=RetrievalProviderConfig)
     rag: RAGConfig = Field(default_factory=RAGConfig)
-    dft: DFTConfig = Field(default_factory=DFTConfig)
-    sim_queue: SimQueueConfig = Field(default_factory=SimQueueConfig)
 
 
 class _TelegramEnvSecrets(BaseSettings):
