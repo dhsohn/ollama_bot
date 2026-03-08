@@ -10,7 +10,9 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatType, ParseMode
 from telegram.ext import ContextTypes
 
+from core.i18n import t
 from core.security import AuthenticationError, RateLimitError
+from core.telegram_menus import get_user_language
 
 if TYPE_CHECKING:
     from core.telegram_handler import TelegramHandler
@@ -153,7 +155,8 @@ async def authorize_feedback_callback(
         await query.answer()
         return False
     except RateLimitError:
-        await query.answer("요청이 너무 많습니다. 잠시 후 다시 시도해주세요.", show_alert=True)
+        lang = self._config.bot.language
+        await query.answer(t("rate_limited", lang), show_alert=True)
         return False
     return True
 
@@ -170,22 +173,25 @@ async def handle_feedback_callback(
     if self._feedback is None:
         await query.answer()
         return
+
+    chat_id = update.effective_chat.id
+    lang = await get_user_language(self, chat_id)
+
     if update.effective_chat.type != ChatType.PRIVATE:
-        await query.answer("private chat에서만 사용할 수 있습니다.", show_alert=False)
+        await query.answer(t("private_chat_only", lang), show_alert=False)
         return
 
     parsed = self._parse_feedback_callback_data(query.data)
     if parsed is None:
-        await query.answer("잘못된 피드백 요청입니다.", show_alert=True)
+        await query.answer(t("feedback_invalid", lang), show_alert=True)
         return
     rating, bot_message_id = parsed
 
-    chat_id = update.effective_chat.id
     if not await self._authorize_feedback_callback(chat_id, query):
         return
 
     if rating not in (-1, 1):
-        await query.answer("지원하지 않는 피드백 값입니다.", show_alert=True)
+        await query.answer(t("feedback_unsupported", lang), show_alert=True)
         return
 
     self._cleanup_preview_cache()
@@ -243,22 +249,17 @@ async def handle_feedback_callback(
             "bot_message_id": bot_message_id,
             "expires": time.monotonic() + timeout,
         }
-        await query.answer("피드백 감사합니다!", show_alert=False)
+        await query.answer(t("feedback_thanks", lang), show_alert=False)
         if query.message is not None and hasattr(query.message, "reply_text"):
             if replaced_pending:
-                await query.message.reply_text(
-                    "이전 사유 입력 요청은 자동 만료되어 최신 요청으로 교체되었어요."
-                )
-            await query.message.reply_text(
-                "어떤 점이 아쉬웠나요? 사유를 입력해주세요.\n"
-                "건너뛰려면 /skip 을 입력하세요."
-            )
+                await query.message.reply_text(t("feedback_reason_replaced", lang))
+            await query.message.reply_text(t("feedback_reason_ask", lang))
         return
 
     if is_update:
-        await query.answer("피드백을 업데이트했어요.", show_alert=False)
+        await query.answer(t("feedback_updated", lang), show_alert=False)
     else:
-        await query.answer("피드백 감사합니다!", show_alert=False)
+        await query.answer(t("feedback_thanks", lang), show_alert=False)
 
 
 async def cmd_feedback(
@@ -267,22 +268,30 @@ async def cmd_feedback(
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
     _ = context
+    chat_id = update.effective_chat.id  # type: ignore[union-attr]
+    lang = await get_user_language(self, chat_id)
+
     if self._feedback is None:
         await update.effective_message.reply_text(  # type: ignore[union-attr]
-            "피드백 기능이 비활성화되어 있습니다."
+            t("feedback_disabled", lang)
         )
         return
-    chat_id = update.effective_chat.id  # type: ignore[union-attr]
+
     stats = await self._feedback.get_user_stats(chat_id)
+    h_item = t("status_header_item", lang)
+    h_value = t("status_header_value", lang)
+    cnt = t("memory_count", lang, count=stats["total"])
+    pos = t("memory_count", lang, count=stats["positive"])
+    neg = t("memory_count", lang, count=stats["negative"])
     table = (
-        "항목        값\n"
-        "─" * 18 + "\n"
-        f"전체        {stats['total']}건\n"
-        f"👍 긍정     {stats['positive']}건\n"
-        f"👎 부정     {stats['negative']}건\n"
-        f"만족도      {stats['satisfaction_rate']:.0%}"
+        f"{h_item:<12s}  {h_value}\n"
+        "\u2500" * 18 + "\n"
+        f"{t('feedback_total', lang):<12s}  {cnt}\n"
+        f"\U0001f44d {t('feedback_positive', lang):<10s}  {pos}\n"
+        f"\U0001f44e {t('feedback_negative', lang):<10s}  {neg}\n"
+        f"{t('feedback_satisfaction', lang):<12s}  {stats['satisfaction_rate']:.0%}"
     )
-    text = f"📊 <b>피드백 통계</b>\n\n<pre>{table}</pre>"
+    text = f"\U0001f4ca <b>{t('feedback_title', lang)}</b>\n\n<pre>{table}</pre>"
     await update.effective_message.reply_text(  # type: ignore[union-attr]
         text,
         parse_mode=ParseMode.HTML,
@@ -299,10 +308,12 @@ async def handle_reason_input(
     if pending is None:
         return False
 
+    lang = await get_user_language(self, chat_id)
+
     if time.monotonic() > pending["expires"]:
         del self._pending_reason[chat_id]
         await update.effective_message.reply_text(  # type: ignore[union-attr]
-            "사유 입력 시간이 만료되었습니다."
+            t("feedback_reason_expired", lang)
         )
         return True
 
@@ -312,7 +323,7 @@ async def handle_reason_input(
 
     if len(reason) < min_chars:
         await update.effective_message.reply_text(  # type: ignore[union-attr]
-            f"사유는 최소 {min_chars}자 이상 입력해주세요. 건너뛰려면 /skip"
+            t("feedback_reason_min_chars", lang, min_chars=min_chars)
         )
         return True
 
@@ -329,11 +340,11 @@ async def handle_reason_input(
     del self._pending_reason[chat_id]
     if updated:
         await update.effective_message.reply_text(  # type: ignore[union-attr]
-            "사유가 기록되었습니다. 감사합니다!"
+            t("feedback_reason_saved", lang)
         )
     else:
         await update.effective_message.reply_text(  # type: ignore[union-attr]
-            "사유를 저장할 대상 피드백을 찾지 못했습니다."
+            t("feedback_reason_not_found", lang)
         )
     return True
 
@@ -345,11 +356,17 @@ async def handle_reason_skip(
 ) -> None:
     _ = context
     chat_id = update.effective_chat.id  # type: ignore[union-attr]
+    lang = await get_user_language(self, chat_id)
+
     if chat_id in self._pending_reason:
         del self._pending_reason[chat_id]
-        await update.effective_message.reply_text("사유 입력을 건너뛰었습니다.")  # type: ignore[union-attr]
+        await update.effective_message.reply_text(  # type: ignore[union-attr]
+            t("feedback_reason_skipped", lang)
+        )
     else:
-        await update.effective_message.reply_text("건너뛸 사유 요청이 없습니다.")  # type: ignore[union-attr]
+        await update.effective_message.reply_text(  # type: ignore[union-attr]
+            t("feedback_reason_no_pending", lang)
+        )
 
 
 async def handle_reason_or_message(

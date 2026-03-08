@@ -5,6 +5,9 @@ from typing import TYPE_CHECKING
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
+from core.i18n import t
+from core.telegram_menus import get_user_language
+
 if TYPE_CHECKING:
     from telegram import Update
 
@@ -17,16 +20,24 @@ async def cmd_status(
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
     _ = context
+    chat_id = update.effective_chat.id  # type: ignore[union-attr]
+    lang = await get_user_language(self, chat_id)
+
     status = await self._engine.get_status()
     llm = status["llm"]
-    llm_status = "🟢 정상" if llm.get("status") == "ok" else "🔴 오류"
+    llm_ok = llm.get("status") == "ok"
+    llm_status = (
+        f"\U0001f7e2 {t('status_llm_ok', lang)}"
+        if llm_ok
+        else f"\U0001f534 {t('status_llm_error', lang)}"
+    )
     model = self._escape_html(status["current_model"])
 
     rows: list[tuple[str, str]] = [
-        ("가동 시간", status["uptime_human"]),
-        ("LLM 백엔드", llm_status),
-        ("모델", model),
-        ("로드된 스킬", f"{status['skills_loaded']}개"),
+        (t("status_uptime", lang), status["uptime_human"]),
+        (t("status_llm_backend", lang), llm_status),
+        (t("status_model", lang), model),
+        (t("status_skills", lang), t("status_count_suffix", lang, count=status["skills_loaded"])),
     ]
 
     degraded_components = status.get("degraded_components", {})
@@ -36,36 +47,45 @@ async def cmd_status(
             reason = detail.get("reason") or "unknown"
             duration = detail.get("degraded_for_seconds")
             if isinstance(duration, int):
-                parts.append(f"{name}: {reason} ({duration}초)")
+                parts.append(
+                    f"{name}: {reason} ({t('status_seconds_suffix', lang, seconds=duration)})"
+                )
             else:
                 parts.append(f"{name}: {reason}")
-        rows.append(("Degraded", "⚠️ " + ", ".join(parts)))
+        rows.append((t("status_degraded", lang), "\u26a0\ufe0f " + ", ".join(parts)))
     else:
-        rows.append(("Degraded", "✅ 없음"))
+        rows.append((t("status_degraded", lang), f"\u2705 {t('status_degraded_none', lang)}"))
 
     if self._scheduler:
         autos = self._scheduler.list_automations()
         enabled = sum(1 for auto in autos if auto["enabled"])
-        rows.append(("자동화", f"{enabled}/{len(autos)}개 활성"))
+        rows.append((
+            t("status_automations", lang),
+            t("status_automations_active", lang, enabled=enabled, total=len(autos)),
+        ))
 
     if self._feedback:
         global_stats = await self._feedback.get_global_stats()
+        cnt = t("memory_count", lang, count=global_stats["total"])
         rows.append(
             (
-                "피드백",
-                f"{global_stats['total']}건 ({global_stats['satisfaction_rate']:.0%})",
+                t("status_feedback", lang),
+                f"{cnt} ({global_stats['satisfaction_rate']:.0%})",
             )
         )
 
     label_w = max(len(row[0]) for row in rows)
     table_lines = [
-        f"{'항목':<{label_w}s}  값",
-        "─" * (label_w + 20),
+        f"{t('status_header_item', lang):<{label_w}s}  {t('status_header_value', lang)}",
+        "\u2500" * (label_w + 20),
     ]
     for label, value in rows:
         table_lines.append(f"{label:<{label_w}s}  {value}")
 
-    text = f"📊 <b>시스템 상태</b>\n\n<pre>{chr(10).join(table_lines)}</pre>"
+    text = (
+        f"\U0001f4ca <b>{t('status_title', lang)}</b>"
+        f"\n\n<pre>{chr(10).join(table_lines)}</pre>"
+    )
     await update.effective_message.reply_text(  # type: ignore[union-attr]
         text,
         parse_mode=ParseMode.HTML,

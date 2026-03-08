@@ -24,10 +24,11 @@ from telegram.ext import (
     filters,
 )
 
-from core import telegram_commands, telegram_feedback, telegram_messages
+from core import telegram_commands, telegram_feedback, telegram_menus, telegram_messages
 from core.config import AppSettings
 from core.engine import Engine
 from core.feedback_manager import FeedbackManager
+from core.i18n import t
 from core.logging_setup import get_logger
 from core.security import (
     AuthenticationError,
@@ -58,8 +59,9 @@ def _auth_required(func: Callable) -> Callable:
                 chat_id=chat.id,
                 chat_type=chat.type,
             )
+            lang = self._config.bot.language
             with suppress(Exception):
-                await message.reply_text("이 봇은 private chat에서만 동작합니다.")
+                await message.reply_text(t("private_chat_only", lang))
             return
 
         chat_id = chat.id
@@ -70,8 +72,9 @@ def _auth_required(func: Callable) -> Callable:
             self._logger.warning("unauthorized_access", chat_id=chat_id)
             return
         except RateLimitError:
+            lang = self._config.bot.language
             await update.effective_message.reply_text(
-                "요청이 너무 많습니다. 잠시 후 다시 시도해주세요."
+                t("rate_limited", lang)
             )
             return
 
@@ -92,14 +95,14 @@ def _global_slot_required(func: Callable) -> Callable:
             async with self._security.global_slot(chat_id):
                 return await func(self, update, context)
         except GlobalConcurrencyError:
+            lang = self._config.bot.language
+            msg = t("concurrency_limited", lang)
             query = update.callback_query
             if query is not None:
-                await query.answer("현재 요청이 많습니다. 잠시 후 다시 시도해주세요.", show_alert=True)
+                await query.answer(msg, show_alert=True)
                 return
             if update.effective_message is not None:
-                await update.effective_message.reply_text(
-                    "현재 요청이 많습니다. 잠시 후 다시 시도해주세요."
-                )
+                await update.effective_message.reply_text(msg)
             return
 
     return wrapper
@@ -158,17 +161,18 @@ class TelegramHandler:
         return handlers
 
     def _build_bot_commands(self) -> list[BotCommand]:
+        lang = self._config.bot.language
         commands = [
-            BotCommand("start", "봇 시작"),
-            BotCommand("help", "도움말"),
-            BotCommand("skills", "스킬 목록"),
-            BotCommand("auto", "자동화 관리"),
-            BotCommand("memory", "메모리 관리"),
-            BotCommand("status", "시스템 상태"),
-            BotCommand("continue", "긴 답변 이어보기"),
+            BotCommand("start", t("cmd_start", lang)),
+            BotCommand("help", t("cmd_help", lang)),
+            BotCommand("skills", t("cmd_skills", lang)),
+            BotCommand("auto", t("cmd_auto", lang)),
+            BotCommand("memory", t("cmd_memory", lang)),
+            BotCommand("status", t("cmd_status", lang)),
+            BotCommand("continue", t("cmd_continue", lang)),
         ]
         if self._feedback_enabled:
-            commands.append(BotCommand("feedback", "피드백 통계"))
+            commands.append(BotCommand("feedback", t("cmd_feedback", lang)))
         return commands
 
     async def initialize(self) -> Application:
@@ -181,6 +185,13 @@ class TelegramHandler:
 
         for handler in self._build_command_handlers():
             self._app.add_handler(handler)
+
+        self._app.add_handler(
+            CallbackQueryHandler(self._handle_onboard_callback, pattern=r"^onboard:")
+        )
+        self._app.add_handler(
+            CallbackQueryHandler(self._handle_menu_callback, pattern=r"^menu:")
+        )
 
         if self._feedback_enabled:
             self._app.add_handler(
@@ -253,6 +264,18 @@ class TelegramHandler:
     @_global_slot_required
     async def _cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await telegram_commands.cmd_status(self, update, context)
+
+    @_global_slot_required
+    async def _handle_onboard_callback(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE,
+    ) -> None:
+        await telegram_menus.handle_onboard_callback(self, update, context)
+
+    @_global_slot_required
+    async def _handle_menu_callback(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE,
+    ) -> None:
+        await telegram_menus.handle_menu_callback(self, update, context)
 
     @staticmethod
     def _should_auto_trigger_analyze_all(text: str) -> bool:
@@ -523,12 +546,14 @@ class TelegramHandler:
         return self._coerce_error_list(errors)
 
     @staticmethod
-    def _format_reload_warnings(errors: list[str], max_items: int = 3) -> str:
+    def _format_reload_warnings(
+        errors: list[str], max_items: int = 3, lang: str = "ko",
+    ) -> str:
         preview = errors[:max_items]
-        lines = [f"\n\n⚠️ 일부 항목 로드 실패({len(errors)}건)"]
+        lines = [t("reload_warnings", lang, count=len(errors))]
         lines.extend(f"- {item}" for item in preview)
         if len(errors) > max_items:
-            lines.append(f"- ... 외 {len(errors) - max_items}건")
+            lines.append(t("reload_more", lang, count=len(errors) - max_items))
         return "\n".join(lines)
 
     def _split_message(self, text: str, max_length: int | None = None) -> list[str]:

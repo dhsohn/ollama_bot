@@ -5,10 +5,12 @@ strict_startup: false
 
 bot:
   name: "ollama_bot"
-  language: "ko"
+  language: "ko"                    # default UI language: "ko" | "en"
+  llm_provider: "lemonade"          # LLM backend: "lemonade" | "openai" | "ollama"
   max_conversation_length: 15
   response_timeout: 300
 
+# ── LLM Provider: Lemonade (default) ──
 lemonade:
   host: "http://localhost:8020"
   api_key: ""
@@ -37,6 +39,19 @@ lemonade:
   timeout_seconds: 120
   model_load_timeout_seconds: 120
   heavy_model_load_timeout_seconds: 420
+
+# ── LLM Provider: OpenAI-compatible (set llm_provider: "openai") ──
+# openai:
+#   host: "https://api.openai.com"
+#   api_key: "sk-..."
+#   default_model: "gpt-4o-mini"
+#   base_path: "/v1"
+#   temperature: 0.7
+#   max_tokens: 4096
+#   system_prompt: |
+#     You are a helpful AI assistant.
+#     Provide concise and accurate information.
+#   timeout_seconds: 120
 
 telegram:
   bot_token: "your_telegram_bot_token_here"
@@ -117,12 +132,20 @@ context_compressor:
   background_summarize: false
   summarize_concurrency: 1
 
-# ── Dual-Provider: Ollama(retrieval) + Lemonade(chat) ──
+# ── Ollama: retrieval (embed/rerank) + optional chat ──
+# When llm_provider is "ollama", chat_model is used for chat completions.
+# This enables single-server setup (Ollama for both chat and retrieval).
 
 ollama:
   host: "http://localhost:11434"
   embedding_model: "dengcao/Qwen3-Embedding-0.6B:Q8_0"
   reranker_model: "dengcao/bge-reranker-v2-m3:latest"
+  # chat_model: "llama3.1:8b"       # required when llm_provider: "ollama"
+  # chat_temperature: 0.7
+  # chat_max_tokens: 4096
+  # chat_num_ctx: 8192
+  # chat_system_prompt: |
+  #   You are a helpful AI assistant.
 
 rag:
   enabled: true

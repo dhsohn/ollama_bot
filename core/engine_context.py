@@ -44,6 +44,20 @@ def _strip_prompt_injection(text: str) -> str:
     return sanitized.strip()
 
 
+async def _resolve_user_language(engine: Engine, chat_id: int) -> str:
+    """Resolve per-user language preference, falling back to config default."""
+    try:
+        prefs = await engine._memory.recall_memory(chat_id, category="preferences")
+        for pref in prefs:
+            if pref.get("key") == "language":
+                val = normalize_language(str(pref.get("value", "")))
+                if val in ("ko", "en"):
+                    return val
+    except Exception:
+        pass
+    return normalize_language(engine._config.bot.language)
+
+
 async def build_context(
     engine: Engine,
     chat_id: int,
@@ -89,7 +103,9 @@ async def build_context(
         skill=skill,
     )
     system = inject_intent_suffix(system, strategy)
-    system = inject_language_policy(engine, system)
+
+    user_lang = await _resolve_user_language(engine, chat_id)
+    system = inject_language_policy(engine, system, language_override=user_lang)
 
     return assemble_messages(system, history, text, skill)
 
@@ -274,8 +290,12 @@ def normalize_language(value: str) -> str:
     return normalized
 
 
-def inject_language_policy(engine: Engine, system: str) -> str:
-    language = normalize_language(engine._config.bot.language)
+def inject_language_policy(
+    engine: Engine,
+    system: str,
+    language_override: str | None = None,
+) -> str:
+    language = normalize_language(language_override or engine._config.bot.language)
     if language == "ko":
         marker = "[언어 정책]"
         output_marker = "[출력 정책]"

@@ -1205,7 +1205,7 @@ class TestFeedbackButtons:
         context = MagicMock()
         await feedback_handler._handle_feedback_callback(update, context)
 
-        query.answer.assert_awaited_once_with("private chat에서만 사용할 수 있습니다.", show_alert=False)
+        query.answer.assert_awaited_once_with("이 봇은 private chat에서만 동작합니다.", show_alert=False)
 
     @pytest.mark.asyncio
     async def test_callback_auth_failure_answers(self, feedback_handler: TelegramHandler) -> None:

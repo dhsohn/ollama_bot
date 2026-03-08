@@ -208,7 +208,7 @@ class Engine:
         self._context_compressor = context_compressor
         self._rag_pipeline = rag_pipeline
         self._context_providers: list[ContextProvider] = context_providers or []
-        self._system_prompt = getattr(llm_client, "system_prompt", config.lemonade.system_prompt)
+        self._system_prompt = getattr(llm_client, "system_prompt", "") or self._resolve_system_prompt(config)
         self._max_conversation_length = config.bot.max_conversation_length
         self._start_time = time.monotonic()
         self._logger = get_logger("engine")
@@ -226,6 +226,16 @@ class Engine:
             self,
             repeated_chunk_abort_threshold=_STREAM_REPEATED_CHUNK_ABORT_THRESHOLD,
         )
+
+    @staticmethod
+    def _resolve_system_prompt(config: AppSettings) -> str:
+        """Return the system prompt from the active provider config."""
+        provider = config.bot.llm_provider
+        if provider == "ollama":
+            return config.ollama.chat_system_prompt
+        if provider == "openai":
+            return config.openai.system_prompt
+        return config.lemonade.system_prompt
 
     @staticmethod
     def _finalize_stream_response(full_response: str) -> str:

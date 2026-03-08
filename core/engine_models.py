@@ -44,13 +44,23 @@ async def prepare_target_model(
     return target_model, target_role
 
 
+def _default_model_for_provider(engine: Engine) -> str:
+    """Return the default chat model based on the configured provider."""
+    provider = engine._config.bot.llm_provider
+    if provider == "ollama":
+        return engine._config.ollama.chat_model or engine._config.ollama.embedding_model
+    if provider == "openai":
+        return engine._config.openai.default_model
+    return engine._config.lemonade.default_model
+
+
 def resolve_model_for_role(engine: Engine, role: str | None) -> str | None:
     """role 이름을 설정 모델명으로 해석한다."""
     role_key = (role or "").strip().lower()
     if not role_key:
         return None
     role_model_map = {
-        "default": engine._config.lemonade.default_model,
+        "default": _default_model_for_provider(engine),
         "embedding": engine._config.ollama.embedding_model,
         "reranker": engine._config.ollama.reranker_model,
     }

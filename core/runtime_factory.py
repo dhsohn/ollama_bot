@@ -16,7 +16,7 @@ import aiosqlite
 from core.async_utils import run_in_thread
 from core.auto_scheduler import AutoScheduler
 from core.automation_callables import register_builtin_callables
-from core.config import AppSettings, OllamaConfig
+from core.config import AppSettings, LemonadeConfig, OllamaConfig
 from core.context_compressor import ContextCompressor
 from core.engine import Engine
 from core.feedback_manager import FeedbackManager
@@ -60,10 +60,49 @@ class RuntimeState:
 
 
 def model_for_provider(config: AppSettings) -> str:
+    """Return the default chat model name for the configured provider."""
+    provider = config.bot.llm_provider
+    if provider == "ollama":
+        return config.ollama.chat_model or config.ollama.embedding_model
+    if provider == "openai":
+        return config.openai.default_model
     return config.lemonade.default_model
 
 
 def _create_llm_client(config: AppSettings) -> LLMClientProtocol:
+    """Create the chat LLM client based on ``bot.llm_provider``."""
+    provider = config.bot.llm_provider
+
+    if provider == "ollama":
+        chat_model = config.ollama.chat_model or config.ollama.embedding_model
+        ollama_cfg = OllamaConfig(
+            host=config.ollama.host,
+            model=chat_model,
+            temperature=config.ollama.chat_temperature,
+            max_tokens=config.ollama.chat_max_tokens,
+            num_ctx=config.ollama.chat_num_ctx,
+            system_prompt=config.ollama.chat_system_prompt,
+        )
+        return OllamaClient(ollama_cfg)
+
+    if provider == "openai":
+        openai_cfg = config.openai
+        lemonade_cfg = LemonadeConfig(
+            host=openai_cfg.host,
+            api_key=openai_cfg.api_key,
+            default_model=openai_cfg.default_model,
+            base_path=openai_cfg.base_path,
+            temperature=openai_cfg.temperature,
+            max_tokens=openai_cfg.max_tokens,
+            system_prompt=openai_cfg.system_prompt,
+            timeout_seconds=openai_cfg.timeout_seconds,
+            model_load_timeout_seconds=openai_cfg.model_load_timeout_seconds,
+            heavy_model_load_timeout_seconds=openai_cfg.heavy_model_load_timeout_seconds,
+            reconnect_cooldown_seconds=openai_cfg.reconnect_cooldown_seconds,
+        )
+        return LemonadeClient(lemonade_cfg)
+
+    # default: lemonade
     return LemonadeClient(config.lemonade)
 
 
@@ -244,29 +283,44 @@ async def build_runtime(
             except Exception as exc:
                 logger.error("feedback_prune_failed", error=str(exc))
 
-        config.lemonade.host = resolve_wsl_loopback_host(
-            url=config.lemonade.host,
-            service_name="lemonade",
-            logger=logger,
-        )
+        llm_provider = config.bot.llm_provider
+
+        if llm_provider == "openai":
+            config.openai.host = resolve_wsl_loopback_host(
+                url=config.openai.host,
+                service_name="openai",
+                logger=logger,
+            )
+        else:
+            config.lemonade.host = resolve_wsl_loopback_host(
+                url=config.lemonade.host,
+                service_name="lemonade",
+                logger=logger,
+            )
         config.ollama.host = resolve_wsl_loopback_host(
             url=config.ollama.host,
             service_name="ollama",
             logger=logger,
         )
 
-        llm_provider = "lemonade"
         llm = _create_llm_client(config)
-        llm.default_model = config.lemonade.default_model
-        llm_host = getattr(llm, "host", config.lemonade.host)
+        default_model = model_for_provider(config)
+        llm.default_model = default_model
+        llm_host = getattr(llm, "host", "unknown")
         try:
             await llm.initialize()
         except Exception as exc:
             logger.error("llm_init_failed", provider=llm_provider, error=str(exc))
-            hint = (
-                "\n힌트: WSL 환경에서는 lemonade-server가 0.0.0.0에 바인딩되어야 합니다."
-                "\n      Windows 방화벽에서 해당 포트의 인바운드를 허용했는지 확인하세요."
-            )
+            if llm_provider == "ollama":
+                hint = (
+                    f"\n힌트: Ollama 서버가 {config.ollama.host} 에서 실행 중인지 확인하세요."
+                    f"\n      채팅 모델({default_model})이 pull 되었는지 확인하세요."
+                )
+            else:
+                hint = (
+                    "\n힌트: WSL 환경에서는 서버가 0.0.0.0에 바인딩되어야 합니다."
+                    "\n      Windows 방화벽에서 해당 포트의 인바운드를 허용했는지 확인하세요."
+                )
             raise StartupError(
                 f"오류: {llm_provider} 초기화 실패 ({llm_host})\n"
                 f"{exc}{hint}\n"
@@ -416,7 +470,7 @@ async def build_runtime(
                 retrieval_proto = cast(RetrievalClientProtocol, retrieval_client)
                 model_registry = ModelRegistry(
                     ModelRegistryConfig(
-                        default_model=config.lemonade.default_model,
+                        default_model=model_for_provider(config),
                         embedding_model=config.ollama.embedding_model,
                         reranker_model=config.ollama.reranker_model,
                     ),
@@ -433,7 +487,6 @@ async def build_runtime(
                 )
                 model_registry = None
 
-        default_model = config.lemonade.default_model
         prepare_model = getattr(llm, "prepare_model", None)
         if callable(prepare_model):
             try:

@@ -16,8 +16,19 @@ from pydantic import BaseModel, Field, field_validator
 class BotConfig(BaseModel):
     name: str = "ollama_bot"
     language: str = "ko"
+    llm_provider: str = "lemonade"  # "lemonade" | "openai" | "ollama"
     max_conversation_length: int = 50
     response_timeout: int = 60
+
+    @field_validator("llm_provider")
+    @classmethod
+    def validate_llm_provider(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in {"lemonade", "openai", "ollama"}:
+            raise ValueError(
+                f"llm_provider must be one of: lemonade, openai, ollama (got '{value}')"
+            )
+        return normalized
 
 
 class OllamaConfig(BaseModel):
@@ -60,6 +71,25 @@ class LemonadeConfig(BaseModel):
         if value < 1:
             raise ValueError("lemonade timeout settings must be >= 1")
         return value
+
+
+class OpenAIConfig(BaseModel):
+    """OpenAI-compatible API provider settings."""
+
+    host: str = "https://api.openai.com"
+    api_key: str = ""
+    default_model: str = "gpt-4o-mini"
+    base_path: str = "/v1"
+    temperature: float = 0.7
+    max_tokens: int = 4096
+    system_prompt: str = (
+        "You are a helpful AI assistant.\n"
+        "Provide concise and accurate information.\n"
+    )
+    timeout_seconds: int = 120
+    model_load_timeout_seconds: int = 120
+    heavy_model_load_timeout_seconds: int = 420
+    reconnect_cooldown_seconds: float = 15.0
 
 
 class TelegramConfig(BaseModel):
@@ -212,11 +242,23 @@ class ContextCompressorConfig(BaseModel):
 
 
 class RetrievalProviderConfig(BaseModel):
-    """Ollama 기반 retrieval(임베딩/리랭킹) 전용 프로바이더 설정."""
+    """Ollama 기반 retrieval(임베딩/리랭킹) 전용 프로바이더 설정.
+
+    When ``bot.llm_provider`` is ``"ollama"``, the ``chat_model`` field
+    is also used for chat completions via OllamaClient.
+    """
 
     host: str = "http://localhost:11434"
     embedding_model: str = "Qwen3-Embedding-0.6B-GGUF"
     reranker_model: str = "bge-reranker-v2-m3-GGUF"
+    chat_model: str = ""
+    chat_temperature: float = 0.7
+    chat_max_tokens: int = 4096
+    chat_num_ctx: int = 8192
+    chat_system_prompt: str = (
+        "You are a helpful AI assistant.\n"
+        "Provide concise and accurate information.\n"
+    )
 
 
 class ModelRegistryConfig(BaseModel):
@@ -278,6 +320,7 @@ class AppSettings(BaseModel):
 
     bot: BotConfig = Field(default_factory=BotConfig)
     lemonade: LemonadeConfig = Field(default_factory=LemonadeConfig)
+    openai: OpenAIConfig = Field(default_factory=OpenAIConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
     security: SecurityConfig = Field(default_factory=SecurityConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)

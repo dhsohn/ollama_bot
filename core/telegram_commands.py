@@ -12,6 +12,8 @@ from core import (
     telegram_commands_memory,
     telegram_commands_status,
 )
+from core.i18n import t
+from core.telegram_menus import get_user_language, handle_start_with_onboarding
 
 if TYPE_CHECKING:
     from telegram import Update
@@ -24,13 +26,7 @@ async def cmd_start(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
-    _ = context
-    welcome = (
-        f"안녕하세요! {self._config.bot.name} 입니다.\n\n"
-        "Dual-Provider(Lemonade + Ollama retrieval) 기반 AI 어시스턴트입니다.\n"
-        "자유롭게 대화하거나, /help 명령으로 도움말을 확인하세요."
-    )
-    await update.effective_message.reply_text(welcome)  # type: ignore[union-attr]
+    await handle_start_with_onboarding(self, update, context)
 
 
 async def cmd_help(
@@ -39,30 +35,34 @@ async def cmd_help(
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
     _ = context
+    chat_id = update.effective_chat.id  # type: ignore[union-attr]
+    lang = await get_user_language(self, chat_id)
+
     commands: list[tuple[str, str]] = [
-        ("/start", "봇 시작"),
-        ("/help", "이 도움말 표시"),
-        ("/skills", "스킬 목록/리로드"),
-        ("/auto", "자동화 관리/리로드"),
-        ("/memory", "메모리 관리"),
-        ("/status", "시스템 상태"),
-        ("/continue", "긴 답변 이어보기"),
+        ("/start", t("cmd_start", lang)),
+        ("/help", t("cmd_help", lang)),
+        ("/skills", t("cmd_skills", lang)),
+        ("/auto", t("cmd_auto", lang)),
+        ("/memory", t("cmd_memory", lang)),
+        ("/status", t("cmd_status", lang)),
+        ("/continue", t("cmd_continue", lang)),
     ]
     if self._feedback_enabled:
-        commands.insert(6, ("/feedback", "피드백 통계"))
+        commands.insert(6, ("/feedback", t("cmd_feedback", lang)))
 
-    table_lines = ["명령어       설명", "─" * 25]
+    header_cmd = t("help_header_cmd", lang)
+    header_desc = t("help_header_desc", lang)
+    table_lines = [f"{header_cmd:<12s} {header_desc}", "\u2500" * 25]
     for cmd, desc in commands:
         table_lines.append(f"{cmd:<12s} {desc}")
 
     help_text = (
-        "📋 <b>사용 가능한 명령어</b>\n\n"
+        f"\U0001f4cb <b>{t('help_title', lang)}</b>\n\n"
         f"<pre>{chr(10).join(table_lines)}</pre>\n\n"
-        "💬 <b>대화 모드</b>\n"
-        "명령어 없이 자유롭게 대화하세요.\n\n"
-        "🔧 <b>스킬 모드</b>\n"
-        "스킬 트리거 키워드를 사용하면 전문 기능이 활성화됩니다.\n"
-        "/skills 명령으로 스킬 목록을 확인하세요."
+        f"\U0001f4ac <b>{t('help_chat_mode', lang)}</b>\n"
+        f"{t('help_chat_desc', lang)}\n\n"
+        f"\U0001f527 <b>{t('help_skill_mode', lang)}</b>\n"
+        f"{t('help_skill_desc', lang)}"
     )
     await update.effective_message.reply_text(  # type: ignore[union-attr]
         help_text,
@@ -75,31 +75,39 @@ async def cmd_skills(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
+    chat_id = update.effective_chat.id  # type: ignore[union-attr]
+    lang = await get_user_language(self, chat_id)
     args = context.args or []
+
     if args and args[0] == "reload":
         try:
             count = await self._engine.reload_skills(strict=True)
             errors = self._get_skill_reload_errors()
-            message = f"스킬을 다시 로드했습니다: {count}개"
+            message = t("skills_reloaded", lang, count=count)
             if errors:
-                message += self._format_reload_warnings(errors)
+                message += self._format_reload_warnings(errors, lang=lang)
             await update.effective_message.reply_text(message)  # type: ignore[union-attr]
         except Exception as exc:
             self._logger.error("skills_reload_failed", error=str(exc))
             await update.effective_message.reply_text(  # type: ignore[union-attr]
-                f"스킬 로드 실패: {exc}"
+                t("skills_reload_failed", lang, error=str(exc))
             )
         return
 
     skills = self._engine.list_skills()
     if not skills:
-        await update.effective_message.reply_text("등록된 스킬이 없습니다.")  # type: ignore[union-attr]
+        await update.effective_message.reply_text(  # type: ignore[union-attr]
+            t("skills_empty", lang)
+        )
         return
 
     name_w = max(4, max(len(skill["name"]) for skill in skills))
     desc_w = max(4, max(len(skill["description"]) for skill in skills))
-    header = f"{'스킬':<{name_w}s}  {'설명':<{desc_w}s}  트리거"
-    sep = "─" * min(len(header) + 4, 50)
+    h_name = t("skills_header_name", lang)
+    h_desc = t("skills_header_desc", lang)
+    h_trigger = t("skills_header_trigger", lang)
+    header = f"{h_name:<{name_w}s}  {h_desc:<{desc_w}s}  {h_trigger}"
+    sep = "\u2500" * min(len(header) + 4, 50)
     table_lines = [header, sep]
     for skill in skills:
         triggers = ", ".join(skill["triggers"])
@@ -109,7 +117,10 @@ async def cmd_skills(
             f"{self._escape_html(triggers)}"
         )
 
-    text = f"🔧 <b>사용 가능한 스킬</b>\n\n<pre>{chr(10).join(table_lines)}</pre>"
+    text = (
+        f"\U0001f527 <b>{t('skills_title', lang)}</b>"
+        f"\n\n<pre>{chr(10).join(table_lines)}</pre>"
+    )
     await update.effective_message.reply_text(  # type: ignore[union-attr]
         text,
         parse_mode=ParseMode.HTML,
