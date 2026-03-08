@@ -45,7 +45,7 @@ def test_allowed_telegram_users_invalid_value_raises(tmp_path: Path) -> None:
         "  allowed_users: \"123,abc,456\"\n"
     ))
 
-    with pytest.raises(ValueError, match="telegram.allowed_users"):
+    with pytest.raises(ValueError, match=r"telegram\.allowed_users"):
         load_config(config_path=str(config_path))
 
 

@@ -8,7 +8,7 @@ skills/_builtin/ 및 skills/custom/ 디렉토리의 YAML 파일을 로드하고,
 from __future__ import annotations
 
 from collections import deque
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 
 import yaml
@@ -18,7 +18,7 @@ from core.logging_setup import get_logger
 from core.security import SecurityManager, SecurityViolationError
 
 
-class SecurityLevel(str, Enum):
+class SecurityLevel(StrEnum):
     SAFE = "safe"
     CAUTIOUS = "cautious"
     RESTRICTED = "restricted"

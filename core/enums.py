@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 
 
-class RoutingTier(str, Enum):
+class RoutingTier(StrEnum):
     """엔진 라우팅 계층."""
 
     SKILL = "skill"

@@ -275,7 +275,7 @@ class Engine:
                         raise RuntimeError("routing_decision_invalid: missing skill")
                     self._logger.info("skill_triggered", chat_id=chat_id, skill=skill.name)
                     messages = await self._build_context(chat_id, text, skill=skill)
-                    content, usage, target_model = await self._run_skill_chat(
+                    content, usage, _target_model = await self._run_skill_chat(
                         skill=skill,
                         messages=messages,
                         model_override=model_override,

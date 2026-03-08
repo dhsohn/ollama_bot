@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING, Any
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
@@ -12,6 +13,19 @@ from core.i18n import t
 
 if TYPE_CHECKING:
     from core.telegram_handler import TelegramHandler
+
+
+_MessageMethod = Callable[..., Awaitable[Any]]
+
+
+def _get_message_method(message: object | None, method_name: str) -> _MessageMethod | None:
+    """Return a callable Telegram message method when the callback message is accessible."""
+    if message is None:
+        return None
+    method = getattr(message, method_name, None)
+    if callable(method):
+        return method
+    return None
 
 
 async def get_user_language(self: TelegramHandler, chat_id: int) -> str:
@@ -135,8 +149,9 @@ async def handle_onboard_callback(
         done_text = t("onboard_done", lang)
         keyboard = build_main_menu_keyboard(lang)
 
-        if query.message is not None:
-            await query.message.edit_text(
+        edit_text = _get_message_method(query.message, "edit_text")
+        if edit_text is not None:
+            await edit_text(
                 f"{response}\n\n{done_text}",
                 reply_markup=keyboard,
             )
@@ -145,8 +160,9 @@ async def handle_onboard_callback(
     if data == "onboard:done":
         lang = await get_user_language(self, chat_id)
         done_text = t("onboard_done", lang)
-        if query.message is not None:
-            await query.message.edit_text(done_text)
+        edit_text = _get_message_method(query.message, "edit_text")
+        if edit_text is not None:
+            await edit_text(done_text)
 
 
 async def handle_menu_callback(
@@ -191,8 +207,9 @@ async def _show_settings(self: TelegramHandler, update: Update) -> None:
         ],
     ])
     query = update.callback_query
-    if query and query.message:
-        await query.message.reply_text(
+    reply_text = _get_message_method(query.message if query else None, "reply_text")
+    if reply_text is not None:
+        await reply_text(
             text, parse_mode=ParseMode.HTML, reply_markup=keyboard,
         )
     elif update.effective_message:
@@ -215,7 +232,8 @@ async def _handle_lang_change(
     )
     response = t("onboard_lang_set", lang)
     query = update.callback_query
-    if query and query.message:
-        await query.message.edit_text(response)
+    edit_text = _get_message_method(query.message if query else None, "edit_text")
+    if edit_text is not None:
+        await edit_text(response)
     elif update.effective_message:
         await update.effective_message.reply_text(response)

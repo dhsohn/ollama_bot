@@ -381,7 +381,7 @@ class TestRoutingMissingSkill:
             patch.object(
                 engine, "_decide_routing", new_callable=AsyncMock, return_value=bad_decision
             ),
-            pytest.raises(RuntimeError, match="routing_decision_invalid.*missing skill"),
+            pytest.raises(RuntimeError, match=r"routing_decision_invalid.*missing skill"),
         ):
             await engine.process_message(111, "hello")
 
@@ -398,7 +398,7 @@ class TestRoutingMissingSkill:
             patch.object(
                 engine, "_decide_routing", new_callable=AsyncMock, return_value=bad_decision
             ),
-            pytest.raises(RuntimeError, match="routing_decision_invalid.*missing skill"),
+            pytest.raises(RuntimeError, match=r"routing_decision_invalid.*missing skill"),
         ):
             async for _ in engine.process_message_stream(111, "hello"):
                 pass

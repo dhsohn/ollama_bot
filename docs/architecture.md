@@ -28,7 +28,7 @@
 - Skill 트리거는 문자열 prefix 매칭이므로 자연어 변형에 취약
 
 ### 타입 안전성
-`RoutingTier(str, Enum)`으로 tier를 정의하여 문자열 비교 오류를 컴파일 타임에 방지한다.
+`RoutingTier(StrEnum)`으로 tier를 정의하여 문자열 비교 오류를 컴파일 타임에 방지한다.
 (`core/enums.py` 참조)
 
 ---

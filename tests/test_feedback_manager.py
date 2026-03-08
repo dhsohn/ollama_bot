@@ -27,7 +27,7 @@ async def feedback_db(tmp_path: Path):
 class TestInitializeSchema:
     @pytest.mark.asyncio
     async def test_table_created(self, feedback_db) -> None:
-        fm, db = feedback_db
+        _fm, db = feedback_db
         async with db.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='message_feedback'"
         ) as cursor:
@@ -38,7 +38,7 @@ class TestInitializeSchema:
 class TestStoreFeedback:
     @pytest.mark.asyncio
     async def test_new_feedback_returns_false(self, feedback_db) -> None:
-        fm, db = feedback_db
+        fm, _db = feedback_db
         is_update = await fm.store_feedback(
             chat_id=111, bot_message_id=1, rating=1, user_preview="hi", bot_preview="hello"
         )
@@ -46,14 +46,14 @@ class TestStoreFeedback:
 
     @pytest.mark.asyncio
     async def test_upsert_returns_true(self, feedback_db) -> None:
-        fm, db = feedback_db
+        fm, _db = feedback_db
         await fm.store_feedback(chat_id=111, bot_message_id=1, rating=1)
         is_update = await fm.store_feedback(chat_id=111, bot_message_id=1, rating=-1)
         assert is_update is True
 
     @pytest.mark.asyncio
     async def test_upsert_changes_rating(self, feedback_db) -> None:
-        fm, db = feedback_db
+        fm, _db = feedback_db
         await fm.store_feedback(chat_id=111, bot_message_id=1, rating=1)
         await fm.store_feedback(chat_id=111, bot_message_id=1, rating=-1)
         stats = await fm.get_user_stats(111)
@@ -65,14 +65,14 @@ class TestStoreFeedback:
 class TestGetUserStats:
     @pytest.mark.asyncio
     async def test_empty_stats(self, feedback_db) -> None:
-        fm, db = feedback_db
+        fm, _db = feedback_db
         stats = await fm.get_user_stats(999)
         assert stats["total"] == 0
         assert stats["satisfaction_rate"] == 0.0
 
     @pytest.mark.asyncio
     async def test_stats_calculation(self, feedback_db) -> None:
-        fm, db = feedback_db
+        fm, _db = feedback_db
         await fm.store_feedback(111, 1, 1)
         await fm.store_feedback(111, 2, 1)
         await fm.store_feedback(111, 3, -1)
@@ -86,7 +86,7 @@ class TestGetUserStats:
 class TestGetGlobalStats:
     @pytest.mark.asyncio
     async def test_global_stats(self, feedback_db) -> None:
-        fm, db = feedback_db
+        fm, _db = feedback_db
         await fm.store_feedback(111, 1, 1)
         await fm.store_feedback(222, 2, -1)
         stats = await fm.get_global_stats()
@@ -98,7 +98,7 @@ class TestGetGlobalStats:
 class TestGetRecentFeedback:
     @pytest.mark.asyncio
     async def test_returns_matching_rating(self, feedback_db) -> None:
-        fm, db = feedback_db
+        fm, _db = feedback_db
         await fm.store_feedback(111, 1, 1, "q1", "a1")
         await fm.store_feedback(111, 2, -1, "q2", "a2")
         await fm.store_feedback(111, 3, 1, "q3", "a3")
@@ -108,7 +108,7 @@ class TestGetRecentFeedback:
 
     @pytest.mark.asyncio
     async def test_limit_respected(self, feedback_db) -> None:
-        fm, db = feedback_db
+        fm, _db = feedback_db
         for i in range(5):
             await fm.store_feedback(111, i, 1)
         positives = await fm.get_recent_feedback(111, rating=1, limit=3)
@@ -139,7 +139,7 @@ class TestGetRecentFeedback:
 class TestCountFeedback:
     @pytest.mark.asyncio
     async def test_count(self, feedback_db) -> None:
-        fm, db = feedback_db
+        fm, _db = feedback_db
         assert await fm.count_feedback(111) == 0
         await fm.store_feedback(111, 1, 1)
         await fm.store_feedback(111, 2, -1)
@@ -170,7 +170,7 @@ class TestPruneOldFeedback:
 class TestSchemaMigration:
     @pytest.mark.asyncio
     async def test_v2_migration_adds_reason_column(self, feedback_db) -> None:
-        fm, db = feedback_db
+        _fm, db = feedback_db
         # reason 컬럼이 존재하는지 확인
         async with db.execute("PRAGMA table_info(message_feedback)") as cursor:
             columns = [row[1] for row in await cursor.fetchall()]
@@ -187,7 +187,7 @@ class TestSchemaMigration:
 
     @pytest.mark.asyncio
     async def test_schema_migrations_table_tracks_versions(self, feedback_db) -> None:
-        fm, db = feedback_db
+        _fm, db = feedback_db
         async with db.execute("SELECT version FROM schema_migrations ORDER BY version") as cursor:
             versions = [row[0] for row in await cursor.fetchall()]
         assert 102 in versions
@@ -231,7 +231,7 @@ class TestSchemaMigration:
 class TestUpdateReason:
     @pytest.mark.asyncio
     async def test_update_reason_success(self, feedback_db) -> None:
-        fm, db = feedback_db
+        fm, _db = feedback_db
         await fm.store_feedback(111, 1, -1, "q", "a")
         result = await fm.update_reason(111, 1, "응답이 부정확했어요")
         assert result is True
@@ -241,13 +241,13 @@ class TestUpdateReason:
 
     @pytest.mark.asyncio
     async def test_update_reason_not_found(self, feedback_db) -> None:
-        fm, db = feedback_db
+        fm, _db = feedback_db
         result = await fm.update_reason(111, 999, "없는 피드백")
         assert result is False
 
     @pytest.mark.asyncio
     async def test_reason_none_without_update(self, feedback_db) -> None:
-        fm, db = feedback_db
+        fm, _db = feedback_db
         await fm.store_feedback(111, 1, -1, "q", "a")
         fb_list = await fm.get_recent_feedback(111, rating=-1)
         assert fb_list[0]["reason"] is None
@@ -256,7 +256,7 @@ class TestUpdateReason:
 class TestSearchPositiveExamples:
     @pytest.mark.asyncio
     async def test_search_finds_matching(self, feedback_db) -> None:
-        fm, db = feedback_db
+        fm, _db = feedback_db
         await fm.store_feedback(111, 1, 1, "파이썬 리스트 정렬", "sorted() 함수를 사용하세요")
         await fm.store_feedback(111, 2, 1, "자바스크립트 배열", "Array.sort() 를 사용하세요")
         await fm.store_feedback(111, 3, -1, "파이썬 에러", "에러 메시지를 확인하세요")  # 부정
@@ -267,13 +267,13 @@ class TestSearchPositiveExamples:
 
     @pytest.mark.asyncio
     async def test_search_returns_empty_for_no_keywords(self, feedback_db) -> None:
-        fm, db = feedback_db
+        fm, _db = feedback_db
         results = await fm.search_positive_examples(111, [], limit=5)
         assert results == []
 
     @pytest.mark.asyncio
     async def test_search_deduplicates_previews(self, feedback_db) -> None:
-        fm, db = feedback_db
+        fm, _db = feedback_db
         # 동일한 bot_preview로 두 건 저장
         await fm.store_feedback(111, 1, 1, "파이썬 질문1", "같은 답변입니다")
         await fm.store_feedback(111, 2, 1, "파이썬 질문2", "같은 답변입니다")
@@ -281,4 +281,3 @@ class TestSearchPositiveExamples:
         results = await fm.search_positive_examples(111, ["파이썬"], limit=5, min_preview_length=5)
         bot_previews = [r["bot_preview"] for r in results]
         assert len(bot_previews) == len(set(bot_previews))
-

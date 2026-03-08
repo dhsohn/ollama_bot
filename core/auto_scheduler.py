@@ -11,7 +11,7 @@ import functools
 import inspect
 from collections.abc import Callable
 from datetime import UTC, datetime, timezone
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 from typing import Any, Protocol
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -26,7 +26,7 @@ from core.logging_setup import get_logger
 from core.security import SecurityManager
 
 
-class ActionType(str, Enum):
+class ActionType(StrEnum):
     SKILL = "skill"
     COMMAND = "command"
     PROMPT = "prompt"
