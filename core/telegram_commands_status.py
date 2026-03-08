@@ -73,6 +73,22 @@ async def cmd_status(
                 f"{cnt} ({global_stats['satisfaction_rate']:.0%})",
             )
         )
+        review_stats = await self._feedback.get_review_issue_stats()
+        if review_stats["total_reviews"] > 0:
+            top_issue = review_stats["top_issues"][0] if review_stats["top_issues"] else None
+            if top_issue is None:
+                top_issue_text = t("status_degraded_none", lang)
+            else:
+                top_issue_text = f"{self._escape_html(str(top_issue['issue']))} ({top_issue['count']})"
+            rows.append(
+                (
+                    t("status_reviewer", lang),
+                    (
+                        f"{review_stats['rewritten_reviews']}/{review_stats['total_reviews']} "
+                        f"({review_stats['rewrite_rate']:.0%}), {top_issue_text}"
+                    ),
+                )
+            )
 
     label_w = max(len(row[0]) for row in rows)
     table_lines = [

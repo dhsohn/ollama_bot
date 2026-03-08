@@ -132,6 +132,25 @@ context_compressor:
   background_summarize: false
   summarize_concurrency: 1
 
+response_planner:
+  enabled: true
+  min_input_chars: 80
+  trigger_intents:
+    - "complex"
+    - "code"
+  force_for_rag: false
+  max_plan_tokens: 256
+  timeout_seconds: 45
+  max_sections: 4
+  max_must_cover: 4
+
+response_reviewer:
+  enabled: true
+  only_when_planner_used: true
+  max_review_tokens: 384
+  timeout_seconds: 45
+  stream_buffering: true
+
 # ── Ollama: retrieval (embed/rerank) + optional chat ──
 # When llm_provider is "ollama", chat_model is used for chat completions.
 # This enables single-server setup (Ollama for both chat and retrieval).

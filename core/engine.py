@@ -148,6 +148,7 @@ class Engine:
     _prepare_full_request = engine_delegates._prepare_full_request
     _extract_json_payload = staticmethod(engine_delegates._extract_json_payload)
     _maybe_store_semantic_cache = engine_delegates._maybe_store_semantic_cache
+    _maybe_review_full_response = engine_delegates._maybe_review_full_response
     _is_summarize_skill = staticmethod(engine_delegates._is_summarize_skill)
     _extract_skill_user_input = staticmethod(engine_delegates._extract_skill_user_input)
     _should_use_chunked_summary = engine_delegates._should_use_chunked_summary
@@ -278,6 +279,16 @@ class Engine:
                     )
                 if not content:
                     raise RuntimeError("empty_response_from_llm")
+                content = await self._maybe_review_full_response(
+                    chat_id=chat_id,
+                    text=text,
+                    response=content,
+                    raw_response=chat_response.content,
+                    intent=routing.intent,
+                    prepared_full=prepared_full,
+                    images=images,
+                    anomaly_reasons=anomaly_reasons,
+                )
                 await self._persist_turn(chat_id, text, content)
 
                 await self._maybe_store_semantic_cache(

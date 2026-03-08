@@ -13,6 +13,7 @@ from core import (
     engine_context,
     engine_models,
     engine_rag,
+    engine_reviewer,
     engine_routing,
     engine_summary,
     engine_tracking,
@@ -277,6 +278,34 @@ async def _maybe_store_semantic_cache(
         return None
     cache_ctx = self._build_cache_context(model_override, intent, chat_id)
     return await self._semantic_cache.put(text, response, context=cache_ctx)
+
+
+async def _maybe_review_full_response(
+    self: Any,
+    *,
+    chat_id: int,
+    text: str,
+    response: str,
+    raw_response: str,
+    intent: str | None,
+    prepared_full: _PreparedFullRequest,
+    images: list[bytes] | None,
+    anomaly_reasons: list[str] | None = None,
+) -> str:
+    return await engine_reviewer.maybe_review_response(
+        self,
+        chat_id=chat_id,
+        text=text,
+        response=response,
+        raw_response=raw_response,
+        intent=intent,
+        target_model=prepared_full.target_model,
+        timeout=prepared_full.timeout,
+        planner_applied=prepared_full.planner_applied,
+        rag_used=bool(prepared_full.rag_result and prepared_full.rag_result.contexts),
+        images=images,
+        anomaly_reasons=anomaly_reasons,
+    )
 
 
 def _is_summarize_skill(skill: SkillDefinition) -> bool:

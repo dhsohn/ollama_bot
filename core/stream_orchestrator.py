@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 from core.enums import RoutingTier
 from core.llm_types import ChatStreamState
 from core.skill_manager import SkillDefinition
-from core.text_utils import sanitize_model_output
+from core.text_utils import detect_output_anomalies, sanitize_model_output
 
 if TYPE_CHECKING:
     from core.engine import Engine
@@ -215,10 +215,11 @@ class EngineStreamOrchestrator:
                 )
 
                 full_response = ""
+                raw_full_response = ""
                 stream_state = ChatStreamState()
                 usage = None
                 stream_error: Exception | None = None
-                should_stream_chunks = True
+                should_stream_chunks = not prepared_full.stream_buffering
                 full_last_stream_chunk: str | None = None
                 full_repeated_stream_chunk_count = 0
                 try:
@@ -248,6 +249,7 @@ class EngineStreamOrchestrator:
                         full_last_stream_chunk = chunk
                         full_repeated_stream_chunk_count = 0
                         full_response += chunk
+                        raw_full_response += chunk
                         if should_stream_chunks:
                             yield chunk
                 except Exception as exc:
@@ -272,6 +274,7 @@ class EngineStreamOrchestrator:
                             timeout=prepared_full.timeout,
                             max_tokens=prepared_full.max_tokens,
                         )
+                        raw_full_response = chat_response.content
                         full_response = sanitize_model_output(chat_response.content)
                         usage = chat_response.usage
                         if full_response and should_stream_chunks:
@@ -290,13 +293,36 @@ class EngineStreamOrchestrator:
                         timeout=prepared_full.timeout,
                         max_tokens=prepared_full.max_tokens,
                     )
+                    raw_full_response = chat_response.content
                     full_response = sanitize_model_output(chat_response.content)
                     usage = chat_response.usage or usage
                     if full_response and should_stream_chunks:
                         yield full_response
                 if stream_error is not None and not full_response.strip():
                     raise stream_error
+                if not raw_full_response:
+                    raw_full_response = full_response
                 full_response = engine._finalize_stream_response(full_response)
+                anomaly_reasons = detect_output_anomalies(raw_full_response, full_response)
+                if anomaly_reasons:
+                    engine._logger.warning(
+                        "response_anomaly_detected",
+                        chat_id=chat_id,
+                        model=prepared_full.target_model,
+                        reasons=anomaly_reasons,
+                    )
+                full_response = await engine._maybe_review_full_response(
+                    chat_id=chat_id,
+                    text=text,
+                    response=full_response,
+                    raw_response=raw_full_response,
+                    intent=routing.intent,
+                    prepared_full=prepared_full,
+                    images=images,
+                    anomaly_reasons=anomaly_reasons,
+                )
+                if not should_stream_chunks and full_response:
+                    yield full_response
 
                 await engine._persist_turn(chat_id, text, full_response)
                 turn_persisted = True

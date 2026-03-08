@@ -185,6 +185,48 @@ def test_feedback_invalid_numeric_value_raises(tmp_path: Path) -> None:
         load_config(config_path=str(config_path))
 
 
+def test_response_planner_section_loaded_from_yaml(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    _write_yaml(config_path, _minimal_yaml(
+        "response_planner:\n"
+        "  enabled: true\n"
+        "  min_input_chars: 120\n"
+        "  trigger_intents:\n"
+        "    - complex\n"
+        "    - code\n"
+        "  force_for_rag: true\n"
+        "  max_plan_tokens: 320\n"
+        "  timeout_seconds: 30\n"
+    ))
+
+    settings = load_config(config_path=str(config_path))
+    assert settings.response_planner.enabled is True
+    assert settings.response_planner.min_input_chars == 120
+    assert settings.response_planner.trigger_intents == ["complex", "code"]
+    assert settings.response_planner.force_for_rag is True
+    assert settings.response_planner.max_plan_tokens == 320
+    assert settings.response_planner.timeout_seconds == 30
+
+
+def test_response_reviewer_section_loaded_from_yaml(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    _write_yaml(config_path, _minimal_yaml(
+        "response_reviewer:\n"
+        "  enabled: true\n"
+        "  only_when_planner_used: false\n"
+        "  max_review_tokens: 512\n"
+        "  timeout_seconds: 25\n"
+        "  stream_buffering: false\n"
+    ))
+
+    settings = load_config(config_path=str(config_path))
+    assert settings.response_reviewer.enabled is True
+    assert settings.response_reviewer.only_when_planner_used is False
+    assert settings.response_reviewer.max_review_tokens == 512
+    assert settings.response_reviewer.timeout_seconds == 25
+    assert settings.response_reviewer.stream_buffering is False
+
+
 def test_partial_lemonade_section_preserves_defaults(tmp_path: Path) -> None:
     """lemonade 섹션 일부만 지정해도 누락 필드는 기본값을 유지한다."""
     config_path = tmp_path / "config.yaml"

@@ -832,6 +832,12 @@ class TestFeedbackButtons:
         fb.get_global_stats = AsyncMock(return_value={
             "total": 20, "positive": 15, "negative": 5, "satisfaction_rate": 0.75,
         })
+        fb.get_review_issue_stats = AsyncMock(return_value={
+            "total_reviews": 12,
+            "rewritten_reviews": 5,
+            "rewrite_rate": 5 / 12,
+            "top_issues": [{"issue": "실행 포인트 부족", "count": 4}],
+        })
         return fb
 
     @pytest.fixture
@@ -1248,6 +1254,8 @@ class TestFeedbackButtons:
         call_text = message.reply_text.await_args[0][0]
         assert "피드백 통계" in call_text
         assert "10건" in call_text
+        assert "검수 수" in call_text
+        assert "실행 포인트 부족" in call_text
 
     @pytest.mark.asyncio
     async def test_status_includes_feedback(self, feedback_handler: TelegramHandler) -> None:
@@ -1269,6 +1277,8 @@ class TestFeedbackButtons:
         call_text = message.reply_text.await_args[0][0]
         assert "피드백" in call_text
         assert "20건" in call_text
+        assert "리뷰어" in call_text
+        assert "실행 포인트 부족" in call_text
 
     @pytest.mark.asyncio
     async def test_status_includes_degraded_components(self, feedback_handler: TelegramHandler) -> None:

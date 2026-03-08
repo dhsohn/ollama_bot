@@ -20,6 +20,8 @@ from core.config import (
     TelegramConfig,
 )
 from core.engine import Engine
+from core.enums import RoutingTier
+from core.intent_router import ContextStrategy
 from core.llm_types import ChatResponse, ChatUsage
 from core.memory import MemoryManager
 from core.rag.types import Chunk, ChunkMetadata, RAGResult, RAGTrace
@@ -357,6 +359,47 @@ class TestProcessMessage:
         assert chat_kwargs.get("model") == app_settings.lemonade.default_model
 
     @pytest.mark.asyncio
+    async def test_process_message_uses_response_planner_for_complex_query(
+        self,
+        engine: Engine,
+        mock_ollama,
+    ) -> None:
+        engine._config.response_reviewer.enabled = False
+        engine._decide_routing = AsyncMock(return_value=SimpleNamespace(
+            tier=RoutingTier.FULL,
+            intent="complex",
+            strategy=ContextStrategy(max_history=10, max_tokens=2048),
+        ))
+        mock_ollama.chat = AsyncMock(side_effect=[
+            ChatResponse(content=json.dumps({
+                "response_mode": "step_by_step",
+                "brevity": "medium",
+                "use_bullets": True,
+                "sections": ["핵심 답변", "개선 방향", "실행 순서"],
+                "must_cover": ["로컬 LLM 한계 보완", "사용성 개선"],
+                "suggest_next_step": True,
+            })),
+            ChatResponse(content="최종 답변"),
+        ])
+
+        result = await engine.process_message(
+            111,
+            "로컬 LLM 성능이 낮아 답변 품질이 흔들립니다. 계층형 응답 구조를 더 발전시키는 방향을 제안해줘.",
+        )
+
+        assert result == "최종 답변"
+        assert mock_ollama.chat.await_count == 2
+        planner_call = mock_ollama.chat.await_args_list[0]
+        assert planner_call.kwargs.get("response_format") == "json"
+        assert planner_call.kwargs.get("max_tokens") == engine._config.response_planner.max_plan_tokens
+
+        final_call = mock_ollama.chat.await_args_list[1]
+        system_content = final_call.kwargs["messages"][0]["content"]
+        assert "[응답 설계안]" in system_content
+        assert "개선 방향" in system_content
+        assert "다음 단계" in system_content
+
+    @pytest.mark.asyncio
     async def test_analyze_all_corpus_requires_rag_pipeline(
         self,
         engine: Engine,
@@ -441,6 +484,136 @@ class TestProcessMessage:
         assert chunks == ["chunk"]
         call_args = mock_ollama.chat_stream.call_args
         assert call_args.kwargs.get("timeout") == app_settings.bot.response_timeout
+
+    @pytest.mark.asyncio
+    async def test_stream_uses_response_planner_before_final_generation(
+        self,
+        engine: Engine,
+        mock_ollama,
+    ) -> None:
+        async def _stream():
+            yield "planner-aware chunk"
+
+        engine._config.response_reviewer.enabled = False
+        engine._decide_routing = AsyncMock(return_value=SimpleNamespace(
+            tier=RoutingTier.FULL,
+            intent="complex",
+            strategy=ContextStrategy(max_history=10, max_tokens=1536),
+        ))
+        mock_ollama.chat = AsyncMock(return_value=ChatResponse(content=json.dumps({
+            "response_mode": "structured",
+            "brevity": "medium",
+            "use_bullets": True,
+            "sections": ["핵심 답변", "실행 포인트"],
+        })))
+        mock_ollama.chat_stream = MagicMock(return_value=_stream())
+
+        chunks = []
+        async for chunk in engine.process_message_stream(
+            111,
+            "로컬 LLM 품질을 올리기 위해 긴 답변을 더 안정적으로 만드는 방법을 설명해줘.",
+        ):
+            chunks.append(chunk)
+
+        assert chunks == ["planner-aware chunk"]
+        mock_ollama.chat.assert_awaited_once()
+        stream_messages = mock_ollama.chat_stream.call_args.kwargs["messages"]
+        assert "[응답 설계안]" in stream_messages[0]["content"]
+        assert "실행 포인트" in stream_messages[0]["content"]
+
+    @pytest.mark.asyncio
+    async def test_process_message_rewrites_response_after_planner(
+        self,
+        engine: Engine,
+        mock_ollama,
+        memory: MemoryManager,
+    ) -> None:
+        engine._feedback_manager = AsyncMock()
+        engine._feedback_manager.store_review_result = AsyncMock()
+        engine._decide_routing = AsyncMock(return_value=SimpleNamespace(
+            tier=RoutingTier.FULL,
+            intent="complex",
+            strategy=ContextStrategy(max_history=10, max_tokens=2048),
+        ))
+        mock_ollama.chat = AsyncMock(side_effect=[
+            ChatResponse(content=json.dumps({
+                "response_mode": "structured",
+                "brevity": "medium",
+                "use_bullets": True,
+                "sections": ["핵심 답변", "설명"],
+            })),
+            ChatResponse(content="초안 답변입니다. 설명이 부족합니다."),
+            ChatResponse(content=json.dumps({
+                "pass": False,
+                "issues": ["핵심 답변이 약함", "실행 포인트 부족"],
+                "rewrite_needed": True,
+                "revised_answer": "개선된 최종 답변입니다.\n- 핵심 포인트 1\n- 핵심 포인트 2",
+            })),
+        ])
+
+        result = await engine.process_message(
+            111,
+            "로컬 LLM의 계층형 응답을 더 실용적으로 만드는 방법을 구체적으로 설명해줘.",
+        )
+
+        assert result == "개선된 최종 답변입니다.\n- 핵심 포인트 1\n- 핵심 포인트 2"
+        assert mock_ollama.chat.await_count == 3
+        review_call = mock_ollama.chat.await_args_list[2]
+        assert review_call.kwargs.get("response_format") == "json"
+        engine._feedback_manager.store_review_result.assert_awaited_once_with(
+            111,
+            intent="complex",
+            rewritten=True,
+            issues=("핵심 답변이 약함", "실행 포인트 부족"),
+            planner_applied=True,
+            rag_used=False,
+        )
+        history = await memory.get_conversation(111)
+        assert history[-1]["content"] == result
+
+    @pytest.mark.asyncio
+    async def test_stream_buffers_and_rewrites_response_when_reviewer_enabled(
+        self,
+        engine: Engine,
+        mock_ollama,
+        memory: MemoryManager,
+    ) -> None:
+        async def _stream():
+            yield "초안 "
+            yield "응답"
+
+        engine._decide_routing = AsyncMock(return_value=SimpleNamespace(
+            tier=RoutingTier.FULL,
+            intent="complex",
+            strategy=ContextStrategy(max_history=10, max_tokens=2048),
+        ))
+        mock_ollama.chat = AsyncMock(side_effect=[
+            ChatResponse(content=json.dumps({
+                "response_mode": "structured",
+                "brevity": "medium",
+                "use_bullets": True,
+                "sections": ["핵심 답변", "실행 순서"],
+            })),
+            ChatResponse(content=json.dumps({
+                "pass": False,
+                "issues": ["초안 표현이 약함"],
+                "rewrite_needed": True,
+                "revised_answer": "검수 후 최종 답변입니다.",
+            })),
+        ])
+        mock_ollama.chat_stream = MagicMock(return_value=_stream())
+
+        chunks = []
+        async for chunk in engine.process_message_stream(
+            111,
+            "복잡한 질문에 대해 planner와 reviewer가 모두 적용되는지 확인하고 싶어.",
+        ):
+            chunks.append(chunk)
+
+        assert chunks == ["검수 후 최종 답변입니다."]
+        assert mock_ollama.chat.await_count == 2
+        history = await memory.get_conversation(111)
+        assert history[-1]["content"] == "검수 후 최종 답변입니다."
 
     @pytest.mark.asyncio
     async def test_stream_uses_default_timeout_without_model_routing(

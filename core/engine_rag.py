@@ -6,6 +6,7 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
+from core import engine_planner, engine_reviewer
 from core.constants import (
     FULL_SCAN_FINAL_MAX_TOKENS,
     FULL_SCAN_MAP_MAX_TOKENS,
@@ -220,12 +221,34 @@ async def prepare_full_request(
                 error=str(exc),
             )
 
+    messages, planner_applied = await engine_planner.maybe_apply_response_plan(
+        engine,
+        chat_id=chat_id,
+        text=text,
+        intent=intent,
+        strategy=strategy,
+        messages=messages,
+        rag_result=rag_result,
+        target_model=target_model,
+        timeout=effective_timeout,
+        images=images,
+    )
+    review_enabled = engine_reviewer.should_review_response(
+        engine,
+        text=text,
+        images=images,
+        planner_applied=planner_applied,
+    )
+
     return {
         "messages": messages,
         "timeout": effective_timeout,
         "max_tokens": prepared.max_tokens,
         "target_model": target_model,
         "rag_result": rag_result,
+        "planner_applied": planner_applied,
+        "review_enabled": review_enabled,
+        "stream_buffering": review_enabled and engine._config.response_reviewer.stream_buffering,
     }
 
 

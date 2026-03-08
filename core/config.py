@@ -241,6 +241,54 @@ class ContextCompressorConfig(BaseModel):
     run_only_when_idle: bool = True
 
 
+class ResponsePlannerConfig(BaseModel):
+    """Full-tier 내부 planner 설정."""
+
+    enabled: bool = True
+    min_input_chars: int = 80
+    trigger_intents: list[str] = Field(default_factory=lambda: ["complex", "code"])
+    force_for_rag: bool = False
+    max_plan_tokens: int = 256
+    timeout_seconds: int = 45
+    max_sections: int = 4
+    max_must_cover: int = 4
+
+    @field_validator(
+        "min_input_chars",
+        "max_plan_tokens",
+        "timeout_seconds",
+        "max_sections",
+        "max_must_cover",
+    )
+    @classmethod
+    def validate_positive_ints(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("response_planner numeric settings must be >= 1")
+        return value
+
+    @field_validator("trigger_intents")
+    @classmethod
+    def normalize_trigger_intents(cls, values: list[str]) -> list[str]:
+        return [str(item).strip().lower() for item in values if str(item).strip()]
+
+
+class ResponseReviewerConfig(BaseModel):
+    """Full-tier draft answer 검수/rewrite 설정."""
+
+    enabled: bool = True
+    only_when_planner_used: bool = True
+    max_review_tokens: int = 384
+    timeout_seconds: int = 45
+    stream_buffering: bool = True
+
+    @field_validator("max_review_tokens", "timeout_seconds")
+    @classmethod
+    def validate_positive_ints(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("response_reviewer numeric settings must be >= 1")
+        return value
+
+
 class RetrievalProviderConfig(BaseModel):
     """Ollama 기반 retrieval(임베딩/리랭킹) 전용 프로바이더 설정.
 
@@ -331,6 +379,8 @@ class AppSettings(BaseModel):
     semantic_cache: SemanticCacheConfig = Field(default_factory=SemanticCacheConfig)
     intent_router: IntentRouterConfig = Field(default_factory=IntentRouterConfig)
     context_compressor: ContextCompressorConfig = Field(default_factory=ContextCompressorConfig)
+    response_planner: ResponsePlannerConfig = Field(default_factory=ResponsePlannerConfig)
+    response_reviewer: ResponseReviewerConfig = Field(default_factory=ResponseReviewerConfig)
     ollama: RetrievalProviderConfig = Field(default_factory=RetrievalProviderConfig)
     rag: RAGConfig = Field(default_factory=RAGConfig)
 

@@ -119,6 +119,7 @@ _STRINGS: dict[str, dict[str, str]] = {
         "en": "{enabled}/{total} active",
     },
     "status_feedback": {"ko": "피드백", "en": "Feedback"},
+    "status_reviewer": {"ko": "리뷰어", "en": "Reviewer"},
     "status_header_item": {"ko": "항목", "en": "Item"},
     "status_header_value": {"ko": "값", "en": "Value"},
     "status_count_suffix": {"ko": "{count}개", "en": "{count}"},
@@ -191,6 +192,10 @@ _STRINGS: dict[str, dict[str, str]] = {
     "feedback_positive": {"ko": "긍정", "en": "Positive"},
     "feedback_negative": {"ko": "부정", "en": "Negative"},
     "feedback_satisfaction": {"ko": "만족도", "en": "Satisfaction"},
+    "feedback_reviewed": {"ko": "검수 수", "en": "Reviewed"},
+    "feedback_rewritten": {"ko": "rewrite", "en": "Rewritten"},
+    "feedback_rewrite_rate": {"ko": "rewrite율", "en": "Rewrite Rate"},
+    "feedback_top_issue": {"ko": "주요 이슈", "en": "Top Issue"},
     "feedback_thanks": {"ko": "피드백 감사합니다!", "en": "Thanks for your feedback!"},
     "feedback_updated": {
         "ko": "피드백을 업데이트했어요.",

@@ -278,19 +278,37 @@ async def cmd_feedback(
         return
 
     stats = await self._feedback.get_user_stats(chat_id)
+    review_stats = await self._feedback.get_review_issue_stats(chat_id)
     h_item = t("status_header_item", lang)
     h_value = t("status_header_value", lang)
     cnt = t("memory_count", lang, count=stats["total"])
     pos = t("memory_count", lang, count=stats["positive"])
     neg = t("memory_count", lang, count=stats["negative"])
-    table = (
-        f"{h_item:<12s}  {h_value}\n"
-        "\u2500" * 18 + "\n"
-        f"{t('feedback_total', lang):<12s}  {cnt}\n"
-        f"\U0001f44d {t('feedback_positive', lang):<10s}  {pos}\n"
-        f"\U0001f44e {t('feedback_negative', lang):<10s}  {neg}\n"
-        f"{t('feedback_satisfaction', lang):<12s}  {stats['satisfaction_rate']:.0%}"
-    )
+    table_lines = [
+        f"{h_item:<12s}  {h_value}",
+        "\u2500" * 18,
+        f"{t('feedback_total', lang):<12s}  {cnt}",
+        f"\U0001f44d {t('feedback_positive', lang):<10s}  {pos}",
+        f"\U0001f44e {t('feedback_negative', lang):<10s}  {neg}",
+        f"{t('feedback_satisfaction', lang):<12s}  {stats['satisfaction_rate']:.0%}",
+    ]
+    if review_stats["total_reviews"] > 0:
+        reviewed = t("memory_count", lang, count=review_stats["total_reviews"])
+        rewritten = t("memory_count", lang, count=review_stats["rewritten_reviews"])
+        top_issue = review_stats["top_issues"][0] if review_stats["top_issues"] else None
+        if top_issue is None:
+            top_issue_text = t("memory_none", lang)
+        else:
+            issue_label = self._escape_html(str(top_issue["issue"]))
+            top_issue_text = f"{issue_label} ({top_issue['count']})"
+        table_lines.extend([
+            f"{t('feedback_reviewed', lang):<12s}  {reviewed}",
+            f"{t('feedback_rewritten', lang):<12s}  {rewritten}",
+            f"{t('feedback_rewrite_rate', lang):<12s}  {review_stats['rewrite_rate']:.0%}",
+            f"{t('feedback_top_issue', lang):<12s}  {top_issue_text}",
+        ])
+
+    table = "\n".join(table_lines)
     text = f"\U0001f4ca <b>{t('feedback_title', lang)}</b>\n\n<pre>{table}</pre>"
     await update.effective_message.reply_text(  # type: ignore[union-attr]
         text,

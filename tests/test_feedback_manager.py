@@ -34,6 +34,20 @@ class TestInitializeSchema:
             row = await cursor.fetchone()
         assert row is not None
 
+    @pytest.mark.asyncio
+    async def test_response_review_tables_created(self, feedback_db) -> None:
+        _fm, db = feedback_db
+        async with db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='response_review_events'"
+        ) as cursor:
+            event_row = await cursor.fetchone()
+        async with db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='response_review_event_issues'"
+        ) as cursor:
+            issue_row = await cursor.fetchone()
+        assert event_row is not None
+        assert issue_row is not None
+
 
 class TestStoreFeedback:
     @pytest.mark.asyncio
@@ -93,6 +107,65 @@ class TestGetGlobalStats:
         assert stats["total"] == 2
         assert stats["positive"] == 1
         assert stats["negative"] == 1
+
+
+class TestReviewObservation:
+    @pytest.mark.asyncio
+    async def test_store_review_result_and_fetch_stats(self, feedback_db) -> None:
+        fm, _db = feedback_db
+        await fm.store_review_result(
+            111,
+            intent="complex",
+            rewritten=True,
+            issues=["핵심 답변이 약함", "실행 포인트 부족", "핵심 답변이 약함"],
+            planner_applied=True,
+            rag_used=False,
+        )
+        await fm.store_review_result(
+            111,
+            intent="complex",
+            rewritten=False,
+            issues=["경미한 표현 문제"],
+            planner_applied=True,
+            rag_used=False,
+        )
+        await fm.store_review_result(
+            222,
+            intent="code",
+            rewritten=True,
+            issues=["실행 포인트 부족"],
+            planner_applied=True,
+            rag_used=True,
+        )
+
+        user_stats = await fm.get_review_issue_stats(111)
+        assert user_stats["total_reviews"] == 2
+        assert user_stats["rewritten_reviews"] == 1
+        assert abs(user_stats["rewrite_rate"] - 0.5) < 0.01
+        assert user_stats["top_issues"][0]["issue"] == "실행 포인트 부족"
+        assert user_stats["top_issues"][0]["count"] == 1
+
+        global_stats = await fm.get_review_issue_stats()
+        assert global_stats["total_reviews"] == 3
+        assert global_stats["rewritten_reviews"] == 2
+        assert global_stats["top_issues"][0]["issue"] == "실행 포인트 부족"
+        assert global_stats["top_issues"][0]["count"] == 2
+
+    @pytest.mark.asyncio
+    async def test_get_review_issue_stats_can_include_non_rewrite_reviews(self, feedback_db) -> None:
+        fm, _db = feedback_db
+        await fm.store_review_result(
+            111,
+            rewritten=False,
+            issues=["표현 다듬기"],
+            planner_applied=True,
+            rag_used=False,
+        )
+
+        stats = await fm.get_review_issue_stats(111, rewritten_only=False)
+        assert stats["total_reviews"] == 1
+        assert stats["rewritten_reviews"] == 0
+        assert stats["top_issues"][0]["issue"] == "표현 다듬기"
 
 
 class TestGetRecentFeedback:
@@ -163,6 +236,29 @@ class TestPruneOldFeedback:
         assert pruned == 1
         assert await fm.count_feedback(111) == 1
 
+    @pytest.mark.asyncio
+    async def test_prune_old_entries_deletes_review_observations(self, feedback_db) -> None:
+        fm, db = feedback_db
+        await fm.store_review_result(
+            111,
+            rewritten=True,
+            issues=["핵심 답변이 약함"],
+            planner_applied=True,
+            rag_used=False,
+        )
+        await db.execute(
+            "UPDATE response_review_events SET created_at = datetime('now', '-100 days')"
+        )
+        await db.execute(
+            "UPDATE response_review_event_issues SET created_at = datetime('now', '-100 days')"
+        )
+        await db.commit()
+
+        pruned = await fm.prune_old_feedback(90)
+        assert pruned >= 2
+        stats = await fm.get_review_issue_stats(111)
+        assert stats["total_reviews"] == 0
+
 
 # ── V2 테스트 ──
 
@@ -192,6 +288,7 @@ class TestSchemaMigration:
             versions = [row[0] for row in await cursor.fetchall()]
         assert 102 in versions
         assert 103 in versions
+        assert 104 in versions
 
     @pytest.mark.asyncio
     async def test_has_column_rejects_non_whitelisted_table(self, feedback_db) -> None:

@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 import aiosqlite
 
 from core.db_migrations import MigrationRunner, MigrationStep
@@ -27,8 +29,35 @@ CREATE INDEX IF NOT EXISTS idx_feedback_chat_created
 CREATE INDEX IF NOT EXISTS idx_feedback_rating
     ON message_feedback(rating);
 """
+_RESPONSE_REVIEW_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS response_review_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id INTEGER NOT NULL,
+    intent TEXT,
+    rewritten INTEGER NOT NULL CHECK(rewritten IN (0, 1)),
+    planner_applied INTEGER NOT NULL DEFAULT 0 CHECK(planner_applied IN (0, 1)),
+    rag_used INTEGER NOT NULL DEFAULT 0 CHECK(rag_used IN (0, 1)),
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_review_events_chat_created
+    ON response_review_events(chat_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_review_events_rewritten
+    ON response_review_events(rewritten, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS response_review_event_issues (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id INTEGER NOT NULL,
+    issue TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_review_issues_event_id
+    ON response_review_event_issues(event_id);
+CREATE INDEX IF NOT EXISTS idx_review_issues_issue
+    ON response_review_event_issues(issue);
+"""
 
 _PREVIEW_MAX_CHARS = 500
+_REVIEW_ISSUE_MAX_CHARS = 120
 _TABLE_INFO_WHITELIST = frozenset({"message_feedback"})
 
 
@@ -37,6 +66,24 @@ def _sanitize_preview(text: str | None) -> str | None:
     if text is None:
         return None
     return text[:_PREVIEW_MAX_CHARS]
+
+
+def _normalize_review_issues(issues: Iterable[str] | None) -> list[str]:
+    """review issue 라벨을 정규화하고 중복을 제거한다."""
+    if issues is None:
+        return []
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for issue in issues:
+        compact = " ".join(str(issue or "").split()).strip()
+        if not compact:
+            continue
+        compact = compact[:_REVIEW_ISSUE_MAX_CHARS]
+        if compact in seen:
+            continue
+        seen.add(compact)
+        normalized.append(compact)
+    return normalized
 
 
 async def _has_column(db: aiosqlite.Connection, table: str, column: str) -> bool:
@@ -63,6 +110,10 @@ async def _apply_feedback_v3(db: aiosqlite.Connection) -> None:
     pass  # auto_evaluation 테이블 제거됨 (기존 DB 호환 위해 마이그레이션 스텝 유지)
 
 
+async def _apply_feedback_v4(db: aiosqlite.Connection) -> None:
+    await db.executescript(_RESPONSE_REVIEW_SCHEMA_SQL)
+
+
 class FeedbackManager:
     """메시지 피드백 저장/조회/통계를 관리한다."""
 
@@ -80,8 +131,13 @@ class FeedbackManager:
                 MigrationStep(101, _apply_feedback_v1, "create_message_feedback"),
                 MigrationStep(102, _apply_feedback_v2, "add_feedback_reason_column"),
                 MigrationStep(103, _apply_feedback_v3, "create_auto_evaluation"),
+                MigrationStep(104, _apply_feedback_v4, "create_response_review_tables"),
             ],
-            backup_tables={"message_feedback"},
+            backup_tables={
+                "message_feedback",
+                "response_review_events",
+                "response_review_event_issues",
+            },
         )
 
     async def store_feedback(
@@ -175,6 +231,105 @@ class FeedbackManager:
         )
         await self._db.commit()
         return cursor.rowcount > 0
+
+    async def store_review_result(
+        self,
+        chat_id: int,
+        *,
+        intent: str | None = None,
+        rewritten: bool,
+        issues: Iterable[str] | None = None,
+        planner_applied: bool = False,
+        rag_used: bool = False,
+    ) -> None:
+        """reviewer 결과를 저장한다."""
+        normalized_issues = _normalize_review_issues(issues)
+
+        await self._db.execute("BEGIN IMMEDIATE")
+        try:
+            cursor = await self._db.execute(
+                "INSERT INTO response_review_events "
+                "(chat_id, intent, rewritten, planner_applied, rag_used) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    chat_id,
+                    intent.strip() if isinstance(intent, str) and intent.strip() else None,
+                    int(rewritten),
+                    int(planner_applied),
+                    int(rag_used),
+                ),
+            )
+            event_id = cursor.lastrowid
+            if event_id is None:
+                raise RuntimeError("response_review_event_insert_failed")
+            for issue in normalized_issues:
+                await self._db.execute(
+                    "INSERT INTO response_review_event_issues (event_id, issue) VALUES (?, ?)",
+                    (event_id, issue),
+                )
+            await self._db.commit()
+        except Exception:
+            await self._db.rollback()
+            raise
+
+    async def get_review_issue_stats(
+        self,
+        chat_id: int | None = None,
+        *,
+        limit: int = 5,
+        rewritten_only: bool = True,
+    ) -> dict:
+        """reviewer issue 누적 통계를 반환한다."""
+        if chat_id is None:
+            stats_query = (
+                "SELECT COUNT(*) AS total_reviews, "
+                "SUM(CASE WHEN rewritten = 1 THEN 1 ELSE 0 END) AS rewritten_reviews "
+                "FROM response_review_events"
+            )
+            stats_params: tuple = ()
+            issue_where: list[str] = []
+            issue_params: list = []
+        else:
+            stats_query = (
+                "SELECT COUNT(*) AS total_reviews, "
+                "SUM(CASE WHEN rewritten = 1 THEN 1 ELSE 0 END) AS rewritten_reviews "
+                "FROM response_review_events WHERE chat_id = ?"
+            )
+            stats_params = (chat_id,)
+            issue_where = ["e.chat_id = ?"]
+            issue_params = [chat_id]
+
+        if rewritten_only:
+            issue_where.append("e.rewritten = 1")
+        issue_where_sql = f"WHERE {' AND '.join(issue_where)}" if issue_where else ""
+
+        async with self._db.execute(stats_query, stats_params) as cursor:
+            row = await cursor.fetchone()
+
+        async with self._db.execute(
+            "SELECT i.issue, COUNT(*) AS issue_count "
+            "FROM response_review_event_issues AS i "
+            "JOIN response_review_events AS e ON e.id = i.event_id "
+            f"{issue_where_sql} "
+            "GROUP BY i.issue "
+            "ORDER BY issue_count DESC, i.issue ASC "
+            "LIMIT ?",
+            (*issue_params, limit),
+        ) as cursor:
+            issue_rows = await cursor.fetchall()
+
+        total_reviews = row[0] if row and row[0] else 0
+        rewritten_reviews = row[1] if row and row[1] else 0
+        rewrite_rate = rewritten_reviews / total_reviews if total_reviews > 0 else 0.0
+        return {
+            "total_reviews": total_reviews,
+            "rewritten_reviews": rewritten_reviews,
+            "rewrite_rate": rewrite_rate,
+            "top_issues": [
+                {"issue": issue_row[0], "count": issue_row[1]}
+                for issue_row in issue_rows
+            ],
+        }
 
     async def get_user_stats(self, chat_id: int) -> dict:
         """사용자별 피드백 통계를 반환한다."""
@@ -336,9 +491,24 @@ class FeedbackManager:
 
     async def prune_old_feedback(self, retention_days: int) -> int:
         """retention_days보다 오래된 피드백을 삭제한다."""
-        cursor = await self._db.execute(
+        deleted = 0
+        cutoff = f"-{retention_days} days"
+        issues_cursor = await self._db.execute(
+            "DELETE FROM response_review_event_issues WHERE event_id IN ("
+            "  SELECT id FROM response_review_events WHERE created_at < datetime('now', ?)"
+            ")",
+            (cutoff,),
+        )
+        deleted += issues_cursor.rowcount
+        review_cursor = await self._db.execute(
+            "DELETE FROM response_review_events WHERE created_at < datetime('now', ?)",
+            (cutoff,),
+        )
+        deleted += review_cursor.rowcount
+        feedback_cursor = await self._db.execute(
             "DELETE FROM message_feedback WHERE created_at < datetime('now', ?)",
-            (f"-{retention_days} days",),
+            (cutoff,),
         )
         await self._db.commit()
-        return cursor.rowcount
+        deleted += feedback_cursor.rowcount
+        return deleted

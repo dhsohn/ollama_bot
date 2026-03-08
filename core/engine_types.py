@@ -38,6 +38,9 @@ class _PreparedFullRequest:
     max_tokens: int | None
     target_model: str | None
     rag_result: Any = None
+    planner_applied: bool = False
+    review_enabled: bool = False
+    stream_buffering: bool = False
 
 
 @dataclass
