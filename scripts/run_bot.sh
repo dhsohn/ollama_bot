@@ -99,7 +99,25 @@ is_systemd_service_active() {
     if ! command -v systemctl >/dev/null 2>&1; then
         return 1
     fi
-    systemctl --user is-active --quiet ollama-bot
+    # active뿐 아니라 activating(재시작 대기) 상태도 감지한다.
+    local state
+    state="$(systemctl --user show -P ActiveState ollama-bot 2>/dev/null || true)"
+    [[ "${state}" == "active" || "${state}" == "activating" || "${state}" == "reloading" ]]
+}
+
+is_systemd_service_enabled() {
+    if ! command -v systemctl >/dev/null 2>&1; then
+        return 1
+    fi
+    systemctl --user is-enabled --quiet ollama-bot 2>/dev/null
+}
+
+stop_systemd_service_if_running() {
+    if ! is_systemd_service_active; then
+        return
+    fi
+    echo "[run_bot.sh] systemd ollama-bot 서비스가 실행 중이므로 먼저 중지합니다."
+    systemctl --user stop ollama-bot
 }
 
 add_pid() {
@@ -132,6 +150,10 @@ collect_existing_bot_pids() {
 }
 
 stop_existing_bot() {
+    # systemd가 봇을 관리하고 있으면 먼저 systemd를 통해 중지한다.
+    # 직접 kill하면 Restart=on-failure로 systemd가 재시작을 시도하기 때문이다.
+    stop_systemd_service_if_running
+
     collect_existing_bot_pids
     if [[ "${#COLLECTED_PIDS[@]}" -eq 0 ]]; then
         echo "[run_bot.sh] 실행 중인 기존 봇이 없습니다."
@@ -255,7 +277,13 @@ if [[ "${PULL_LATEST}" == "1" ]]; then
 fi
 
 if [[ "${MODE}" == "restart" ]]; then
-    if is_systemd_service_active; then
+    if is_systemd_service_enabled; then
+        # systemd 서비스가 enabled이면 항상 systemd를 통해 재시작한다.
+        # enabled 상태에서 수동 시작하면 systemd가 별도로 봇을 띄워 중복 실행된다.
+        if ! is_systemd_service_active; then
+            # 수동 프로세스가 남아 있을 수 있으므로 먼저 정리한다.
+            stop_existing_bot
+        fi
         restart_via_systemd
         exit 0
     fi
