@@ -112,6 +112,11 @@ _CALC_TYPE_KEYWORDS: dict[str, str] = {
     "MD": "md",
     "COPT": "opt",
     "NEB": "neb",
+    "NEB-TS": "neb",
+    "NEB-CI": "neb",
+    "ZOOM-NEB": "neb",
+    "ZOOM-NEB-TS": "neb",
+    "ZOOM-NEB-CI": "neb",
     "SCAN": "scan",
     "IRC": "irc",
 }
