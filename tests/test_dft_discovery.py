@@ -61,7 +61,7 @@ def test_orca_runs_tracks_latest_out_for_running_state(tmp_path: Path) -> None:
     )
 
     targets = discover_orca_targets(kb_dir, max_bytes=1024 * 1024)
-    assert [str(p) for p in targets] == [str(new_out)]
+    assert [str(t.path) for t in targets] == [str(new_out)]
 
 
 def test_orca_runs_ignores_reaction_dir_and_uses_state_directory(tmp_path: Path) -> None:
@@ -90,7 +90,7 @@ def test_orca_runs_ignores_reaction_dir_and_uses_state_directory(tmp_path: Path)
     )
 
     targets = discover_orca_targets(kb_dir, max_bytes=1024 * 1024)
-    assert [str(p) for p in targets] == [str(local_out)]
+    assert [str(t.path) for t in targets] == [str(local_out)]
 
 
 def test_orca_runs_tracks_latest_out_for_failed_state(tmp_path: Path) -> None:
@@ -117,7 +117,7 @@ def test_orca_runs_tracks_latest_out_for_failed_state(tmp_path: Path) -> None:
     )
 
     targets = discover_orca_targets(kb_dir, max_bytes=1024 * 1024)
-    assert [str(p) for p in targets] == [str(new_out)]
+    assert [str(t.path) for t in targets] == [str(new_out)]
 
 
 def test_orca_runs_ignores_report_only_directory(tmp_path: Path) -> None:
@@ -159,7 +159,7 @@ def test_orca_outputs_tracks_latest_out_from_run_state_dir(tmp_path: Path) -> No
     )
 
     targets = discover_orca_targets(kb_dir, max_bytes=1024 * 1024)
-    assert [str(p) for p in targets] == [str(newer_retry)]
+    assert [str(t.path) for t in targets] == [str(newer_retry)]
 
 
 def test_orca_outputs_prefers_run_state_status_when_report_also_exists(
@@ -254,7 +254,7 @@ def test_orca_outputs_includes_recent_completed_with_completed_at(tmp_path: Path
         max_bytes=1024 * 1024,
         recent_completed_window_minutes=60,
     )
-    assert [str(p) for p in targets] == [str(final_out)]
+    assert [str(t.path) for t in targets] == [str(final_out)]
 
 
 def test_orca_outputs_excludes_old_completed_with_completed_at(tmp_path: Path) -> None:

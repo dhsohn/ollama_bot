@@ -16,10 +16,8 @@ from typing import Any
 
 from core.crest_discovery import discover_crest_targets
 from core.crest_parser import CrestResult, parse_crest_output
-from core.dft_discovery import discover_orca_targets
-from core.orca_parser import OptProgress, parse_opt_progress, parse_orca_output
-
-_RUNNING_PROGRESS_CALC_TYPES = ("opt", "ts", "neb", "irc")
+from core.dft_discovery import DiscoveredTarget, discover_orca_targets
+from core.orca_parser import parse_orca_output
 
 
 
@@ -100,13 +98,13 @@ def build_dft_monitor_callable(
                 missing_kb_dirs.append(kb_dir)
                 continue
 
-            for fpath in discover_orca_targets(
+            for target in discover_orca_targets(
                 kb_path,
                 max_bytes=max_bytes,
                 logger=logger,
                 recent_completed_window_minutes=recent_completed_window_minutes,
             ):
-                spath = str(fpath)
+                spath = str(target.path)
                 canonical_spath = _canonical_path_key(spath)
                 current_mtime = os.path.getmtime(spath)
                 scanned_mtimes[canonical_spath] = current_mtime
@@ -129,85 +127,65 @@ def build_dft_monitor_callable(
                 try:
                     result = parse_orca_output(spath)
 
-                    # 진행 중인 계산(OPT/TS/NEB/IRC)은 progress + AI 코멘트 알림 생성
-                    if result.status == "running" and _is_progress_comment_target(result.calc_type):
-                        progress_text = ""
-                        try:
-                            opt_prog = parse_opt_progress(spath)
-                            if opt_prog.steps:
-                                opt_prog.source_path = canonical_spath
-                                progress_text = _format_opt_progress(opt_prog)
-                                if progress_text:
-                                    comment = _rule_based_comment(opt_prog)
-                                    if comment:
-                                        progress_text += f'\n\n💬 "<i>{_h(comment)}</i>"'
-                        except Exception as exc:
-                            logger.warning(
-                                "dft_monitor_progress_parse_error",
-                                path=spath,
-                                error=str(exc),
-                            )
+                    # running 판별: run_state.json status 또는 파서 결과
+                    is_running = (
+                        result.status == "running"
+                        or target.run_state_status == "running"
+                    )
 
-                        # OPT step 파싱 불가(또는 비-OPT 타입) 시 요약 스냅샷
-                        if not progress_text:
-                            progress_text = _format_running_snapshot(result, canonical_spath)
-
-                        if progress_text:
-                            new_results.append({
-                                "_progress_text": progress_text,
-                            })
-
+                    if is_running:
                         # running 계산은 인덱스에 upsert하지 않음
                         _last_mtimes[canonical_spath] = current_mtime
                         state_dirty = True
-                        continue
-
-                    success = await dft_index.upsert_single(spath)
-                    if success:
+                    else:
+                        success = await dft_index.upsert_single(spath)
+                        if not success:
+                            continue
                         _last_mtimes[canonical_spath] = current_mtime
                         state_dirty = True
 
-                        # 알림 정보 수집
-                        energy_str = (
-                            f"E = {result.energy_hartree:.6f} Eh"
-                            if result.energy_hartree is not None
-                            else "E = N/A"
-                        )
-                        method_basis = result.method
-                        if result.basis_set:
-                            method_basis += f"/{result.basis_set}"
+                    # 알림 정보 수집
+                    energy_str = (
+                        f"E = {result.energy_hartree:.6f} Eh"
+                        if result.energy_hartree is not None
+                        else "E = N/A"
+                    )
+                    method_basis = result.method
+                    if result.basis_set:
+                        method_basis += f"/{result.basis_set}"
 
-                        status_emoji = {
-                            "completed": "✅",
-                            "failed": "🔴",
-                            "running": "🔄",
-                        }.get(result.status, result.status)
+                    effective_status = "running" if is_running else result.status
+                    status_emoji = {
+                        "completed": "✅",
+                        "failed": "🔴",
+                        "running": "🔄",
+                    }.get(effective_status, effective_status)
 
-                        notes: list[str] = []
-                        if result.opt_converged is False:
-                            notes.append("NOT CONVERGED")
-                        if result.has_imaginary_freq:
-                            notes.append("imaginary freq")
+                    notes: list[str] = []
+                    if result.opt_converged is False:
+                        notes.append("NOT CONVERGED")
+                    if result.has_imaginary_freq:
+                        notes.append("imaginary freq")
 
-                        note_str = f" ({', '.join(notes)})" if notes else ""
+                    note_str = f" ({', '.join(notes)})" if notes else ""
 
-                        new_results.append({
-                            "formula": result.formula or "unknown",
-                            "method_basis": method_basis or "unknown",
-                            "energy": energy_str,
-                            "status": status_emoji,
-                            "calc_type": result.calc_type,
-                            "path": _short_path(canonical_spath),
-                            "note": note_str,
-                        })
+                    new_results.append({
+                        "formula": result.formula or "unknown",
+                        "method_basis": method_basis or "unknown",
+                        "energy": energy_str,
+                        "status": status_emoji,
+                        "calc_type": result.calc_type,
+                        "path": _short_path(canonical_spath),
+                        "note": note_str,
+                    })
 
-                        logger.info(
-                            "dft_monitor_new_calc",
-                            path=spath,
-                            formula=result.formula,
-                            method=result.method,
-                            status=result.status,
-                        )
+                    logger.info(
+                        "dft_monitor_new_calc",
+                        path=spath,
+                        formula=result.formula,
+                        method=result.method,
+                        status=effective_status,
+                    )
                 except Exception as exc:
                     logger.warning(
                         "dft_monitor_parse_error",
@@ -308,20 +286,16 @@ def build_dft_monitor_callable(
             )
             return ""
 
-        # 완료된 계산과 진행 중인 계산 분리
-        completed = [r for r in new_results if "_progress_text" not in r]
-        running = [r for r in new_results if "_progress_text" in r]
-
         lines: list[str] = []
 
-        if completed:
+        if new_results:
             lines.append(
-                f"🧪 <b>DFT Monitor: {len(completed)}건의 계산 업데이트</b>"
+                f"🧪 <b>DFT Monitor: {len(new_results)}건의 계산 업데이트</b>"
             )
             table_rows: list[str] = []
             table_rows.append("분자       계산  메서드/기저        에너지              상태")
             table_rows.append("─" * 58)
-            for r in completed:
+            for r in new_results:
                 note_line = ""
                 if r["note"]:
                     note_line = f"\n  ⚠️ {_h(r['note'].strip(' ()'))}"
@@ -334,23 +308,10 @@ def build_dft_monitor_callable(
                 )
             lines.append(f"<pre>{chr(10).join(table_rows)}</pre>")
 
-        if running:
-            if lines:
-                lines.append("")
-                lines.append("─" * 40)
-            lines.append(
-                f"\n🔄 <b>RUNNING Progress: {len(running)}건의 진행 중인 계산</b>"
-            )
-            for r in running:
-                lines.append("")
-                lines.append(r["_progress_text"])
-
         logger.info(
             "dft_monitor_scan_complete",
             scanned_files=len(scanned_mtimes),
             new_results=len(new_results),
-            completed=len(completed),
-            running=len(running),
             stale_removed=len(stale_paths),
             missing_kb_dirs=len(missing_kb_dirs),
             baseline_seeded=True,
@@ -359,168 +320,6 @@ def build_dft_monitor_callable(
         return "\n".join(lines)
 
     return dft_monitor
-
-
-def _is_progress_comment_target(calc_type: str) -> bool:
-    """진행 알림 + AI 코멘트 대상 계산 유형인지 판별한다."""
-    normalized = (calc_type or "").lower()
-    return any(token in normalized for token in _RUNNING_PROGRESS_CALC_TYPES)
-
-
-def _format_opt_progress(progress: OptProgress) -> str:
-    """최적화 진행 현황을 텔레그램 알림 텍스트로 포맷한다 (HTML)."""
-    if not progress.steps:
-        return ""
-
-    method_basis = _h(progress.method)
-    if progress.basis_set:
-        method_basis += f"/{_h(progress.basis_set)}"
-
-    if progress.is_running:
-        status = "🔄 RUNNING"
-    elif progress.is_converged:
-        status = "✅ CONVERGED"
-    else:
-        status = "⚠️ NOT YET CONVERGED"
-
-    header = (
-        f"📈 <b>OPT Progress: {_h(progress.formula or 'unknown')} | "
-        f"{_h(progress.calc_type)} | {method_basis}</b>\n"
-        f"Status: {status} | Steps: {len(progress.steps)}\n"
-        f"📂 {_h(_short_path(progress.source_path))}"
-    )
-
-    # 최근 5 스텝 상세 표시
-    MAX_DETAIL = 5
-    recent = progress.steps[-MAX_DETAIL:]
-    older = progress.steps[:-MAX_DETAIL] if len(progress.steps) > MAX_DETAIL else []
-
-    lines = [header, ""]
-
-    # 이전 스텝 요약 (있으면)
-    if older:
-        e_min = min(s.energy_hartree for s in older)
-        e_max = max(s.energy_hartree for s in older)
-        lines.append(
-            f"Steps 1-{older[-1].cycle}: "
-            f"E range [{e_min:.6f}, {e_max:.6f}] Eh"
-        )
-        lines.append("")
-
-    # 최근 스텝 테이블 (monospace)
-    pre_lines: list[str] = []
-    pre_lines.append("Step │ Energy (Eh)     │ dE         │ MaxGrad    │ Conv")
-    pre_lines.append("─────┼─────────────────┼────────────┼────────────┼─────")
-    for s in recent:
-        de_str = f"{s.energy_change:.2e}" if s.energy_change is not None else "   -"
-        mg_str = f"{s.max_gradient:.2e}" if s.max_gradient is not None else "   -"
-        n_conv = sum(1 for v in s.converged_flags.values() if v)
-        n_total = len(s.converged_flags)
-        conv_str = f"{n_conv}/{n_total}" if n_total > 0 else " -"
-        pre_lines.append(
-            f"{s.cycle:4d} │ {s.energy_hartree:15.8f} │ {de_str:>10s} │ {mg_str:>10s} │ {conv_str}"
-        )
-    lines.append(f"<pre>{chr(10).join(pre_lines)}</pre>")
-
-    # dE 트렌드 (마지막 2-3개 값)
-    de_values = [
-        s.energy_change for s in progress.steps
-        if s.energy_change is not None
-    ]
-    if len(de_values) >= 2:
-        trend = de_values[-3:] if len(de_values) >= 3 else de_values[-2:]
-        trend_str = " → ".join(f"{v:.2e}" for v in trend)
-        lines.append(f"\ndE trend: {trend_str}")
-
-    return "\n".join(lines)
-
-
-def _format_running_snapshot(result: Any, source_path: str) -> str:
-    """OPT step 파싱이 어려운 running 계산의 간단 요약 텍스트를 만든다 (HTML)."""
-    method_basis = _h(result.method or "unknown")
-    if result.basis_set:
-        method_basis += f"/{_h(result.basis_set)}"
-    energy_str = (
-        f"E = {result.energy_hartree:.6f} Eh"
-        if result.energy_hartree is not None
-        else "E = N/A"
-    )
-    return (
-        f"🔄 <b>RUNNING: {_h(result.formula or 'unknown')} | "
-        f"{_h(result.calc_type or 'unknown')} | {method_basis}</b>\n"
-        f"Status: 🔄 RUNNING | {energy_str}\n"
-        f"📂 {_h(_short_path(source_path))}"
-    )
-
-
-def _rule_based_comment(progress: OptProgress) -> str:
-    """최적화 진행 데이터를 규칙 기반으로 분석하여 한줄 코멘트를 생성한다."""
-    if not progress.steps:
-        return ""
-
-    last = progress.steps[-1]
-    n_steps = len(progress.steps)
-    parts: list[str] = []
-
-    # 수렴 플래그 분석
-    if last.converged_flags:
-        n_conv = sum(1 for v in last.converged_flags.values() if v)
-        n_total = len(last.converged_flags)
-        if n_conv == n_total:
-            return f"{n_steps} 스텝 만에 모든 수렴 조건 충족 — 수렴 완료"
-        parts.append(f"수렴 {n_conv}/{n_total}")
-
-    # 에너지 변화 트렌드 분석 (최근 3 스텝)
-    recent_de = [
-        s.energy_change for s in progress.steps[-3:]
-        if s.energy_change is not None
-    ]
-    if len(recent_de) >= 2:
-        all_negative = all(de < 0 for de in recent_de)
-        all_decreasing_abs = all(
-            abs(recent_de[i]) <= abs(recent_de[i - 1])
-            for i in range(1, len(recent_de))
-        )
-        has_positive = any(de > 0 for de in recent_de)
-        oscillating = len(recent_de) >= 3 and any(
-            (recent_de[i] > 0) != (recent_de[i - 1] > 0)
-            for i in range(1, len(recent_de))
-        )
-
-        if oscillating:
-            parts.append("⚠ 에너지 진동 중")
-        elif has_positive:
-            parts.append("⚠ 에너지 상승 감지")
-        elif all_negative and all_decreasing_abs:
-            parts.append("에너지 안정적 감소")
-        elif all_negative:
-            parts.append("에너지 감소 중")
-
-    # dE 크기 기반 수렴 근접도
-    if last.energy_change is not None:
-        abs_de = abs(last.energy_change)
-        if abs_de < 5e-6:
-            parts.append("dE 수렴 임계값 이내")
-        elif abs_de < 5e-5:
-            parts.append("dE 수렴 근접")
-
-    # MaxGrad 크기 기반 수렴 근접도
-    if last.max_gradient is not None:
-        if last.max_gradient < 3e-4:
-            parts.append("MaxGrad 수렴 임계값 이내")
-        elif last.max_gradient < 3e-3:
-            parts.append("MaxGrad 수렴 근접")
-
-    # 스텝 수 경고
-    if n_steps >= 100:
-        parts.append(f"⚠ {n_steps} 스텝 경과 — 수렴 지연")
-    elif n_steps >= 50:
-        parts.append(f"{n_steps} 스텝 경과")
-
-    if not parts:
-        return ""
-
-    return " | ".join(parts)
 
 
 def _format_crest_running(result: CrestResult) -> str:

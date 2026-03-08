@@ -120,7 +120,8 @@ class DFTIndex:
                 kb_path = Path(kb_dir)
                 if not kb_path.is_dir():
                     continue
-                for fpath in discover_orca_targets(kb_path, max_bytes=max_bytes, logger=self._logger):
+                for target in discover_orca_targets(kb_path, max_bytes=max_bytes, logger=self._logger):
+                    fpath = target.path
                     spath = str(fpath)
                     h = hashlib.sha256()
                     with open(fpath, "rb") as f:

@@ -4,11 +4,20 @@ from __future__ import annotations
 
 import json
 from contextlib import suppress
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 _ORCA_EXTENSIONS = {".out"}
+
+
+@dataclass
+class DiscoveredTarget:
+    """탐색된 ORCA 출력 파일과 run_state 메타데이터."""
+
+    path: Path
+    run_state_status: str = ""
 
 
 def discover_orca_targets(
@@ -17,7 +26,7 @@ def discover_orca_targets(
     max_bytes: int,
     logger: Any | None = None,
     recent_completed_window_minutes: int | None = None,
-) -> list[Path]:
+) -> list[DiscoveredTarget]:
     """인덱싱 대상 ORCA 출력 파일 목록을 반환한다.
 
     규칙:
@@ -50,8 +59,8 @@ def _discover_orca_outputs_targets(
     max_bytes: int,
     logger: Any | None,
     recent_completed_window_minutes: int | None,
-) -> list[Path]:
-    targets: dict[str, Path] = {}
+) -> list[DiscoveredTarget]:
+    targets: dict[str, DiscoveredTarget] = {}
     now_utc = datetime.now(UTC)
 
     # run_state 전용 정책: run_report는 완전히 무시한다.
@@ -72,9 +81,12 @@ def _discover_orca_outputs_targets(
             recent_completed_window_minutes=recent_completed_window_minutes,
         ):
             continue
-        _add_if_valid_target(resolved=resolved, max_bytes=max_bytes, targets=targets)
+        _add_if_valid_target(
+            resolved=resolved, max_bytes=max_bytes, targets=targets,
+            run_state_status=status,
+        )
 
-    return sorted(targets.values(), key=lambda p: str(p))
+    return sorted(targets.values(), key=lambda t: str(t.path))
 
 
 def _discover_orca_runs_targets(
@@ -82,22 +94,27 @@ def _discover_orca_runs_targets(
     kb_path: Path,
     max_bytes: int,
     logger: Any | None,
-) -> list[Path]:
-    targets: dict[str, Path] = {}
+) -> list[DiscoveredTarget]:
+    targets: dict[str, DiscoveredTarget] = {}
 
     for state_path in kb_path.rglob("run_state.json"):
         data = _load_report_json(state_path, logger)
         if not isinstance(data, dict):
             continue
 
+        status = str(data.get("status", "")).strip().lower()
+
         # 경로 정보(reaction_dir, last_out_path)는 실행 환경 차이로 오염될 수 있어
         # run_state.json이 위치한 폴더의 최신 .out만 신뢰한다.
         resolved = _find_latest_out_in_dir(state_path.parent)
         if resolved is None:
             continue
-        _add_if_valid_target(resolved=resolved, max_bytes=max_bytes, targets=targets)
+        _add_if_valid_target(
+            resolved=resolved, max_bytes=max_bytes, targets=targets,
+            run_state_status=status,
+        )
 
-    return sorted(targets.values(), key=lambda p: str(p))
+    return sorted(targets.values(), key=lambda t: str(t.path))
 
 
 def _find_latest_out_in_dir(directory: Path) -> Path | None:
@@ -171,7 +188,8 @@ def _add_if_valid_target(
     *,
     resolved: Path,
     max_bytes: int,
-    targets: dict[str, Path],
+    targets: dict[str, DiscoveredTarget],
+    run_state_status: str = "",
 ) -> None:
     if resolved.suffix.lower() not in _ORCA_EXTENSIONS:
         return
@@ -180,7 +198,9 @@ def _add_if_valid_target(
             return
     except OSError:
         return
-    targets[str(resolved)] = resolved
+    targets[str(resolved)] = DiscoveredTarget(
+        path=resolved, run_state_status=run_state_status,
+    )
 
 
 def _load_report_json(report_path: Path, logger: Any | None) -> dict[str, Any] | None:

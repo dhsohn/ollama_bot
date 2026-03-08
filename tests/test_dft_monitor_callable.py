@@ -9,10 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from core.automation_callables_impl.dft_monitor import (
-    _rule_based_comment,
-    build_dft_monitor_callable,
-)
+from core.automation_callables_impl.dft_monitor import build_dft_monitor_callable
 
 _COMPLETED_OUT = "\n".join([
     "! B3LYP def2-SVP Opt",
@@ -39,7 +36,7 @@ async def test_baseline_seed_prevents_restart_spam(tmp_path: Path) -> None:
     kb_dir.mkdir(parents=True)
     out_file = kb_dir / "calc.out"
     out_file.write_text(_COMPLETED_OUT, encoding="utf-8")
-    (kb_dir / "run_state.json").write_text('{"status": "running"}', encoding="utf-8")
+    (kb_dir / "run_state.json").write_text('{"status": "completed"}', encoding="utf-8")
 
     state_file = tmp_path / "automation" / "dft_monitor_state.json"
 
@@ -99,7 +96,7 @@ async def test_detects_run_state_only_output_update(tmp_path: Path) -> None:
     (run_dir / "run_state.json").write_text(
         json.dumps(
             {
-                "status": "running",
+                "status": "completed",
                 "reaction_dir": str(run_dir),
                 "selected_inp": str(inp_file),
                 "attempts": [],
@@ -206,44 +203,11 @@ async def test_running_opt_generates_progress_notification(tmp_path: Path) -> No
     os.utime(out_file, (mtime + 5.0, mtime + 5.0))
 
     result = await monitor()
-    assert "OPT Progress" in result
-    assert "RUNNING" in result
-    assert "Step" in result
+    assert "계산 업데이트" in result
+    assert "🔄" in result
     assert "<b>" in result
     assert "<pre>" in result
-
-
-@pytest.mark.asyncio
-async def test_running_opt_does_not_upsert_to_index(tmp_path: Path) -> None:
-    """진행 중인 최적화 계산은 인덱스에 upsert하지 않는다."""
-    kb_dir = tmp_path / "kb"
-    kb_dir.mkdir(parents=True)
-    out_file = kb_dir / "opt_run.out"
-    out_file.write_text(_RUNNING_OPT_OUT, encoding="utf-8")
-    (kb_dir / "run_state.json").write_text('{"status": "running"}', encoding="utf-8")
-
-    state_file = tmp_path / "automation" / "state.json"
-
-    dft_index = AsyncMock()
-    dft_index.upsert_single = AsyncMock(return_value=True)
-    logger = MagicMock()
-
-    monitor = build_dft_monitor_callable(
-        dft_index=dft_index,
-        kb_dirs=[str(kb_dir)],
-        logger=logger,
-        state_file=str(state_file),
-    )
-
-    # baseline
-    await monitor()
-
-    # 파일 변경
-    out_file.write_text(_RUNNING_OPT_OUT + "\n# updated\n", encoding="utf-8")
-    mtime = os.path.getmtime(out_file)
-    os.utime(out_file, (mtime + 5.0, mtime + 5.0))
-
-    await monitor()
+    # running 계산은 인덱스에 upsert하지 않는다
     dft_index.upsert_single.assert_not_awaited()
 
 
@@ -290,8 +254,9 @@ async def test_completed_and_running_mixed(tmp_path: Path) -> None:
     os.utime(running_file, (mtime_r + 5.0, mtime_r + 5.0))
 
     result = await monitor()
-    assert "DFT Monitor: 1건의 계산 업데이트" in result
-    assert "RUNNING Progress: 1건의 진행 중인 계산" in result
+    assert "DFT Monitor: 2건의 계산 업데이트" in result
+    assert "✅" in result
+    assert "🔄" in result
 
 
 @pytest.mark.asyncio
@@ -327,8 +292,8 @@ async def test_running_progress_deduplicates_symlink_alias_paths(tmp_path: Path)
     os.utime(out_file, (mtime + 5.0, mtime + 5.0))
 
     result = await monitor()
-    assert "RUNNING Progress: 1건의 진행 중인 계산" in result
-    assert result.count("OPT Progress") == 1
+    assert "DFT Monitor: 1건의 계산 업데이트" in result
+    assert "🔄" in result
 
 
 @pytest.mark.asyncio
@@ -398,23 +363,44 @@ async def test_running_dedup_when_mtime_changes_between_scans(tmp_path: Path) ->
     os.utime(out_file, (mtime + 5.0, mtime + 5.0))
 
     result = await monitor()
-    assert "RUNNING Progress: 1건의 진행 중인 계산" in result
-    assert result.count("OPT Progress") == 1
+    assert "DFT Monitor: 1건의 계산 업데이트" in result
+    assert "🔄" in result
 
 
 # ---------------------------------------------------------------------------
-# 규칙 기반 코멘트 테스트
+# run_state.json status가 parser status를 보완하는 테스트
 # ---------------------------------------------------------------------------
+
+# NEB 계산: 각 이미지 SP마다 ORCA TERMINATED NORMALLY가 출력되어
+# parser는 "completed"로 판정하지만 run_state는 "running"인 케이스
+_NEB_RUNNING_OUT = "\n".join([
+    "! NEB B3LYP def2-SVP",
+    "* xyz 0 1",
+    "C 0.0 0.0 0.0",
+    "H 0.0 0.0 1.0",
+    "*",
+    "",
+    "CARTESIAN COORDINATES (ANGSTROEM)",
+    "----------------------------",
+    " C    0.000000    0.000000    0.000000",
+    " H    0.000000    0.000000    1.000000",
+    "",
+    "FINAL SINGLE POINT ENERGY      -100.123456789",
+    "",
+    "                             ****ORCA TERMINATED NORMALLY****",
+    "TOTAL RUN TIME: 0 days 0 hours 0 minutes 30 seconds 0 msec",
+])
 
 
 @pytest.mark.asyncio
-async def test_rule_based_comment_in_progress_notification(tmp_path: Path) -> None:
-    """진행 중인 최적화 계산에 규칙 기반 코멘트가 포함된다."""
+async def test_neb_running_uses_run_state_status(tmp_path: Path) -> None:
+    """NEB 계산: parser는 completed이지만 run_state가 running이면 RUNNING Progress로 간다."""
     kb_dir = tmp_path / "kb"
-    kb_dir.mkdir(parents=True)
-    out_file = kb_dir / "opt_run.out"
-    out_file.write_text(_RUNNING_OPT_OUT, encoding="utf-8")
-    (kb_dir / "run_state.json").write_text('{"status": "running"}', encoding="utf-8")
+    run_dir = kb_dir / "neb_job"
+    run_dir.mkdir(parents=True)
+    out_file = run_dir / "neb.out"
+    out_file.write_text(_NEB_RUNNING_OUT, encoding="utf-8")
+    (run_dir / "run_state.json").write_text('{"status": "running"}', encoding="utf-8")
 
     state_file = tmp_path / "automation" / "state.json"
 
@@ -432,82 +418,13 @@ async def test_rule_based_comment_in_progress_notification(tmp_path: Path) -> No
     # baseline
     await monitor()
 
-    # 파일 변경
-    out_file.write_text(_RUNNING_OPT_OUT + "\n# updated\n", encoding="utf-8")
+    # 파일 변경 (NEB가 다음 iteration 진행)
+    out_file.write_text(_NEB_RUNNING_OUT + "\n# next iteration\n", encoding="utf-8")
     mtime = os.path.getmtime(out_file)
     os.utime(out_file, (mtime + 5.0, mtime + 5.0))
 
     result = await monitor()
-    assert "OPT Progress" in result
-    assert "💬" in result
-    assert "<i>" in result
-
-
-# ---------------------------------------------------------------------------
-# _rule_based_comment 단위 테스트
-# ---------------------------------------------------------------------------
-
-from core.orca_parser import OptProgress, OptStep
-
-
-@pytest.mark.parametrize(
-    ("steps", "expected_fragments"),
-    [
-        # 빈 스텝 → 빈 문자열
-        ([], []),
-        # 에너지 감소 + 수렴 근접
-        (
-            [
-                OptStep(cycle=1, energy_hartree=-100.1, energy_change=-0.02, max_gradient=0.005,
-                        converged_flags={"Energy change": False, "MAX gradient": False, "RMS gradient": False, "MAX step": False, "RMS step": False}),
-                OptStep(cycle=2, energy_hartree=-100.12, energy_change=-0.01, max_gradient=0.001,
-                        converged_flags={"Energy change": False, "MAX gradient": False, "RMS gradient": False, "MAX step": False, "RMS step": False}),
-            ],
-            ["에너지 안정적 감소"],
-        ),
-        # 모든 수렴 조건 충족
-        (
-            [
-                OptStep(cycle=1, energy_hartree=-100.1, energy_change=-1e-7, max_gradient=1e-5,
-                        converged_flags={"Energy change": True, "MAX gradient": True, "RMS gradient": True, "MAX step": True, "RMS step": True}),
-            ],
-            ["수렴 완료"],
-        ),
-        # 에너지 진동
-        (
-            [
-                OptStep(cycle=1, energy_hartree=-100.1, energy_change=-0.01, max_gradient=0.005,
-                        converged_flags={}),
-                OptStep(cycle=2, energy_hartree=-100.09, energy_change=0.01, max_gradient=0.004,
-                        converged_flags={}),
-                OptStep(cycle=3, energy_hartree=-100.1, energy_change=-0.01, max_gradient=0.003,
-                        converged_flags={}),
-            ],
-            ["에너지 진동"],
-        ),
-        # dE 수렴 임계값 이내
-        (
-            [
-                OptStep(cycle=1, energy_hartree=-100.1, energy_change=-1e-7, max_gradient=0.01,
-                        converged_flags={"Energy change": True, "MAX gradient": False}),
-            ],
-            ["dE 수렴 임계값 이내"],
-        ),
-    ],
-)
-def test_rule_based_comment(steps: list, expected_fragments: list[str]) -> None:
-    """_rule_based_comment가 규칙에 따라 올바른 코멘트를 생성한다."""
-    progress = OptProgress(
-        source_path="/tmp/test.out",
-        formula="CH4",
-        method="B3LYP",
-        basis_set="def2-SVP",
-        calc_type="opt",
-        steps=steps,
-    )
-    result = _rule_based_comment(progress)
-    if not expected_fragments:
-        assert result == ""
-    else:
-        for fragment in expected_fragments:
-            assert fragment in result
+    assert "계산 업데이트" in result
+    assert "🔄" in result
+    # running 계산은 인덱스에 upsert하지 않아야 한다
+    dft_index.upsert_single.assert_not_awaited()
