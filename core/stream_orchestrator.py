@@ -55,6 +55,7 @@ class EngineStreamOrchestrator:
                     full_response = ""
                     target_model: str | None = None
                     usage = None
+                    skill_stream_stop_reason: str | None = None
                     if (
                         not skill.streaming
                         or engine._should_use_chunked_summary(
@@ -103,6 +104,7 @@ class EngineStreamOrchestrator:
                                             chat_id=chat_id,
                                             repeated_chunks=skill_repeated_stream_chunk_count,
                                         )
+                                        skill_stream_stop_reason = "repeated_chunks"
                                         break
                                     continue
                                 skill_last_stream_chunk = chunk
@@ -163,6 +165,7 @@ class EngineStreamOrchestrator:
                     engine._set_stream_meta(
                         chat_id,
                         tier=RoutingTier.SKILL,
+                        stop_reason=skill_stream_stop_reason,
                         usage=usage,
                     )
                     engine._log_request(t0, chat_id, "skill", usage, len(messages))
@@ -219,6 +222,7 @@ class EngineStreamOrchestrator:
                 stream_state = ChatStreamState()
                 usage = None
                 stream_error: Exception | None = None
+                stream_stop_reason: str | None = None
                 should_stream_chunks = not prepared_full.stream_buffering
                 full_last_stream_chunk: str | None = None
                 full_repeated_stream_chunk_count = 0
@@ -244,6 +248,7 @@ class EngineStreamOrchestrator:
                                     chat_id=chat_id,
                                     repeated_chunks=full_repeated_stream_chunk_count,
                                 )
+                                stream_stop_reason = "repeated_chunks"
                                 break
                             continue
                         full_last_stream_chunk = chunk
@@ -341,6 +346,7 @@ class EngineStreamOrchestrator:
                     tier=RoutingTier.FULL,
                     intent=routing.intent,
                     cache_id=cache_id,
+                    stop_reason=stream_stop_reason,
                     usage=usage,
                     rag_trace=(
                         prepared_full.rag_result.trace.to_dict()

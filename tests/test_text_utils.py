@@ -75,6 +75,12 @@ def test_detect_output_anomalies_flags_internal_reasoning_phrase_variant() -> No
     assert "internal_reasoning_phrase" in reasons
 
 
+def test_detect_output_anomalies_flags_repeated_char_run() -> None:
+    text = "GGGGGGGG"
+    reasons = detect_output_anomalies(text, text)
+    assert "repeated_char_run" in reasons
+
+
 def test_detect_output_anomalies_empty_after_sanitize() -> None:
     raw = "<|start|>assistant<|channel|>analysis<|message|>draft<|end|>"
     reasons = detect_output_anomalies(raw)

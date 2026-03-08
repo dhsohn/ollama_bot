@@ -55,6 +55,8 @@ def consume_last_stream_meta(
         "cache_id": meta.cache_id,
         "usage": meta.usage,
     }
+    if meta.stop_reason is not None:
+        result["stop_reason"] = meta.stop_reason
     if meta.model_role is not None:
         result["model_role"] = meta.model_role
     if meta.rag_trace is not None:
@@ -69,6 +71,7 @@ def set_stream_meta(
     tier: str,
     intent: str | None,
     cache_id: int | None,
+    stop_reason: str | None,
     usage: Any,
     model_role: str | None,
     rag_trace: dict | None,
@@ -80,6 +83,7 @@ def set_stream_meta(
         tier=tier,
         intent=intent,
         cache_id=cache_id,
+        stop_reason=stop_reason,
         usage=usage,
         model_role=model_role,
         rag_trace=rag_trace,

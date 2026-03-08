@@ -29,6 +29,18 @@ _REVIEWER_SYSTEM_PROMPT = """
 - RAG citation([#1] 등)이 있으면 가능한 유지하세요.
 - 사실을 새로 만들지 마세요.
 """.strip()
+_BLOCKING_ANOMALY_REASONS = frozenset({
+    "empty_after_sanitize",
+    "repeated_assignment_pattern",
+    "repeated_word_run",
+    "repeated_char_run",
+    "dominant_repeated_token",
+    "low_token_diversity",
+})
+_LOW_QUALITY_FALLBACK = (
+    "방금 답변 생성이 비정상적으로 깨져 제대로 답하지 못했습니다. "
+    "같은 메시지를 한 번 더 보내주시면 다시 답하겠습니다."
+)
 
 
 @dataclass(frozen=True)
@@ -47,6 +59,7 @@ def should_review_response(
     text: str,
     images: list[bytes] | None,
     planner_applied: bool,
+    anomaly_reasons: list[str] | None = None,
 ) -> bool:
     """현재 full-tier 응답에 reviewer를 붙일지 결정한다."""
     cfg = engine._config.response_reviewer
@@ -54,6 +67,8 @@ def should_review_response(
         return False
     if not text.strip():
         return False
+    if has_blocking_anomaly(anomaly_reasons):
+        return True
     return not cfg.only_when_planner_used or planner_applied
 
 
@@ -73,12 +88,21 @@ async def maybe_review_response(
     anomaly_reasons: list[str] | None = None,
 ) -> str:
     """필요 시 draft answer를 검수하고 rewrite를 적용한다."""
+    blocking_anomaly = has_blocking_anomaly(anomaly_reasons)
     if not should_review_response(
         engine,
         text=text,
         images=images,
         planner_applied=planner_applied,
+        anomaly_reasons=anomaly_reasons,
     ):
+        if blocking_anomaly:
+            return _fallback_for_blocking_anomaly(
+                engine,
+                chat_id=chat_id,
+                reasons=anomaly_reasons or [],
+                stage="review_skipped",
+            )
         return response
 
     cfg = engine._config.response_reviewer
@@ -106,11 +130,25 @@ async def maybe_review_response(
             chat_id=chat_id,
             error=str(exc),
         )
+        if blocking_anomaly:
+            return _fallback_for_blocking_anomaly(
+                engine,
+                chat_id=chat_id,
+                reasons=anomaly_reasons or [],
+                stage="review_failed",
+            )
         return response
 
     review = _parse_review_payload(engine, chat_response.content)
     if review is None:
         engine._logger.debug("response_reviewer_invalid_payload", chat_id=chat_id)
+        if blocking_anomaly:
+            return _fallback_for_blocking_anomaly(
+                engine,
+                chat_id=chat_id,
+                reasons=anomaly_reasons or [],
+                stage="review_invalid_payload",
+            )
         return response
 
     await _record_review_observation(
@@ -122,34 +160,66 @@ async def maybe_review_response(
         rag_used=rag_used,
     )
 
+    final_response = response
     if not review.rewrite_needed or not review.revised_answer:
         engine._logger.debug(
             "response_reviewer_passed",
             chat_id=chat_id,
             issues=list(review.issues) or None,
         )
-        return response
+    else:
+        revised = sanitize_model_output(review.revised_answer).strip()
+        if not revised:
+            engine._logger.debug("response_reviewer_empty_rewrite", chat_id=chat_id)
+        else:
+            revised_anomalies = detect_output_anomalies(review.revised_answer, revised)
+            if revised_anomalies:
+                engine._logger.warning(
+                    "response_reviewer_rewrite_rejected",
+                    chat_id=chat_id,
+                    reasons=revised_anomalies,
+                )
+            else:
+                engine._logger.info(
+                    "response_reviewer_rewritten",
+                    chat_id=chat_id,
+                    issues=list(review.issues) or None,
+                )
+                final_response = revised
 
-    revised = sanitize_model_output(review.revised_answer).strip()
-    if not revised:
-        engine._logger.debug("response_reviewer_empty_rewrite", chat_id=chat_id)
-        return response
+    if blocking_anomaly:
+        final_anomalies = detect_output_anomalies(final_response, final_response)
+        if has_blocking_anomaly(final_anomalies):
+            return _fallback_for_blocking_anomaly(
+                engine,
+                chat_id=chat_id,
+                reasons=final_anomalies,
+                stage="review_persistent_anomaly",
+            )
+    return final_response
 
-    revised_anomalies = detect_output_anomalies(review.revised_answer, revised)
-    if revised_anomalies:
-        engine._logger.warning(
-            "response_reviewer_rewrite_rejected",
-            chat_id=chat_id,
-            reasons=revised_anomalies,
-        )
-        return response
 
-    engine._logger.info(
-        "response_reviewer_rewritten",
+def has_blocking_anomaly(anomaly_reasons: list[str] | tuple[str, ...] | None) -> bool:
+    """사용자에게 그대로 노출하면 안 되는 붕괴성 응답인지 판단한다."""
+    if not anomaly_reasons:
+        return False
+    return any(reason in _BLOCKING_ANOMALY_REASONS for reason in anomaly_reasons)
+
+
+def _fallback_for_blocking_anomaly(
+    engine: Engine,
+    *,
+    chat_id: int,
+    reasons: list[str] | tuple[str, ...],
+    stage: str,
+) -> str:
+    engine._logger.warning(
+        "response_quality_fallback_applied",
         chat_id=chat_id,
-        issues=list(review.issues) or None,
+        reasons=list(reasons) or None,
+        stage=stage,
     )
-    return revised
+    return _LOW_QUALITY_FALLBACK
 
 
 async def _record_review_observation(

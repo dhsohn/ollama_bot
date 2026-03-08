@@ -167,22 +167,22 @@ async def handle_message_impl(
             ),
             timeout=render_timeout,
         )
-        stream_meta_found = False
         consume_meta = getattr(self._engine, "consume_last_stream_meta", None)
         if callable(consume_meta):
             stream_meta = consume_meta(chat_id)
             if inspect.isawaitable(stream_meta):
                 stream_meta = await stream_meta
             if isinstance(stream_meta, dict):
-                stream_meta_found = True
                 result.tier = stream_meta.get("tier", result.tier)
                 result.intent = stream_meta.get("intent")
                 result.cache_id = stream_meta.get("cache_id")
                 result.usage = stream_meta.get("usage")
+                if result.stop_reason is None:
+                    result.stop_reason = stream_meta.get("stop_reason")
         stop_reason = getattr(result, "stop_reason", None)
         recovery_reason: str | None = None
         anomaly_reasons: list[str] = []
-        if stop_reason in {"chunk_timeout", "repeated_chunks"} and not stream_meta_found:
+        if stop_reason in {"chunk_timeout", "repeated_chunks"}:
             recovery_reason = stop_reason
         elif stop_reason is None:
             anomaly_reasons = detect_output_anomalies_fn(

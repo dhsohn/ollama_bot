@@ -60,6 +60,9 @@ _REPEATED_ASSIGNMENT_RE = re.compile(
     r"\b(?P<word>[a-zA-Z_]{2,})(?:=(?P=word)){6,}=?",
     re.IGNORECASE,
 )
+_REPEATED_CHAR_RUN_RE = re.compile(
+    r"^(?P<char>[0-9A-Za-z가-힣ㄱ-ㅎㅏ-ㅣ])(?P=char){5,}$"
+)
 _INTERNAL_REASONING_PHRASE_RE = re.compile(
     r"(?:\bwe need to respond\b|\bwe need to analyze\b|\bwe have a conversation\b|"
     r"\bthe user says\b|\bthe user asks\b|\blet me think\b|\banalysis:\b|"
@@ -177,6 +180,8 @@ def detect_output_anomalies(text: str, cleaned: str | None = None) -> list[str]:
         _add("repeated_assignment_pattern")
     if _REPEATED_WORD_RUN_RE.search(visible):
         _add("repeated_word_run")
+    if _REPEATED_CHAR_RUN_RE.fullmatch(visible.strip()):
+        _add("repeated_char_run")
 
     tokens = [token.lower() for token in _QUALITY_TOKEN_RE.findall(visible)]
     if len(tokens) >= 18:

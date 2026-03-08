@@ -50,6 +50,7 @@ class _StreamMeta:
     tier: RoutingTier = RoutingTier.FULL
     intent: str | None = None
     cache_id: int | None = None
+    stop_reason: str | None = None
     usage: Any = None
     model_role: str | None = None
     rag_trace: dict | None = None

@@ -572,6 +572,60 @@ class TestProcessMessage:
         assert history[-1]["content"] == result
 
     @pytest.mark.asyncio
+    async def test_process_message_forces_reviewer_on_blocking_anomaly_without_planner(
+        self,
+        engine: Engine,
+        mock_ollama,
+        memory: MemoryManager,
+    ) -> None:
+        mock_ollama.chat = AsyncMock(side_effect=[
+            ChatResponse(content="GGGGGGGGGGGGGGGG"),
+            ChatResponse(content=json.dumps({
+                "pass": False,
+                "issues": ["반복 출력", "의미 붕괴"],
+                "rewrite_needed": True,
+                "revised_answer": "그렇게 느끼게 했다면 미안해. 왜 그렇게 느꼈는지 말해주면 차분히 답해볼게.",
+            })),
+        ])
+
+        result = await engine.process_message(111, "넌 쓸모가 없는것 같아")
+
+        assert result == "그렇게 느끼게 했다면 미안해. 왜 그렇게 느꼈는지 말해주면 차분히 답해볼게."
+        assert mock_ollama.chat.await_count == 2
+        review_call = mock_ollama.chat.await_args_list[1]
+        assert review_call.kwargs.get("response_format") == "json"
+        history = await memory.get_conversation(111)
+        assert history[-1]["content"] == result
+
+    @pytest.mark.asyncio
+    async def test_process_message_falls_back_when_blocking_anomaly_persists(
+        self,
+        engine: Engine,
+        mock_ollama,
+        memory: MemoryManager,
+    ) -> None:
+        fallback = (
+            "방금 답변 생성이 비정상적으로 깨져 제대로 답하지 못했습니다. "
+            "같은 메시지를 한 번 더 보내주시면 다시 답하겠습니다."
+        )
+        mock_ollama.chat = AsyncMock(side_effect=[
+            ChatResponse(content="GGGGGGGGGGGGGGGG"),
+            ChatResponse(content=json.dumps({
+                "pass": True,
+                "issues": [],
+                "rewrite_needed": False,
+                "revised_answer": "",
+            })),
+        ])
+
+        result = await engine.process_message(111, "넌 쓸모가 없는것 같아")
+
+        assert result == fallback
+        assert mock_ollama.chat.await_count == 2
+        history = await memory.get_conversation(111)
+        assert history[-1]["content"] == fallback
+
+    @pytest.mark.asyncio
     async def test_stream_buffers_and_rewrites_response_when_reviewer_enabled(
         self,
         engine: Engine,
@@ -879,6 +933,9 @@ class TestProcessMessage:
         history = await memory.get_conversation(111)
         assert history[-1]["role"] == "assistant"
         assert history[-1]["content"] == "반복"
+        meta = engine.consume_last_stream_meta(111)
+        assert meta is not None
+        assert meta["stop_reason"] == "repeated_chunks"
 
     @pytest.mark.asyncio
     async def test_stream_persists_sanitized_response_in_memory(
