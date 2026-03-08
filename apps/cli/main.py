@@ -17,10 +17,14 @@ import sys
 from pathlib import Path
 from typing import Any
 
-# 프로젝트 루트를 sys.path에 추가
-_project_root = str(Path(__file__).resolve().parent.parent.parent)
-if _project_root not in sys.path:
-    sys.path.insert(0, _project_root)
+
+def _ensure_project_root_on_path() -> None:
+    project_root = str(Path(__file__).resolve().parent.parent.parent)
+    if project_root not in sys.path:
+        sys.path.insert(0, project_root)
+
+
+_ensure_project_root_on_path()
 
 
 async def _init_components():
@@ -79,6 +83,12 @@ async def _init_components():
     return llm, retrieval_client, rag_pipeline, config
 
 
+async def _close_components(llm: Any, retrieval_client: Any) -> None:
+    if retrieval_client is not None:
+        await retrieval_client.close()
+    await llm.close()
+
+
 async def cmd_chat(args: argparse.Namespace) -> None:
     """대화형 채팅."""
     llm, retrieval_client, rag_pipeline, config = await _init_components()
@@ -120,9 +130,7 @@ async def cmd_chat(args: argparse.Namespace) -> None:
     except KeyboardInterrupt:
         print("\n종료.")
     finally:
-        if retrieval_client is not None:
-            await retrieval_client.close()
-        await llm.close()
+        await _close_components(llm, retrieval_client)
 
 
 async def cmd_dry_run(args: argparse.Namespace) -> None:
@@ -150,9 +158,7 @@ async def cmd_dry_run(args: argparse.Namespace) -> None:
         result["rag_trace"] = None
 
     print(json.dumps(result, ensure_ascii=False, indent=2))
-    if retrieval_client is not None:
-        await retrieval_client.close()
-    await llm.close()
+    await _close_components(llm, retrieval_client)
 
 
 _RAG_TEST_CASES: list[dict[str, Any]] = [
@@ -195,12 +201,10 @@ async def cmd_test(args: argparse.Namespace) -> None:
 
     print(f"\nRAG Trigger: {rag_correct}/{rag_total} ({rag_correct/rag_total*100:.0f}%)\n")
 
-    if retrieval_client is not None:
-        await retrieval_client.close()
-    await llm.close()
+    await _close_components(llm, retrieval_client)
 
 
-def main() -> None:
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="ollama_bot CLI — 단일 모델/RAG 테스트",
     )
@@ -212,7 +216,11 @@ def main() -> None:
     dry_p.add_argument("query", type=str, help="테스트 쿼리")
 
     sub.add_parser("test", help="테스트 케이스 실행")
+    return parser
 
+
+def main() -> None:
+    parser = _build_parser()
     args = parser.parse_args()
     if args.command is None:
         parser.print_help()

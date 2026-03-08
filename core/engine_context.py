@@ -1,47 +1,15 @@
 from __future__ import annotations
 
-import re as _re
 from typing import TYPE_CHECKING
 
 from core.constants import CONTEXT_HISTORY_MESSAGE_MAX_CHARS
+from core.prompt_sanitization import strip_prompt_injection
 from core.skill_manager import SkillDefinition
 from core.text_utils import sanitize_model_output
 
 if TYPE_CHECKING:
     from core.engine import Engine
     from core.intent_router import ContextStrategy
-_INJECTION_RE = _re.compile(
-    r"\[/?(?:system|user|assistant|INST)\]"
-    r"|<\|(?:im_start|im_end|system|user|assistant)\|>"
-    r"|(?:^|\n)\s*(?:system|user|assistant|human)\s*:",
-    _re.IGNORECASE,
-)
-_CODE_BLOCK_RE = _re.compile(r"```.*?```", _re.DOTALL)
-
-
-def _strip_prompt_injection(text: str) -> str:
-    """프리뷰 텍스트에서 코드블록을 보존한 채 인젝션 패턴만 제거한다."""
-    if not text:
-        return ""
-
-    parts: list[str] = []
-    last = 0
-    for match in _CODE_BLOCK_RE.finditer(text):
-        outside = text[last:match.start()]
-        outside = _INJECTION_RE.sub("", outside)
-        outside = _re.sub(r"\n{3,}", "\n\n", outside)
-        parts.append(outside)
-        parts.append(match.group(0))
-        last = match.end()
-
-    tail = text[last:]
-    tail = _INJECTION_RE.sub("", tail)
-    tail = _re.sub(r"\n{3,}", "\n\n", tail)
-    parts.append(tail)
-
-    sanitized = "".join(parts)
-    sanitized = _re.sub(r"\n{3,}", "\n\n", sanitized)
-    return sanitized.strip()
 
 
 async def _resolve_user_language(engine: Engine, chat_id: int) -> str:
@@ -241,8 +209,8 @@ async def inject_dicl_examples(
         example_lines: list[str] = []
         total_chars = 0
         for example in examples:
-            question = _strip_prompt_injection(example.get("user_preview") or "")
-            answer = _strip_prompt_injection(example.get("bot_preview") or "")
+            question = strip_prompt_injection(example.get("user_preview") or "")
+            answer = strip_prompt_injection(example.get("bot_preview") or "")
             if not question or not answer:
                 continue
             chunk = (

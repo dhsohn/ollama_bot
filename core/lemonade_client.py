@@ -15,6 +15,17 @@ from typing import Any
 import httpx
 
 from core.config import LemonadeConfig
+from core.lemonade_utils import (
+    build_chat_payload,
+    compact_text,
+    extract_api_error,
+    extract_content,
+    format_exception,
+    parse_loaded_models,
+    parse_rerank_chat_response,
+    parse_rerank_items,
+    usage_from_payload,
+)
 from core.llm_types import ChatResponse, ChatStreamState, ChatUsage
 from core.logging_setup import get_logger
 
@@ -68,14 +79,6 @@ class LemonadeClient:
         self._heavy_roles = {"reasoning", "coding", "vision"}
         self._logger = get_logger("lemonade_client")
 
-    @staticmethod
-    def _format_exception(exc: Exception) -> str:
-        """로그/에러 메시지에 사용할 예외 문자열을 정규화한다."""
-        message = str(exc).strip()
-        if message:
-            return f"{exc.__class__.__name__}: {message}"
-        return exc.__class__.__name__
-
     @property
     def default_model(self) -> str:
         return self._default_model
@@ -114,7 +117,7 @@ class LemonadeClient:
     def _mark_unhealthy(self, error: Exception | str) -> None:
         self._is_healthy = False
         if isinstance(error, Exception):
-            self._last_connection_error = self._format_exception(error)
+            self._last_connection_error = format_exception(error)
         else:
             self._last_connection_error = str(error)
         self._next_reconnect_at = time.monotonic() + self._reconnect_cooldown_seconds
@@ -141,7 +144,7 @@ class LemonadeClient:
             self._client = None
             if isinstance(exc, LemonadeClientError):
                 raise
-            error_text = self._format_exception(exc)
+            error_text = format_exception(exc)
             raise LemonadeClientError(
                 f"Failed to connect to Lemonade at {self._host}: {error_text}"
             ) from exc
@@ -180,7 +183,7 @@ class LemonadeClient:
                 self._mark_unhealthy(exc)
                 self._logger.warning(
                     "lemonade_reconnect_failed",
-                    error=self._format_exception(exc),
+                    error=format_exception(exc),
                 )
                 await candidate.aclose()
                 return False
@@ -222,35 +225,6 @@ class LemonadeClient:
                 names.append(item)
         return names
 
-    @staticmethod
-    def _compact_text(value: str, *, max_chars: int = 280) -> str:
-        compact = " ".join(value.split())
-        if len(compact) <= max_chars:
-            return compact
-        return compact[:max_chars] + "..."
-
-    @staticmethod
-    def _parse_loaded_models(payload: Any) -> set[str]:
-        if not isinstance(payload, dict):
-            return set()
-        entries = payload.get("all_models_loaded", [])
-        names: set[str] = set()
-        if not isinstance(entries, list):
-            return names
-        for item in entries:
-            if isinstance(item, dict):
-                name = (
-                    item.get("model_name")
-                    or item.get("id")
-                    or item.get("model")
-                    or item.get("name")
-                )
-                if isinstance(name, str) and name:
-                    names.add(name)
-            elif isinstance(item, str) and item:
-                names.add(item)
-        return names
-
     async def _refresh_loaded_models(self, *, force: bool = False) -> set[str]:
         now = time.monotonic()
         if (
@@ -267,14 +241,14 @@ class LemonadeClient:
                 timeout=self._timeout_default,
             )
             response.raise_for_status()
-            loaded = self._parse_loaded_models(response.json())
+            loaded = parse_loaded_models(response.json())
             self._loaded_models = loaded
             self._loaded_models_checked_at = now
             return set(loaded)
         except Exception as exc:
             self._logger.debug(
                 "lemonade_loaded_models_refresh_failed",
-                error=self._format_exception(exc),
+                error=format_exception(exc),
             )
             return set(self._loaded_models)
 
@@ -328,7 +302,7 @@ class LemonadeClient:
                 )
                 return
             if response.is_error:
-                message = self._compact_text(response.text)
+                message = compact_text(response.text)
                 raise LemonadeClientError(
                     f"Failed to load model '{target_model}' before generation "
                     f"(role={role_key or 'unknown'}, status={response.status_code}): {message}"
@@ -343,90 +317,6 @@ class LemonadeClient:
                 elapsed_seconds=round(time.monotonic() - started, 2),
             )
 
-    @staticmethod
-    def _extract_content(choice: dict[str, Any]) -> str:
-        message = choice.get("message") if isinstance(choice, dict) else None
-        if isinstance(message, dict):
-            content = message.get("content")
-            if isinstance(content, str):
-                return content
-            if isinstance(content, list):
-                chunks: list[str] = []
-                for part in content:
-                    if isinstance(part, dict) and isinstance(part.get("text"), str):
-                        chunks.append(part["text"])
-                return "".join(chunks)
-        return ""
-
-    def _extract_api_error(self, payload: Any) -> str | None:
-        if not isinstance(payload, dict):
-            return None
-        error = payload.get("error")
-        if isinstance(error, str) and error.strip():
-            return self._compact_text(error)
-        if not isinstance(error, dict):
-            return None
-        message = error.get("message") or error.get("detail") or error.get("error")
-        code = error.get("code") or error.get("type")
-        parts: list[str] = []
-        if isinstance(code, str) and code.strip():
-            parts.append(code.strip())
-        if isinstance(message, str) and message.strip():
-            parts.append(message.strip())
-        if not parts:
-            return self._compact_text(str(error))
-        return self._compact_text(": ".join(parts))
-
-    @staticmethod
-    def _usage_from_payload(payload: dict[str, Any]) -> ChatUsage | None:
-        usage = payload.get("usage")
-        if not isinstance(usage, dict):
-            return None
-        return ChatUsage(
-            prompt_eval_count=int(usage.get("prompt_tokens", 0) or 0),
-            eval_count=int(usage.get("completion_tokens", 0) or 0),
-            eval_duration=0,
-            # OpenAI-style usage에는 보통 total_duration이 없으므로 0 또는 동명 필드만 사용한다.
-            total_duration=int(usage.get("total_duration", 0) or 0),
-        )
-
-    def _build_chat_payload(
-        self,
-        *,
-        model: str | None,
-        messages: list[dict[str, str]],
-        temperature: float | None,
-        max_tokens: int | None,
-        response_format: str | dict | None,
-        stream: bool,
-    ) -> dict[str, Any]:
-        payload: dict[str, Any] = {
-            "messages": messages,
-            "temperature": self._temperature if temperature is None else temperature,
-            "max_tokens": self._max_tokens if max_tokens is None else max_tokens,
-            "stream": stream,
-        }
-        if model:
-            payload["model"] = model
-        if response_format is not None:
-            if response_format == "json":
-                payload["response_format"] = {"type": "json_object"}
-            elif isinstance(response_format, dict):
-                format_type = str(response_format.get("type", "")).strip().lower()
-                if format_type in {"json_object", "text"}:
-                    payload["response_format"] = response_format
-                else:
-                    # Lemonade(OpenAI-compatible) 백엔드는 schema dict를 지원하지 않는다.
-                    # schema 요청은 json_object로 강등하여 호출 실패를 방지한다.
-                    payload["response_format"] = {"type": "json_object"}
-                    self._logger.debug(
-                        "lemonade_response_format_downgraded",
-                        requested_type=format_type or None,
-                    )
-            else:
-                payload["response_format"] = response_format
-        return payload
-
     async def chat(
         self,
         messages: list[dict[str, str]],
@@ -439,13 +329,16 @@ class LemonadeClient:
         """비스트리밍 채팅 요청."""
         requested_model = (model or "").strip()
         target_model = requested_model or self._default_model or None
-        payload = self._build_chat_payload(
+        payload = build_chat_payload(
             model=target_model,
             messages=messages,
+            default_temperature=self._temperature,
             temperature=temperature,
+            default_max_tokens=self._max_tokens,
             max_tokens=max_tokens,
             response_format=response_format,
             stream=False,
+            logger=self._logger,
         )
 
         async def _do_chat() -> ChatResponse:
@@ -457,7 +350,7 @@ class LemonadeClient:
             )
             response.raise_for_status()
             body = response.json()
-            error_text = self._extract_api_error(body)
+            error_text = extract_api_error(body)
             if error_text:
                 raise LemonadeClientError(
                     f"Lemonade chat request returned API error for model '{target_model}': {error_text}"
@@ -465,8 +358,8 @@ class LemonadeClient:
             choices = body.get("choices", [])
             if not choices:
                 raise LemonadeClientError("lemonade_chat_failed: missing choices")
-            content = self._extract_content(choices[0])
-            usage = self._usage_from_payload(body)
+            content = extract_content(choices[0])
+            usage = usage_from_payload(body)
             return ChatResponse(content=content, usage=usage)
 
         return await self._retry_with_backoff(_do_chat)
@@ -484,13 +377,16 @@ class LemonadeClient:
         client = self._require_client()
         requested_model = (model or "").strip()
         target_model = requested_model or self._default_model or None
-        payload = self._build_chat_payload(
+        payload = build_chat_payload(
             model=target_model,
             messages=messages,
+            default_temperature=self._temperature,
             temperature=temperature,
+            default_max_tokens=self._max_tokens,
             max_tokens=max_tokens,
             response_format=None,
             stream=True,
+            logger=self._logger,
         )
         state = stream_state or ChatStreamState()
         state.usage = None
@@ -527,13 +423,13 @@ class LemonadeClient:
                     except json.JSONDecodeError:
                         continue
 
-                    error_text = self._extract_api_error(chunk)
+                    error_text = extract_api_error(chunk)
                     if error_text:
                         raise LemonadeClientError(
                             f"Lemonade streaming API error for model '{target_model}': {error_text}"
                         )
 
-                    usage = self._usage_from_payload(chunk)
+                    usage = usage_from_payload(chunk)
                     if usage is not None:
                         state.usage = usage
 
@@ -560,7 +456,7 @@ class LemonadeClient:
                         continue
 
                     # 일부 구현은 delta 대신 message.content를 전달한다.
-                    raw_fallback_content = self._extract_content(first_choice)
+                    raw_fallback_content = extract_content(first_choice)
                     if raw_fallback_content:
                         fallback_content = raw_fallback_content
                         # message.content가 누적 전체 텍스트인 구현을 델타로 보정한다.
@@ -600,14 +496,14 @@ class LemonadeClient:
         except TimeoutError as exc:
             # 애플리케이션 레벨 타임아웃(전체 스트림 시간 초과, 반복 콘텐츠 감지)은
             # 연결 장애가 아니므로 unhealthy로 마킹하지 않는다.
-            error_text = self._format_exception(exc)
+            error_text = format_exception(exc)
             raise LemonadeClientError(
                 f"Lemonade streaming request failed for model '{target_model}': {error_text}"
             ) from exc
         except (httpx.HTTPError, OSError) as exc:
             self._mark_unhealthy(exc)
             await self.recover_connection()
-            error_text = self._format_exception(exc)
+            error_text = format_exception(exc)
             raise LemonadeClientError(
                 f"Lemonade streaming request failed for model '{target_model}': {error_text}"
             ) from exc
@@ -685,7 +581,7 @@ class LemonadeClient:
             response.raise_for_status()
         except (TimeoutError, httpx.HTTPError, OSError) as exc:
             self._mark_unhealthy(exc)
-            error_text = self._format_exception(exc)
+            error_text = format_exception(exc)
             raise LemonadeClientError(
                 f"Embedding request failed for model '{target_model}': {error_text}"
             ) from exc
@@ -743,28 +639,20 @@ class LemonadeClient:
                 timeout=effective_timeout,
             )
             response.raise_for_status()
-            body = response.json()
-            results = body.get("results", body.get("data", []))
-            scored = []
-            for item in results:
-                scored.append({
-                    "index": int(item.get("index", 0)),
-                    "score": float(item.get("relevance_score", item.get("score", 0.0))),
-                })
-            scored.sort(key=lambda x: x["score"], reverse=True)
+            scored = parse_rerank_items(response.json())
             self._mark_healthy()
             return scored
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code in (404, 405):
                 self._logger.debug("rerank_endpoint_not_available", status=exc.response.status_code)
             else:
-                error_text = self._format_exception(exc)
+                error_text = format_exception(exc)
                 raise LemonadeClientError(
                     f"Rerank request failed: {error_text}"
                 ) from exc
         except (TimeoutError, httpx.HTTPError, OSError) as exc:
             self._mark_unhealthy(exc)
-            error_text = self._format_exception(exc)
+            error_text = format_exception(exc)
             raise LemonadeClientError(f"Rerank request failed: {error_text}") from exc
 
         # 2) chat 기반 폴백 (마지막 수단)
@@ -799,21 +687,7 @@ class LemonadeClient:
                 timeout=timeout,
                 response_format="json",
             )
-            import json as _json
-            parsed = _json.loads(chat_resp.content)
-            if isinstance(parsed, list):
-                scored = [
-                    {"index": int(item.get("index", 0)), "score": float(item.get("score", 0.0))}
-                    for item in parsed
-                ]
-            elif isinstance(parsed, dict) and "results" in parsed:
-                scored = [
-                    {"index": int(item.get("index", 0)), "score": float(item.get("score", 0.0))}
-                    for item in parsed["results"]
-                ]
-            else:
-                raise LemonadeClientError("Unexpected rerank chat response format")
-            scored.sort(key=lambda x: x["score"], reverse=True)
+            scored = parse_rerank_chat_response(chat_resp.content)
             if top_n is not None:
                 scored = scored[:top_n]
             return scored
@@ -857,12 +731,12 @@ class LemonadeClient:
                         "lemonade_retry",
                         attempt=attempt + 1,
                         delay=delay,
-                        error=self._format_exception(exc),
+                        error=format_exception(exc),
                     )
                     await asyncio.sleep(delay)
 
         last_error_text = (
-            self._format_exception(last_error) if last_error is not None else "unknown"
+            format_exception(last_error) if last_error is not None else "unknown"
         )
         raise LemonadeClientError(
             f"Lemonade request failed after {max_retries + 1} attempts: {last_error_text}"
