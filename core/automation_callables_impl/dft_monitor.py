@@ -19,8 +19,6 @@ from core.crest_parser import CrestResult, parse_crest_output
 from core.dft_discovery import DiscoveredTarget, discover_orca_targets
 from core.orca_parser import parse_orca_output
 
-
-
 GetExternalDirs = Callable[[], Awaitable[list[str]]]
 
 
