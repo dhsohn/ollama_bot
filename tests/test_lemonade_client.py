@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
 
 from core.config import LemonadeConfig
 from core.lemonade_client import LemonadeClient, LemonadeClientError
-from core.llm_types import ChatStreamState
+from core.lemonade_errors import LemonadeModelNotFoundError
+from core.llm_types import ChatResponse, ChatStreamState
 
 
 @pytest.fixture
@@ -394,3 +395,263 @@ class TestChat:
                     pass
         finally:
             await client.close()
+
+
+class TestDelegatedOperations:
+    @pytest.mark.asyncio
+    async def test_list_models_and_get_model_info(
+        self,
+        lemonade_config: LemonadeConfig,
+    ) -> None:
+        def _handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/api/v1/models":
+                return httpx.Response(
+                    200,
+                    json={"data": [{"id": "alpha"}, {"id": "beta"}]},
+                )
+            return httpx.Response(404, json={"error": "not found"})
+
+        client = LemonadeClient(lemonade_config)
+        client._client = httpx.AsyncClient(
+            base_url=lemonade_config.host,
+            transport=httpx.MockTransport(_handler),
+        )
+
+        try:
+            assert await client.list_models() == [
+                {"name": "alpha", "size": None, "modified_at": None},
+                {"name": "beta", "size": None, "modified_at": None},
+            ]
+            assert await client.get_model_info("beta") == {
+                "model": "beta",
+                "modelfile": None,
+                "parameters": None,
+            }
+        finally:
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_get_model_info_raises_for_missing_model(
+        self,
+        lemonade_config: LemonadeConfig,
+    ) -> None:
+        def _handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/api/v1/models":
+                return httpx.Response(200, json={"data": [{"id": "alpha"}]})
+            return httpx.Response(404, json={"error": "not found"})
+
+        client = LemonadeClient(lemonade_config)
+        client._client = httpx.AsyncClient(
+            base_url=lemonade_config.host,
+            transport=httpx.MockTransport(_handler),
+        )
+
+        try:
+            with pytest.raises(LemonadeModelNotFoundError, match="missing"):
+                await client.get_model_info("missing")
+        finally:
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_health_check_attempts_recovery_on_failure(
+        self,
+        lemonade_config: LemonadeConfig,
+    ) -> None:
+        client = LemonadeClient(lemonade_config)
+        client._client = AsyncMock()
+        client._list_model_names = AsyncMock(side_effect=RuntimeError("down"))
+        client.recover_connection = AsyncMock(return_value=True)
+
+        try:
+            health = await client.health_check(attempt_recovery=True)
+            assert health == {
+                "status": "error",
+                "host": lemonade_config.host,
+                "error": "down",
+                "recovery_attempted": True,
+                "recovered": True,
+            }
+            client.recover_connection.assert_awaited_once_with(force=True)
+        finally:
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_embed_returns_sorted_vectors(
+        self,
+        lemonade_config: LemonadeConfig,
+    ) -> None:
+        def _handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/api/v1/embeddings":
+                payload = json.loads(request.content.decode("utf-8"))
+                assert payload["model"] == "test-model"
+                assert payload["input"] == ["hello", "world"]
+                return httpx.Response(
+                    200,
+                    json={
+                        "data": [
+                            {"index": 1, "embedding": [0.2, 0.3]},
+                            {"index": 0, "embedding": [0.0, 0.1]},
+                        ]
+                    },
+                )
+            return httpx.Response(404, json={"error": "not found"})
+
+        client = LemonadeClient(lemonade_config)
+        client._client = httpx.AsyncClient(
+            base_url=lemonade_config.host,
+            transport=httpx.MockTransport(_handler),
+        )
+
+        try:
+            assert await client.embed(["hello", "world"]) == [
+                [0.0, 0.1],
+                [0.2, 0.3],
+            ]
+        finally:
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_prepare_model_loads_missing_model(
+        self,
+        lemonade_config: LemonadeConfig,
+    ) -> None:
+        load_payloads: list[dict[str, str]] = []
+
+        def _handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/api/v1/health":
+                return httpx.Response(200, json={"all_models_loaded": []})
+            if request.url.path == "/api/v1/load":
+                load_payloads.append(json.loads(request.content.decode("utf-8")))
+                return httpx.Response(200, json={"ok": True})
+            return httpx.Response(404, json={"error": "not found"})
+
+        client = LemonadeClient(lemonade_config)
+        client._client = httpx.AsyncClient(
+            base_url=lemonade_config.host,
+            transport=httpx.MockTransport(_handler),
+        )
+
+        try:
+            await client.prepare_model(model="heavy-model", role="reasoning")
+            assert load_payloads == [{"model_name": "heavy-model"}]
+            assert "heavy-model" in client._loaded_models
+        finally:
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_rerank_uses_endpoint_when_available(
+        self,
+        lemonade_config: LemonadeConfig,
+    ) -> None:
+        def _handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/api/v1/rerank":
+                payload = json.loads(request.content.decode("utf-8"))
+                assert payload["top_n"] == 2
+                return httpx.Response(
+                    200,
+                    json={
+                        "results": [
+                            {"index": 0, "relevance_score": 0.2},
+                            {"index": 1, "relevance_score": 0.8},
+                        ]
+                    },
+                )
+            return httpx.Response(404, json={"error": "not found"})
+
+        client = LemonadeClient(lemonade_config)
+        client._client = httpx.AsyncClient(
+            base_url=lemonade_config.host,
+            transport=httpx.MockTransport(_handler),
+        )
+
+        try:
+            assert await client.rerank(
+                query="query",
+                documents=["a", "b"],
+                top_n=2,
+            ) == [
+                {"index": 1, "score": 0.8},
+                {"index": 0, "score": 0.2},
+            ]
+        finally:
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_rerank_falls_back_to_chat_when_endpoint_missing(
+        self,
+        lemonade_config: LemonadeConfig,
+    ) -> None:
+        def _handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/api/v1/rerank":
+                return httpx.Response(404, json={"error": "not available"})
+            return httpx.Response(404, json={"error": "not found"})
+
+        client = LemonadeClient(lemonade_config)
+        client._client = httpx.AsyncClient(
+            base_url=lemonade_config.host,
+            transport=httpx.MockTransport(_handler),
+        )
+        client.chat = AsyncMock(
+            return_value=ChatResponse(
+                content='[{"index": 1, "score": 0.9}, {"index": 0, "score": 0.1}]',
+                usage=None,
+            )
+        )
+
+        try:
+            assert await client.rerank(
+                query="query",
+                documents=["a", "b"],
+                top_n=1,
+            ) == [{"index": 1, "score": 0.9}]
+        finally:
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_check_model_availability_returns_false_on_lookup_error(
+        self,
+        lemonade_config: LemonadeConfig,
+    ) -> None:
+        client = LemonadeClient(lemonade_config)
+        client._client = AsyncMock()
+        client._list_model_names = AsyncMock(side_effect=RuntimeError("down"))
+
+        try:
+            assert await client.check_model_availability(["alpha", "beta"]) == {
+                "alpha": False,
+                "beta": False,
+            }
+        finally:
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_recover_connection_replaces_client(
+        self,
+        lemonade_config: LemonadeConfig,
+    ) -> None:
+        def _handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/api/v1/models":
+                return httpx.Response(200, json={"data": [{"id": "recovered"}]})
+            return httpx.Response(404, json={"error": "not found"})
+
+        previous_client = httpx.AsyncClient(
+            base_url=lemonade_config.host,
+            transport=httpx.MockTransport(lambda _request: httpx.Response(200, json={"data": []})),
+        )
+        candidate_client = httpx.AsyncClient(
+            base_url=lemonade_config.host,
+            transport=httpx.MockTransport(_handler),
+        )
+
+        client = LemonadeClient(lemonade_config)
+        client._client = previous_client
+        client._auto_reconnect_enabled = True
+
+        with patch(
+            "core.lemonade_delegates.httpx.AsyncClient",
+            return_value=candidate_client,
+        ):
+            assert await client.recover_connection(force=True) is True
+            assert client._client is candidate_client
+
+        await client.close()
