@@ -10,7 +10,6 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 
-
 def is_wsl_environment() -> bool:
     """현재 런타임이 WSL인지 판별한다."""
     if os.environ.get("WSL_DISTRO_NAME"):
