@@ -3,9 +3,48 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from core.llm_types import ChatUsage
+
+
+# ---------------------------------------------------------------------------
+# Token estimation
+# ---------------------------------------------------------------------------
+
+_CJK_RANGE = re.compile(
+    r"[\u3000-\u9fff\uac00-\ud7af\uff00-\uffef]",
+)
+
+
+def estimate_token_count(text: str) -> int:
+    """Estimate token count for mixed Korean/English text.
+
+    Korean characters average ~1.5 chars/token; ASCII averages ~4 chars/token.
+    This intentionally over-estimates to leave a safety margin.
+    """
+    if not text:
+        return 0
+    cjk_chars = len(_CJK_RANGE.findall(text))
+    ascii_chars = len(text) - cjk_chars
+    return int(cjk_chars / 1.5) + int(ascii_chars / 3.5) + 4  # +4 for overhead
+
+
+def estimate_messages_tokens(messages: list[dict[str, Any]]) -> int:
+    """Estimate total token count of a chat messages list."""
+    total = 0
+    for msg in messages:
+        # role token overhead (~4 tokens per message for role/separators)
+        total += 4
+        content = msg.get("content", "")
+        if isinstance(content, str):
+            total += estimate_token_count(content)
+        elif isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict) and isinstance(part.get("text"), str):
+                    total += estimate_token_count(part["text"])
+    return total
 
 
 def format_exception(exc: Exception) -> str:
@@ -102,11 +141,37 @@ def build_chat_payload(
     response_format: str | dict | None,
     stream: bool,
     logger: Any,
+    context_window: int = 0,
+    min_output_tokens: int = 128,
 ) -> dict[str, Any]:
+    effective_max_tokens = default_max_tokens if max_tokens is None else max_tokens
+
+    if context_window > 0:
+        estimated_input = estimate_messages_tokens(messages)
+        budget = context_window - estimated_input
+        if budget < min_output_tokens:
+            logger.warning(
+                "token_budget_tight",
+                context_window=context_window,
+                estimated_input_tokens=estimated_input,
+                remaining=budget,
+                forced_min=min_output_tokens,
+            )
+            budget = min_output_tokens
+        if effective_max_tokens > budget:
+            logger.info(
+                "max_tokens_clamped",
+                original=effective_max_tokens,
+                clamped=budget,
+                context_window=context_window,
+                estimated_input_tokens=estimated_input,
+            )
+            effective_max_tokens = budget
+
     payload: dict[str, Any] = {
         "messages": messages,
         "temperature": default_temperature if temperature is None else temperature,
-        "max_tokens": default_max_tokens if max_tokens is None else max_tokens,
+        "max_tokens": effective_max_tokens,
         "stream": stream,
     }
     if model:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -393,6 +393,123 @@ class TestChat:
                     stream_state=ChatStreamState(),
                 ):
                     pass
+        finally:
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_chat_stream_logs_raw_sse_lines_when_enabled(
+        self,
+        lemonade_config: LemonadeConfig,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("LEMONADE_DEBUG_STREAM_SSE", "1")
+        monkeypatch.setenv("LEMONADE_DEBUG_STREAM_MAX_LINES", "10")
+
+        stream_body = "\n\n".join(
+            [
+                'data: {"choices":[{"delta":{"content":"A"}}]}',
+                "data: [DONE]",
+                "",
+            ]
+        )
+
+        def _handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/api/v1/chat/completions":
+                return httpx.Response(
+                    200,
+                    text=stream_body,
+                    headers={"content-type": "text/event-stream"},
+                )
+            return httpx.Response(404, json={"error": "not found"})
+
+        client = LemonadeClient(lemonade_config)
+        client._logger = MagicMock()
+        client._client = httpx.AsyncClient(
+            base_url=lemonade_config.host,
+            transport=httpx.MockTransport(_handler),
+        )
+
+        try:
+            async for _ in client.chat_stream(
+                messages=[{"role": "user", "content": "hi"}],
+                stream_state=ChatStreamState(),
+            ):
+                pass
+
+            raw_calls = [
+                call
+                for call in client._logger.info.call_args_list
+                if call.args and call.args[0] == "lemonade_stream_sse_line"
+            ]
+            assert len(raw_calls) == 2
+            assert raw_calls[0].kwargs["line_no"] == 1
+            assert raw_calls[0].kwargs["raw_preview"].startswith('{"choices"')
+            assert raw_calls[1].kwargs["raw_preview"] == "[DONE]"
+        finally:
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_chat_stream_logs_payload_compare_patterns_when_enabled(
+        self,
+        lemonade_config: LemonadeConfig,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("LEMONADE_DEBUG_STREAM_COMPARE", "1")
+        monkeypatch.setenv("LEMONADE_DEBUG_STREAM_MAX_LINES", "10")
+
+        stream_body = "\n\n".join(
+            [
+                'data: {"choices":[{"message":{"content":"가"}}]}',
+                'data: {"choices":[{"message":{"content":"가가"}}]}',
+                'data: {"choices":[{"delta":{"content":"나"}}]}',
+                'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}',
+                "",
+            ]
+        )
+
+        def _handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/api/v1/chat/completions":
+                return httpx.Response(
+                    200,
+                    text=stream_body,
+                    headers={"content-type": "text/event-stream"},
+                )
+            return httpx.Response(404, json={"error": "not found"})
+
+        client = LemonadeClient(lemonade_config)
+        client._logger = MagicMock()
+        client._client = httpx.AsyncClient(
+            base_url=lemonade_config.host,
+            transport=httpx.MockTransport(_handler),
+        )
+
+        try:
+            chunks: list[str] = []
+            async for chunk in client.chat_stream(
+                messages=[{"role": "user", "content": "hi"}],
+                stream_state=ChatStreamState(),
+            ):
+                chunks.append(chunk)
+
+            assert chunks == ["가", "가", "나"]
+
+            compare_calls = [
+                call
+                for call in client._logger.info.call_args_list
+                if call.args and call.args[0] == "lemonade_stream_payload_compare"
+            ]
+            selected_paths = [call.kwargs["selected_path"] for call in compare_calls]
+            assert "message_content" in selected_paths
+            assert "message_prefix_delta" in selected_paths
+            assert "delta_content" in selected_paths
+            assert "finish_reason_only" in selected_paths
+
+            prefix_delta_call = next(
+                call for call in compare_calls
+                if call.kwargs["selected_path"] == "message_prefix_delta"
+            )
+            assert prefix_delta_call.kwargs["snapshot_prefix_match"] is True
+            assert prefix_delta_call.kwargs["emitted_preview"] == "가"
         finally:
             await client.close()
 
