@@ -32,7 +32,7 @@ _STREAM_RENDER_WAIT_GRACE_SECONDS = 5.0
 _STREAM_RECOVERY_TIMEOUT_SECONDS = 120.0
 _AUTO_CONTINUATION_MAX_TURNS = 3
 _FULL_SCAN_AUTO_TRIGGER_RE = re.compile(r"분석", re.IGNORECASE)
-_THINKING_PLACEHOLDER_TEMPLATE = "{bot_name}이 답변을 위해 생각 중입니다..."
+_THINKING_PLACEHOLDER_TEMPLATE = "{bot_name}이 답변을 생성 중입니다..."
 
 
 async def handle_message(

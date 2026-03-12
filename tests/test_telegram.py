@@ -378,7 +378,7 @@ class TestHandleMessage:
         # 첫 파트는 edit_text, 두 번째 파트는 reply_text로 전송되어야 한다.
         sent_message.edit_text.assert_awaited_once_with("SAME")
         expected_placeholder = (
-            f"{telegram_handler._config.bot.name}이 답변을 위해 생각 중입니다..."
+            f"{telegram_handler._config.bot.name}이 답변을 생성 중입니다..."
         )
         message.reply_text.assert_has_awaits([call(expected_placeholder), call("SAME")])
 

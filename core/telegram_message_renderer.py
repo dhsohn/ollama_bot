@@ -11,7 +11,7 @@ from html import escape
 from typing import Any
 
 from core.logging_setup import get_logger
-from core.text_utils import sanitize_model_output
+from core.text_utils import sanitize_model_output, should_defer_stream_display
 
 _logger = get_logger("telegram_message_renderer")
 _MAX_RENDERED_DUPLICATE_CHUNKS = 0
@@ -167,7 +167,7 @@ async def stream_and_render(
             and chars_since_edit >= edit_char_threshold
         ):
             display_source = sanitize_model_output(full_response)
-            if not display_source.strip():
+            if should_defer_stream_display(full_response, display_source):
                 continue
             display_text = display_source + " ▌"
             if len(display_text) > max_edit_length:

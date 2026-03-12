@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from core.text_utils import detect_output_anomalies, sanitize_model_output
+from core.text_utils import (
+    detect_output_anomalies,
+    sanitize_model_output,
+    should_defer_stream_display,
+)
 
 
 def test_sanitize_model_output_prefers_final_channel_message() -> None:
@@ -75,6 +79,12 @@ def test_detect_output_anomalies_flags_internal_reasoning_phrase_variant() -> No
     assert "internal_reasoning_phrase" in reasons
 
 
+def test_detect_output_anomalies_flags_korean_internal_reasoning_phrase() -> None:
+    text = "먼저 질문을 분석해보겠습니다. 답변을 정리하겠습니다."
+    reasons = detect_output_anomalies(text, text)
+    assert "internal_reasoning_phrase" in reasons
+
+
 def test_detect_output_anomalies_flags_repeated_char_run() -> None:
     text = "GGGGGGGG"
     reasons = detect_output_anomalies(text, text)
@@ -85,3 +95,21 @@ def test_detect_output_anomalies_empty_after_sanitize() -> None:
     raw = "<|start|>assistant<|channel|>analysis<|message|>draft<|end|>"
     reasons = detect_output_anomalies(raw)
     assert "empty_after_sanitize" in reasons
+
+
+def test_should_defer_stream_display_for_internal_reasoning_phrase() -> None:
+    raw = "We need to respond in Korean. The user says hello."
+    assert should_defer_stream_display(raw) is True
+
+
+def test_should_defer_stream_display_for_korean_internal_reasoning_phrase() -> None:
+    raw = "먼저 질문을 분석해보겠습니다. 답변을 정리하겠습니다."
+    assert should_defer_stream_display(raw) is True
+
+
+def test_should_not_defer_stream_display_for_recovered_final_answer() -> None:
+    raw = (
+        "We need to respond in Korean. "
+        "assistantanalysis to=final code최종 답변입니다."
+    )
+    assert should_defer_stream_display(raw) is False

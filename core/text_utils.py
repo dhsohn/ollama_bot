@@ -66,7 +66,13 @@ _REPEATED_CHAR_RUN_RE = re.compile(
 _INTERNAL_REASONING_PHRASE_RE = re.compile(
     r"(?:\bwe need to respond\b|\bwe need to analyze\b|\bwe have a conversation\b|"
     r"\bthe user says\b|\bthe user asks\b|\blet me think\b|\banalysis:\b|"
-    r"\bas per policy\b|\binternal instructions?\b|\bmust not mention policies?\b)",
+    r"\bas per policy\b|\binternal instructions?\b|\bmust not mention policies?\b|"
+    r"사용자(?:의)?\s*(?:질문|요청|의도)|"
+    r"질문(?:을|은)\s*(?:먼저\s*)?(?:분석|정리|이해)|"
+    r"(?:먼저|우선)\s*(?:질문|요청|문제).{0,20}(?:분석|정리|이해)|"
+    r"생각해보(?:면|겠습니다)|"
+    r"분석해보(?:면|겠습니다)|"
+    r"답변(?:을|은)\s*(?:다음과\s*같이\s*)?(?:구성|정리))",
     re.IGNORECASE,
 )
 _QUALITY_TOKEN_RE = re.compile(r"[a-zA-Z가-힣_]{2,}")
@@ -195,3 +201,16 @@ def detect_output_anomalies(text: str, cleaned: str | None = None) -> list[str]:
             _add("low_token_diversity")
 
     return reasons
+
+
+def should_defer_stream_display(text: str, cleaned: str | None = None) -> bool:
+    """스트리밍 중간 렌더에서 내부 사고가 보일 가능성이 있으면 표시를 미룬다."""
+    raw = (text or "").strip()
+    visible = sanitize_model_output(raw) if cleaned is None else (cleaned or "").strip()
+    if not visible:
+        return True
+
+    reasons = detect_output_anomalies(raw, visible)
+    if "internal_channel_marker" in reasons and visible == raw:
+        return True
+    return "internal_reasoning_phrase" in reasons and visible == raw

@@ -114,6 +114,31 @@ class TestStreamAndRender:
         reply_text.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_defers_intermediate_internal_reasoning_until_final_answer(self) -> None:
+        async def _stream():
+            yield "We need to respond in Korean. "
+            yield "assistantanalysis to=final code최종 답변입니다."
+
+        sent_message = AsyncMock()
+        sent_message.edit_text = AsyncMock()
+        reply_text = AsyncMock()
+
+        result = await stream_and_render(
+            stream=_stream(),
+            sent_message=sent_message,
+            reply_text=reply_text,
+            split_message_fn=lambda text: [text],
+            edit_interval=0.0,
+            edit_char_threshold=1,
+            max_edit_length=4096,
+        )
+
+        assert result.full_response == "최종 답변입니다."
+        edit_text_calls = [call.args[0] for call in sent_message.edit_text.await_args_list]
+        assert edit_text_calls == ["최종 답변입니다. ▌", "최종 답변입니다."]
+        reply_text.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_stops_when_chunk_timeout_exceeded(self) -> None:
         async def _slow_stream():
             await asyncio.sleep(0.05)
