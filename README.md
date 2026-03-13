@@ -254,7 +254,7 @@ bash scripts/check_requirements_lock.sh
 | Lint | `.venv/bin/ruff check .` | ruff report |
 | Type check | `.venv/bin/mypy core apps main.py` | mypy report |
 | Tests | `.venv/bin/pytest -q` | test results |
-| Coverage | `pytest --cov ...` | `coverage.xml` + console summary |
+| Coverage | `pytest --cov ...` | CI uploads `coverage.xml` artifact (not committed) + console summary |
 
 ---
 

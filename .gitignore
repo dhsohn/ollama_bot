@@ -6,15 +6,19 @@ config/config.yaml
 __pycache__/
 *.pyc
 .pytest_cache/
-.coverage
 .mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
 
 # Runtime data
 data/
 kb/
 
-# Debug scripts
-scripts/
+# Script cache
+scripts/__pycache__/
 
 # IDE / OS
 .DS_Store

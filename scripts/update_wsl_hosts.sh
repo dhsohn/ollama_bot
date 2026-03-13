@@ -2,6 +2,30 @@
 # update_wsl_hosts.sh — WSL 부팅 시 Windows 게이트웨이 IP로 /etc/hosts의 별칭 엔트리 갱신
 set -euo pipefail
 
+usage() {
+    cat <<'EOF'
+Usage: bash scripts/update_wsl_hosts.sh
+
+Environment:
+  HOSTNAME_ALIAS  hosts에 갱신할 별칭 (default: homelab)
+  HOSTS_FILE      대상 hosts 파일 경로 (default: /etc/hosts)
+EOF
+}
+
+case "${1:-}" in
+    -h|--help)
+        usage
+        exit 0
+        ;;
+    "")
+        ;;
+    *)
+        echo "[update_wsl_hosts] ERROR: 알 수 없는 옵션: $1" >&2
+        usage
+        exit 1
+        ;;
+esac
+
 HOSTNAME_ALIAS="${HOSTNAME_ALIAS:-homelab}"
 HOSTS_FILE="${HOSTS_FILE:-/etc/hosts}"
 

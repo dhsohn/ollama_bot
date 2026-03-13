@@ -11,6 +11,30 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 UNIT_DIR="${HOME}/.config/systemd/user"
 
+usage() {
+  cat <<'EOF'
+Usage: bash scripts/install_boot_service.sh
+
+Installs:
+  - system-level `update-wsl-hosts.service`
+  - user-level `ollama-bot.service`
+EOF
+}
+
+case "${1:-}" in
+  -h|--help)
+    usage
+    exit 0
+    ;;
+  "")
+    ;;
+  *)
+    echo "[install_boot_service.sh] 알 수 없는 옵션: $1" >&2
+    usage
+    exit 1
+    ;;
+esac
+
 mkdir -p "${UNIT_DIR}"
 
 # ── update-wsl-hosts.service (system-level, 부팅 시 별칭 IP 갱신) ──
