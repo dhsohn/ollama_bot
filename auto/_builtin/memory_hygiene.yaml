@@ -1,5 +1,6 @@
 name: "memory_hygiene"
 description: "장기 메모리의 중복, 충돌, 오래된 항목을 정리합니다"
+description_en: "Cleans up duplicate, conflicting, and stale long-term memory entries"
 version: "1.0"
 enabled: true
 schedule: "30 3 * * *"

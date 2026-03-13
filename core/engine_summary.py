@@ -185,22 +185,21 @@ async def run_chunked_summary_pipeline(
     )
 
     map_system = engine._inject_language_policy(
-        "당신은 긴 문서의 일부를 정확히 요약하는 전문가입니다.\n"
-        "입력 조각에서 핵심 사실만 추려 한국어로 정리하세요.\n"
-        "추측/중복/장황한 문장을 피하고 중국어·영어 혼용을 금지합니다."
+        "You are an expert at accurately summarizing parts of long documents.\n"
+        "Extract only the key facts from the input chunk.\n"
+        "Avoid speculation, redundancy, and verbose sentences."
     )
 
     chunk_summaries: list[str] = []
     seen_summaries: set[str] = set()
     for index, chunk_text in enumerate(chunks, start=1):
         map_prompt = (
-            f"[문서 조각 {index}/{len(chunks)}]\n"
+            f"[Document chunk {index}/{len(chunks)}]\n"
             f"{chunk_text}\n\n"
-            "출력 규칙:\n"
-            "- 원문의 핵심 포인트만 3~5개 불릿으로 작성\n"
-            "- 원문에 없는 내용 추가 금지\n"
-            "- 중복 표현 금지\n"
-            "- 한국어만 사용"
+            "Output rules:\n"
+            "- Write only 3-5 bullet points of key points from the original\n"
+            "- Do not add content not in the original\n"
+            "- No duplicate expressions"
         )
         map_response = await engine._llm_client.chat(
             messages=[
@@ -218,7 +217,7 @@ async def run_chunked_summary_pipeline(
         if normalized in seen_summaries:
             continue
         seen_summaries.add(normalized)
-        chunk_summaries.append(f"[조각 {index}]\n{map_summary}")
+        chunk_summaries.append(f"[Chunk {index}]\n{map_summary}")
 
     if not chunk_summaries:
         raise RuntimeError("chunked_summary_empty_intermediate")
@@ -230,18 +229,17 @@ async def run_chunked_summary_pipeline(
     )
     reduce_system = (
         f"{base_system}\n\n"
-        "[장문 요약 통합 규칙]\n"
-        "- 아래 중간 요약들을 하나의 최종 요약으로 통합하세요.\n"
-        "- 중복 항목을 제거하고 핵심 정보만 남기세요.\n"
-        "- 중국어/영어 문장을 섞지 말고 한국어로만 작성하세요."
+        "[Long-text summary consolidation rules]\n"
+        "- Consolidate the intermediate summaries below into one final summary.\n"
+        "- Remove duplicates and keep only key information."
     )
     reduce_prompt = (
-        "다음은 긴 원문을 분할 처리한 중간 요약입니다.\n"
-        "중복을 제거해 최종 요약을 작성하세요.\n"
-        "최종 출력 형식:\n"
-        "1) 핵심 포인트 3~7개 불릿\n"
-        "2) 필요하면 마지막에 한 줄 결론\n\n"
-        "[중간 요약]\n"
+        "Below are intermediate summaries from processing a long original text in chunks.\n"
+        "Remove duplicates and write the final summary.\n"
+        "Final output format:\n"
+        "1) 3-7 key point bullets\n"
+        "2) Optionally, a one-line conclusion at the end\n\n"
+        "[Intermediate summaries]\n"
         + "\n\n".join(chunk_summaries)
     )
     reduce_response = await engine._llm_client.chat(

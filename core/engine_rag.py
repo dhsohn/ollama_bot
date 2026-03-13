@@ -293,10 +293,10 @@ def inject_extra_context(
     if result and result[0].get("role") == "system":
         result[0] = {
             "role": "system",
-            "content": result[0]["content"] + f"\n\n[추가 컨텍스트]\n{context.strip()}",
+            "content": result[0]["content"] + f"\n\n[Additional Context]\n{context.strip()}",
         }
     else:
-        result.insert(0, {"role": "system", "content": f"[추가 컨텍스트]\n{context.strip()}"})
+        result.insert(0, {"role": "system", "content": f"[Additional Context]\n{context.strip()}"})
     return result
 
 
@@ -338,13 +338,13 @@ async def analyze_all_corpus(
 
     await emit_full_scan_progress(
         progress_callback,
-        {"phase": "collect", "message": "RAG 인덱스 전체 청크를 수집 중입니다..."},
+        {"phase": "collect", "message": "Collecting all chunks from RAG index..."},
     )
     chunks = await engine._rag_pipeline.get_all_chunks()
     total_chunks = len(chunks)
     if total_chunks == 0:
         return {
-            "answer": "RAG 인덱스가 비어 있어 전체 분석을 수행할 수 없습니다.",
+            "answer": "The RAG index is empty. Cannot perform full analysis.",
             "stats": {
                 "total_chunks": 0,
                 "total_segments": 0,
@@ -364,7 +364,7 @@ async def analyze_all_corpus(
         progress_callback,
         {
             "phase": "map_start",
-            "message": "전체 문서 맵 분석을 시작합니다.",
+            "message": "Starting full document map analysis.",
             "total_chunks": total_chunks,
             "total_segments": total_segments,
         },
@@ -398,26 +398,26 @@ async def analyze_all_corpus(
     )
 
     map_system = engine._inject_language_policy(
-        "당신은 문서 증거 추출기입니다. 질문과 직접 관련된 사실만 JSON으로 추출하세요. "
-        "불확실하면 relevant=false로 답하세요."
+        "You are a document evidence extractor. Extract only facts directly related to the question as JSON. "
+        "If uncertain, respond with relevant=false."
     )
     evidence_lines: list[str] = []
     mapped_segments = 0
     for index, segment in enumerate(segments, start=1):
         map_prompt = (
-            "[질문]\n"
+            "[Question]\n"
             f"{question}\n\n"
-            "[문서 세그먼트 메타]\n"
+            "[Document segment metadata]\n"
             f"source_path: {segment['source_path']}\n"
             f"chunk_range: {segment['start_chunk_id']}-{segment['end_chunk_id']}\n\n"
-            "[문서 세그먼트 본문]\n"
+            "[Document segment body]\n"
             f"{segment['text']}\n\n"
-            "다음 JSON만 출력하세요:\n"
-            "{\"relevant\": true|false, \"findings\": [\"근거 기반 문장\"], \"confidence\": 0.0~1.0}\n"
-            "규칙:\n"
-            "- findings는 최대 4개\n"
-            "- 질문과 직접 관련된 정보만 포함\n"
-            "- 추측 금지"
+            "Output only the following JSON:\n"
+            "{\"relevant\": true|false, \"findings\": [\"evidence-based sentence\"], \"confidence\": 0.0~1.0}\n"
+            "Rules:\n"
+            "- Maximum 4 findings\n"
+            "- Include only information directly related to the question\n"
+            "- No speculation"
         )
         try:
             map_resp = await engine._llm_client.chat(
@@ -482,8 +482,8 @@ async def analyze_all_corpus(
         duration_ms = round((time.monotonic() - t0) * 1000, 1)
         return {
             "answer": (
-                "전체 문서를 읽었지만 질문과 직접 연결되는 근거를 찾지 못했습니다. "
-                "질문 범위를 더 구체적으로 지정해 주세요."
+                "I read the entire document but could not find evidence directly related to the question. "
+                "Please try narrowing down or being more specific with your question."
             ),
             "stats": {
                 "total_chunks": total_chunks,
@@ -517,20 +517,19 @@ async def analyze_all_corpus(
 
         next_blocks: list[str] = []
         reduce_system = engine._inject_language_policy(
-            "당신은 근거 통합 요약기입니다. 입력된 근거를 손실 없이 압축하세요. "
-            "인용 표식([경로#chunk])은 보존하세요."
+            "You are an evidence consolidation summarizer. Compress the input evidence without loss. "
+            "Preserve citation markers ([path#chunk])."
         )
         for group_index, group_text in enumerate(groups, start=1):
             reduce_prompt = (
-                "[질문]\n"
+                "[Question]\n"
                 f"{question}\n\n"
-                "[근거 목록]\n"
+                "[Evidence list]\n"
                 f"{group_text}\n\n"
-                "중복을 제거해 핵심 근거만 불릿으로 재작성하세요.\n"
-                "출력 규칙:\n"
-                "- 최대 12개 불릿\n"
-                "- 각 불릿에 최소 1개 인용 표식 유지\n"
-                "- 한국어만 사용"
+                "Remove duplicates and rewrite only key evidence as bullet points.\n"
+                "Output rules:\n"
+                "- Maximum 12 bullet points\n"
+                "- Keep at least 1 citation marker per bullet"
             )
             try:
                 reduce_resp = await engine._llm_client.chat(
@@ -563,22 +562,22 @@ async def analyze_all_corpus(
     evidence_text = "\n\n".join(reduced_blocks).strip()
     await emit_full_scan_progress(
         progress_callback,
-        {"phase": "final", "message": "최종 답변을 생성 중입니다..."},
+        {"phase": "final", "message": "Generating final answer..."},
     )
     final_system = engine._inject_language_policy(
-        "당신은 전체 문서를 검토한 수석 분석가입니다. "
-        "아래 근거만 사용해 질문에 답하고, 핵심 주장마다 인용 표식([경로#chunk])을 붙이세요. "
-        "근거가 부족한 부분은 '근거 부족'이라고 명시하세요."
+        "You are a senior analyst who has reviewed the entire document. "
+        "Answer the question using only the evidence below, and attach citation markers ([path#chunk]) to key claims. "
+        "Explicitly state 'insufficient evidence' for parts lacking evidence."
     )
     final_prompt = (
-        "[질문]\n"
+        "[Question]\n"
         f"{question}\n\n"
-        "[통합 근거]\n"
+        "[Consolidated evidence]\n"
         f"{evidence_text}\n\n"
-        "최종 출력 형식:\n"
-        "1) 결론(2~4문장)\n"
-        "2) 핵심 근거 불릿 3~8개 (각 불릿에 인용 표식)\n"
-        "3) 근거 부족/추가 확인 필요 항목 (있으면)"
+        "Final output format:\n"
+        "1) Conclusion (2-4 sentences)\n"
+        "2) 3-8 key evidence bullets (with citation markers per bullet)\n"
+        "3) Items with insufficient evidence / needing further verification (if any)"
     )
     final_resp = await engine._llm_client.chat(
         messages=[

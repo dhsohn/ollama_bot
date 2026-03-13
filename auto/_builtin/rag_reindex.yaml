@@ -1,5 +1,6 @@
 name: "rag_reindex"
 description: "주 1회 RAG 코퍼스를 증분 재인덱싱합니다"
+description_en: "Incrementally re-indexes the RAG corpus weekly"
 version: "1.0"
 enabled: true
 schedule: "30 3 * * 0"

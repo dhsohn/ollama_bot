@@ -158,6 +158,8 @@ class SemanticCacheConfig(BaseModel):
     exclude_patterns: list[str] = Field(default_factory=lambda: [
         r"(지금|현재)\s*몇\s*시",
         r"오늘\s*(날짜|며칠|요일)",
+        r"what\s*time\s*is\s*it",
+        r"today.*(date|day)",
     ])
     max_entries: int = 5000
     ttl_hours: int = 168
@@ -280,6 +282,9 @@ class RAGConfig(BaseModel):
         "문서", "프로젝트", "레포", "노트", "폴더", "논문",
         "결과", "출처", "인용", "어디에 적혀", "내 파일",
         "지식베이스", "kb", "검색해",
+        "document", "project", "repo", "notes", "folder", "paper",
+        "source", "citation", "where does it say", "my file",
+        "knowledge base", "search for",
     ])
 
     @field_validator("chunk_overlap_ratio")
@@ -347,7 +352,7 @@ def load_config(
             yaml_data = yaml.safe_load(f) or {}
 
     if not isinstance(yaml_data, dict):
-        raise ValueError("config.yaml 최상위 구조는 mapping(dict)이어야 합니다.")
+        raise ValueError("config.yaml top-level structure must be a mapping (dict).")
 
     settings = AppSettings.model_validate(yaml_data)
 
@@ -367,7 +372,7 @@ def load_config(
                 invalid_ids.append(raw)
         if invalid_ids:
             raise ValueError(
-                "telegram.allowed_users에는 정수 Chat ID만 사용할 수 있습니다: "
+                "telegram.allowed_users must contain integer Chat IDs only: "
                 f"{', '.join(invalid_ids)}"
             )
         settings.security.allowed_users = user_ids

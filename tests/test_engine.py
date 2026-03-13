@@ -1383,7 +1383,7 @@ class TestExecuteSkill:
     async def test_execute_skill_not_found(self, engine: Engine, mock_skills) -> None:
         mock_skills.get_skill.return_value = None
         result = await engine.execute_skill("nonexistent", {})
-        assert "찾을 수 없습니다" in result
+        assert "not found" in result
 
 
 class TestChangeModel:

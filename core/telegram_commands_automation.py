@@ -57,7 +57,7 @@ async def handle_auto_list(self: TelegramHandler, update: Update) -> None:
             t("auto_no_scheduler", lang)
         )
         return
-    automations = self._scheduler.list_automations()
+    automations = self._scheduler.list_automations(lang=lang)
     if not automations:
         await update.effective_message.reply_text(t("auto_empty", lang))
         return

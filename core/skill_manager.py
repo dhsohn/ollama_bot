@@ -36,6 +36,7 @@ class SkillDefinition(BaseModel):
 
     name: str
     description: str
+    description_en: str = ""
     version: str = "1.0"
     triggers: list[str]
     system_prompt: str
@@ -325,12 +326,16 @@ class SkillManager:
             return None
         return self._keyword_trigger_order[best_order][1]
 
-    def list_skills(self) -> list[dict]:
-        """로드된 스킬 목록을 반환한다."""
+    def list_skills(self, lang: str = "ko") -> list[dict]:
+        """Return a list of loaded skills with localized descriptions."""
         return [
             {
                 "name": s.name,
-                "description": s.description,
+                "description": (
+                    s.description_en
+                    if lang == "en" and s.description_en
+                    else s.description
+                ),
                 "triggers": s.triggers,
                 "security_level": s.security_level.value,
             }

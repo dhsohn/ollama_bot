@@ -1,5 +1,6 @@
 name: "memory_consolidation"
 description: "관련 메모리 항목을 LLM으로 통합하여 장기 메모리를 압축합니다"
+description_en: "Consolidates related memory entries via LLM to compress long-term memory"
 version: "1.0"
 enabled: true
 schedule: "0 4 * * sun"

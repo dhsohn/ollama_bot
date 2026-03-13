@@ -56,7 +56,10 @@ async def decide_routing(
         return decision_factory(tier=RoutingTier.SKILL, skill=skill)
 
     if engine._instant_responder is not None:
-        instant = engine._instant_responder.match(text)
+        from core.engine_context import _resolve_user_language
+
+        user_lang = await _resolve_user_language(engine, chat_id)
+        instant = engine._instant_responder.match(text, lang=user_lang)
         if instant is not None:
             return decision_factory(tier=RoutingTier.INSTANT, instant=instant)
 

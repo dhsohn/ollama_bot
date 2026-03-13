@@ -169,7 +169,7 @@ class TestExecuteSkill:
         engine = _make_engine()
         engine._skills.get_skill = MagicMock(return_value=None)
         result = await execute_skill(engine, "missing", {})
-        assert "찾을 수 없습니다" in result
+        assert "not found" in result
 
     @pytest.mark.asyncio
     async def test_skill_executed(self) -> None:
@@ -215,7 +215,7 @@ class TestChangeModel:
         engine = _make_engine()
         result = await change_model(engine, "nonexistent")
         assert result["success"] is False
-        assert "찾을 수 없습니다" in result["error"]
+        assert "not found" in result["error"]
 
     @pytest.mark.asyncio
     async def test_model_changed(self) -> None:

@@ -163,14 +163,14 @@ class TestInjectExtraContext:
     def test_appends_to_system(self) -> None:
         messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "hi"}]
         result = inject_extra_context(messages, "extra info")
-        assert "추가 컨텍스트" in result[0]["content"]
+        assert "Additional Context" in result[0]["content"]
         assert "extra info" in result[0]["content"]
 
     def test_inserts_system_when_missing(self) -> None:
         messages = [{"role": "user", "content": "hi"}]
         result = inject_extra_context(messages, "extra info")
         assert result[0]["role"] == "system"
-        assert "추가 컨텍스트" in result[0]["content"]
+        assert "Additional Context" in result[0]["content"]
 
 
 class TestExtractJsonPayload:

@@ -70,6 +70,8 @@ semantic_cache:
   exclude_patterns:
     - "(지금|현재)\\s*몇\\s*시"
     - "오늘\\s*(날짜|며칠|요일)"
+    - "what\\s*time\\s*is\\s*it"
+    - "today.*(date|day)"
   max_entries: 2000
   ttl_hours: 168
   invalidate_on_negative_feedback: true

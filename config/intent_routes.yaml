@@ -1,10 +1,10 @@
-# 인텐트 라우팅 규칙 정의
-# 각 라우트는 예시 발화(utterances)와 컨텍스트 전략을 정의한다.
+# Intent routing rules
+# Each route defines example utterances and a context strategy.
 
 min_confidence: 0.75
 
 routes:
-  # ── 잡담/캐주얼 ──
+  # ── Chitchat / Casual ──
   - name: "chitchat"
     utterances:
       - "심심해"
@@ -12,13 +12,18 @@ routes:
       - "오늘 기분이 어때?"
       - "재미있는 얘기 해줘"
       - "농담 하나 해봐"
+      - "I'm bored"
+      - "What are you doing?"
+      - "How are you feeling today?"
+      - "Tell me something fun"
+      - "Tell me a joke"
     strategy:
       max_history: 3
       include_dicl: false
       include_preferences: false
       max_tokens: 512
 
-  # ── 단순 질의응답 ──
+  # ── Simple Q&A ──
   - name: "simple_qa"
     utterances:
       - "파이썬이 뭐야?"
@@ -28,12 +33,19 @@ routes:
       - "수학과 커리큘럼 알려줘"
       - "대학 전공 커리큘럼 알려줘"
       - "공부 계획 알려줘"
+      - "What is Python?"
+      - "Explain HTTP status codes"
+      - "Difference between list and tuple"
+      - "What is Docker?"
+      - "Tell me the math curriculum"
+      - "What's the college major curriculum?"
+      - "Give me a study plan"
     strategy:
       max_history: 5
       include_dicl: false
       max_tokens: 1536
 
-  # ── 코드 관련 ──
+  # ── Code ──
   - name: "code"
     utterances:
       - "코드 짜줘"
@@ -41,20 +53,29 @@ routes:
       - "파이썬으로 구현해줘"
       - "디버깅 도와줘"
       - "에러가 나는데"
+      - "Write code for"
+      - "Fix this function"
+      - "Implement in Python"
+      - "Help me debug"
+      - "I'm getting an error"
     strategy:
       max_history: 15
       include_dicl: true
       max_tokens: 4096
       system_prompt_suffix: |
-        코드 응답 시 간결한 코드와 핵심 설명만 제공하세요.
+        When responding with code, provide concise code and only essential explanations.
 
-  # ── 복잡한 분석/토론 ──
+  # ── Complex analysis / Discussion ──
   - name: "complex"
     utterances:
       - "이 아키텍처를 분석해줘"
       - "장단점을 비교해줘"
       - "전략을 세워줘"
       - "심층 분석해줘"
+      - "Analyze this architecture"
+      - "Compare the pros and cons"
+      - "Help me plan a strategy"
+      - "Do a deep analysis"
     strategy:
       max_history: 50
       include_dicl: true

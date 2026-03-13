@@ -1,7 +1,7 @@
-"""규칙 기반 즉시 응답 엔진.
+"""Rule-based instant response engine.
 
-정규식/키워드 매칭으로 LLM을 우회하여 즉시 응답을 반환한다.
-규칙은 YAML 파일로 정의하며, 런타임에 리로드 가능하다.
+Bypasses LLM with immediate responses via regex/keyword matching.
+Rules are defined in a YAML file and can be reloaded at runtime.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from core.logging_setup import get_logger
 
 @dataclass(frozen=True)
 class InstantMatch:
-    """즉시 응답 매칭 결과."""
+    """Instant response match result."""
 
     response: str
     rule_name: str
@@ -29,21 +29,30 @@ class InstantMatch:
 
 @dataclass
 class _InstantRule:
-    """내부 규칙 표현."""
+    """Internal rule representation."""
 
     name: str
     patterns: list[re.Pattern]
     responses: list[str] = field(default_factory=list)
+    responses_en: list[str] = field(default_factory=list)
     rule_type: str = "static"  # "static" | "callable"
     callable_name: str | None = None
 
 
 class InstantResponder:
-    """정규식/키워드 매칭 기반 즉시 응답기."""
+    """Regex/keyword-based instant responder."""
 
-    _BUILTIN_CALLABLES: ClassVar[dict[str, Callable[[], str]]] = {
-        "get_current_time": lambda: datetime.now().strftime("%H시 %M분입니다."),
-        "get_current_date": lambda: datetime.now().strftime("%Y년 %m월 %d일입니다."),
+    _BUILTIN_CALLABLES: ClassVar[dict[str, Callable[[str], str]]] = {
+        "get_current_time": lambda lang: (
+            datetime.now().strftime("%I:%M %p.")
+            if lang == "en"
+            else datetime.now().strftime("%H시 %M분입니다.")
+        ),
+        "get_current_date": lambda lang: (
+            datetime.now().strftime("%B %d, %Y.")
+            if lang == "en"
+            else datetime.now().strftime("%Y년 %m월 %d일입니다.")
+        ),
     }
 
     def __init__(self, rules_path: str = "config/instant_rules.yaml") -> None:
@@ -56,8 +65,8 @@ class InstantResponder:
     def rules_count(self) -> int:
         return len(self._rules)
 
-    def match(self, text: str) -> InstantMatch | None:
-        """입력 텍스트에 매칭되는 즉시 응답을 반환한다."""
+    def match(self, text: str, lang: str = "ko") -> InstantMatch | None:
+        """Return an instant response matching the input text."""
         text_stripped = text.strip()
         if not text_stripped:
             return None
@@ -66,21 +75,26 @@ class InstantResponder:
             for pattern in rule.patterns:
                 if pattern.search(text_stripped):
                     if rule.rule_type == "callable" and rule.callable_name:
-                        response = self._resolve_callable(rule.callable_name)
+                        response = self._resolve_callable(rule.callable_name, lang)
                         if response is not None:
                             return InstantMatch(response=response, rule_name=rule.name)
                     elif rule.responses:
-                        response = random.choice(rule.responses)
+                        responses = (
+                            rule.responses_en
+                            if lang == "en" and rule.responses_en
+                            else rule.responses
+                        )
+                        response = random.choice(responses)
                         return InstantMatch(response=response, rule_name=rule.name)
         return None
 
     def reload_rules(self) -> int:
-        """규칙 파일을 다시 로드한다."""
+        """Reload rules from the YAML file."""
         self._load_rules()
         return len(self._rules)
 
     def _load_rules(self) -> None:
-        """YAML 파일에서 규칙을 로드한다."""
+        """Load rules from the YAML file."""
         path = Path(self._rules_path)
         if not path.exists():
             self._logger.warning("instant_rules_not_found", path=self._rules_path)
@@ -121,6 +135,7 @@ class InstantResponder:
                         name=name,
                         patterns=compiled_patterns,
                         responses=rule_data.get("responses", []),
+                        responses_en=rule_data.get("responses_en", []),
                         rule_type=rule_type,
                         callable_name=rule_data.get("callable"),
                     )
@@ -133,14 +148,14 @@ class InstantResponder:
             self._logger.warning("instant_rules_load_failed", error=str(exc))
             self._rules = []
 
-    def _resolve_callable(self, name: str) -> str | None:
-        """내장 callable을 실행한다."""
+    def _resolve_callable(self, name: str, lang: str = "ko") -> str | None:
+        """Execute a built-in callable."""
         fn = self._BUILTIN_CALLABLES.get(name)
         if fn is None:
             self._logger.warning("instant_callable_unknown", name=name)
             return None
         try:
-            return fn()
+            return fn(lang)
         except Exception as exc:
             self._logger.warning("instant_callable_failed", name=name, error=str(exc))
             return None

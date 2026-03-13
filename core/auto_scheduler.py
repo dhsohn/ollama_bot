@@ -98,6 +98,7 @@ class AutoDefinition(BaseModel):
 
     name: str
     description: str
+    description_en: str = ""
     version: str = "1.0"
     enabled: bool = True
     schedule: str
@@ -653,16 +654,21 @@ class AutoScheduler:
             self._scheduler.shutdown(wait=False)
             self._logger.info("scheduler_stopped")
 
-    def list_automations(self) -> list[dict]:
-        """등록된 자동화 목록을 반환한다."""
+    def list_automations(self, lang: str = "ko") -> list[dict]:
+        """Return a list of registered automations with localized descriptions."""
         result = []
         for auto in self._automations.values():
             job = self._scheduler.get_job(f"auto_{auto.name}")
             next_run_time = getattr(job, "next_run_time", None) if job else None
             next_run = str(next_run_time) if next_run_time else None
+            description = (
+                auto.description_en
+                if lang == "en" and auto.description_en
+                else auto.description
+            )
             result.append({
                 "name": auto.name,
-                "description": auto.description,
+                "description": description,
                 "schedule": auto.schedule,
                 "enabled": auto.enabled,
                 "action_type": auto.action.type,

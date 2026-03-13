@@ -94,7 +94,7 @@ async def cmd_skills(
             )
         return
 
-    skills = self._engine.list_skills()
+    skills = self._engine.list_skills(lang=lang)
     if not skills:
         await update.effective_message.reply_text(  # type: ignore[union-attr]
             t("skills_empty", lang)

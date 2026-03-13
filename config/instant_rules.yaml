@@ -1,39 +1,50 @@
-# 즉시 응답 규칙 정의
-# 우선순위: 파일 내 순서대로 평가, 첫 매칭에서 중단
+# Instant response rules
+# Priority: evaluated in file order, stops at first match
 
 rules:
-  # ── 인사 ──
+  # ── Greeting ──
   - name: "greeting"
     patterns:
       - "^(안녕|하이|헬로|hi|hello|hey)\\b"
       - "^좋은\\s*(아침|저녁|오후)"
+      - "^good\\s*(morning|afternoon|evening)"
     responses:
       - "안녕하세요! 무엇을 도와드릴까요?"
       - "반갑습니다! 어떤 도움이 필요하세요?"
+    responses_en:
+      - "Hello! How can I help you?"
+      - "Hi there! What can I do for you?"
     case_insensitive: true
 
-  # ── 감사 ──
+  # ── Thanks ──
   - name: "thanks"
     patterns:
       - "^(고마워|감사|땡큐|thanks|thank you)"
     responses:
       - "천만에요!"
       - "도움이 되었다니 기쁩니다!"
+    responses_en:
+      - "You're welcome!"
+      - "Glad I could help!"
     case_insensitive: true
 
-  # ── 작별 ──
+  # ── Farewell ──
   - name: "farewell"
     patterns:
-      - "^(잘가|바이|안녕히|bye|goodbye)"
+      - "^(잘가|바이|안녕히|bye|goodbye|see you)"
     responses:
       - "안녕히 가세요! 필요하면 언제든 불러주세요."
+    responses_en:
+      - "Goodbye! Feel free to reach out anytime."
     case_insensitive: true
 
-  # ── 동적 응답 (callable) ──
+  # ── Dynamic responses (callable) ──
   - name: "current_time"
     patterns:
       - "지금\\s*몇\\s*시"
       - "현재\\s*시간"
+      - "what\\s*time\\s*is\\s*it"
+      - "current\\s*time"
     type: "callable"
     callable: "get_current_time"
 
@@ -41,5 +52,7 @@ rules:
     patterns:
       - "오늘\\s*날짜"
       - "오늘\\s*며칠"
+      - "what.*today.*(date|day)"
+      - "today.*date"
     type: "callable"
     callable: "get_current_date"

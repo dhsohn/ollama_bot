@@ -1,5 +1,6 @@
 name: "daily_summary"
 description: "매일 아침 어제의 대화를 요약합니다"
+description_en: "Summarizes yesterday's conversations every morning"
 version: "1.0"
 enabled: true
 schedule: "0 9 * * *"

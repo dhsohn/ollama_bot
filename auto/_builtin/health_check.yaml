@@ -1,5 +1,6 @@
 name: "health_check"
 description: "시스템 상태를 정기적으로 점검합니다 (이상 발견 시에만 알림)"
+description_en: "Periodically checks system health (alerts only on anomalies)"
 version: "2.0"
 enabled: true
 schedule: "*/30 * * * *"

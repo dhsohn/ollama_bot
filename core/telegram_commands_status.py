@@ -57,7 +57,7 @@ async def cmd_status(
         rows.append((t("status_degraded", lang), f"\u2705 {t('status_degraded_none', lang)}"))
 
     if self._scheduler:
-        autos = self._scheduler.list_automations()
+        autos = self._scheduler.list_automations(lang=lang)
         enabled = sum(1 for auto in autos if auto["enabled"])
         rows.append((
             t("status_automations", lang),

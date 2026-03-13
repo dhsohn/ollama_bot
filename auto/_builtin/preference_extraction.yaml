@@ -1,5 +1,6 @@
 name: "preference_extraction"
 description: "대화에서 사용자 선호도와 고정 정보를 추출하여 장기 메모리에 저장합니다"
+description_en: "Extracts user preferences and facts from conversations into long-term memory"
 version: "1.0"
 enabled: true
 schedule: "0 0 * * *"

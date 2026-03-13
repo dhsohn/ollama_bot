@@ -83,7 +83,7 @@ async def generate(
 
     user_text = text.strip()
     if not user_text and images:
-        user_text = "이미지를 분석해줘."
+        user_text = "Analyze this image."
 
     system_prompt = self._inject_language_policy(self._system_prompt)
     messages: list[dict[str, str]] = [
@@ -156,7 +156,7 @@ async def execute_skill(
 ) -> str:
     skill = self._skills.get_skill(skill_name)
     if not skill:
-        return f"스킬 '{skill_name}'을(를) 찾을 수 없습니다."
+        return f"Skill '{skill_name}' not found."
 
     input_text = parameters.get("input_text", parameters.get("query", ""))
     skill_system = self._inject_language_policy(skill.system_prompt)
@@ -236,7 +236,7 @@ async def change_model(self: Any, model: str) -> dict:
     if model not in available_names:
         return {
             "success": False,
-            "error": f"모델 '{model}'을(를) 찾을 수 없습니다.",
+            "error": f"Model '{model}' not found.",
             "available": available_names,
         }
 
@@ -262,8 +262,8 @@ async def reload_skills(self: Any, *, strict: bool = False) -> int:
     return await self._skills.reload_skills(strict=strict)
 
 
-def list_skills(self: Any) -> list[dict]:
-    return self._skills.list_skills()
+def list_skills(self: Any, lang: str = "ko") -> list[dict]:
+    return self._skills.list_skills(lang=lang)
 
 
 def get_last_skill_load_errors(self: Any) -> list[str]:
