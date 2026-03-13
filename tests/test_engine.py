@@ -329,6 +329,72 @@ class TestProcessMessage:
         assert call_args.kwargs.get("model") == app_settings.lemonade.default_model
 
     @pytest.mark.asyncio
+    async def test_metadata_can_bypass_semantic_cache(
+        self,
+        app_settings: AppSettings,
+        mock_ollama,
+        memory: MemoryManager,
+        mock_skills,
+    ) -> None:
+        semantic_cache = AsyncMock()
+        semantic_cache.is_cacheable = MagicMock(return_value=True)
+        semantic_cache.get = AsyncMock(
+            return_value=SimpleNamespace(response="cached response", cache_id=91),
+        )
+        semantic_cache.put = AsyncMock()
+        mock_ollama.chat = AsyncMock(return_value=ChatResponse(content="fresh response"))
+
+        engine = Engine(
+            config=app_settings,
+            llm_client=mock_ollama,
+            memory=memory,
+            skills=mock_skills,
+            semantic_cache=semantic_cache,
+        )
+
+        result = await engine.process_message(
+            111,
+            "캐시 우회가 필요한 긴 질문입니다",
+            metadata={"skip_semantic_cache": True},
+        )
+
+        assert result == "fresh response"
+        semantic_cache.get.assert_not_awaited()
+        semantic_cache.put.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_rejects_single_character_semantic_cache_entry(
+        self,
+        app_settings: AppSettings,
+        mock_ollama,
+        memory: MemoryManager,
+        mock_skills,
+    ) -> None:
+        semantic_cache = AsyncMock()
+        semantic_cache.is_cacheable = MagicMock(return_value=True)
+        semantic_cache.get = AsyncMock(
+            return_value=SimpleNamespace(response="G", cache_id=91),
+        )
+        semantic_cache.put = AsyncMock()
+        semantic_cache.invalidate_by_id = AsyncMock(return_value=True)
+        mock_ollama.chat = AsyncMock(return_value=ChatResponse(content="정상 응답"))
+
+        engine = Engine(
+            config=app_settings,
+            llm_client=mock_ollama,
+            memory=memory,
+            skills=mock_skills,
+            semantic_cache=semantic_cache,
+        )
+
+        result = await engine.process_message(111, "시맨틱 캐시 검증이 필요한 질문입니다")
+
+        assert result == "정상 응답"
+        semantic_cache.get.assert_awaited_once()
+        semantic_cache.invalidate_by_id.assert_awaited_once_with(91)
+        mock_ollama.chat.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_rag_context_uses_default_model(
         self,
         app_settings: AppSettings,
@@ -1066,6 +1132,44 @@ class TestProcessMessage:
         assert meta["tier"] == "cache"
         assert meta["cache_id"] == 99
         mock_ollama.chat_stream.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_stream_repeated_chunks_do_not_store_semantic_cache(
+        self,
+        app_settings: AppSettings,
+        mock_ollama: AsyncMock,
+        memory: MemoryManager,
+        mock_skills: MagicMock,
+    ) -> None:
+        semantic_cache = AsyncMock()
+        semantic_cache.is_cacheable = MagicMock(return_value=True)
+        semantic_cache.get = AsyncMock(return_value=None)
+        semantic_cache.put = AsyncMock()
+
+        async def _looping_stream(**kwargs):
+            _ = kwargs
+            for _ in range(35):
+                yield "G"
+
+        mock_ollama.chat_stream = MagicMock(side_effect=_looping_stream)
+
+        engine = Engine(
+            config=app_settings,
+            llm_client=mock_ollama,
+            memory=memory,
+            skills=mock_skills,
+            semantic_cache=semantic_cache,
+        )
+
+        chunks = []
+        async for chunk in engine.process_message_stream(111, "반복 청크를 감지해야 하는 질문"):
+            chunks.append(chunk)
+
+        assert chunks == ["G"]
+        semantic_cache.put.assert_not_awaited()
+        meta = engine.consume_last_stream_meta(111)
+        assert meta is not None
+        assert meta["stop_reason"] == "repeated_chunks"
 
     @pytest.mark.asyncio
     async def test_short_korean_query_english_response_is_allowed(

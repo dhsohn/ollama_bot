@@ -41,7 +41,11 @@ class EngineStreamOrchestrator:
             active_skill: SkillDefinition | None = None
             try:
                 routing = await engine._decide_routing(
-                    chat_id, text, model_override, images=images,
+                    chat_id,
+                    text,
+                    model_override,
+                    images=images,
+                    metadata=metadata,
                 )
                 routing_tier = routing.tier
                 active_skill = getattr(routing, "skill", None)
@@ -332,14 +336,24 @@ class EngineStreamOrchestrator:
                 await engine._persist_turn(chat_id, text, full_response)
                 turn_persisted = True
 
-                cache_id = await engine._maybe_store_semantic_cache(
-                    chat_id=chat_id,
-                    text=text,
-                    response=full_response,
-                    images=images,
-                    model_override=model_override,
-                    intent=routing.intent,
-                )
+                cache_id = None
+                if stream_stop_reason is None and stream_error is None:
+                    cache_id = await engine._maybe_store_semantic_cache(
+                        chat_id=chat_id,
+                        text=text,
+                        response=full_response,
+                        images=images,
+                        model_override=model_override,
+                        intent=routing.intent,
+                        metadata=metadata,
+                    )
+                else:
+                    engine._logger.info(
+                        "semantic_cache_put_skipped_incomplete_stream",
+                        chat_id=chat_id,
+                        stop_reason=stream_stop_reason,
+                        had_stream_error=stream_error is not None,
+                    )
 
                 engine._set_stream_meta(
                     chat_id,

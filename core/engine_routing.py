@@ -30,6 +30,7 @@ async def decide_routing(
     model_override: str | None = None,
     *,
     images: list[bytes] | None = None,
+    metadata: dict[str, Any] | None = None,
     decision_factory: Callable[..., Any],
 ) -> Any:
     """계층형 라우팅 판정을 수행한다.
@@ -43,6 +44,7 @@ async def decide_routing(
         text: 사용자 입력 텍스트.
         model_override: 모델 오버라이드 (캐시 컨텍스트에 사용).
         images: 첨부 이미지 (있으면 캐시 우회).
+        metadata: 요청 단위 제어 메타데이터.
         decision_factory: RoutingDecision 생성 팩토리.
 
     Returns:
@@ -59,8 +61,11 @@ async def decide_routing(
 
     route = await classify_route(engine, text)
     intent = route.intent if route else None
+    skip_semantic_cache = bool(metadata and metadata.get("skip_semantic_cache"))
 
     if (
+        not skip_semantic_cache
+        and
         engine._semantic_cache is not None
         and not images
         and engine._semantic_cache.is_cacheable(text)
@@ -110,6 +115,8 @@ def is_cache_response_acceptable(query: str, response: str) -> bool:
     _ = query
     cleaned = sanitize_model_output(response).strip()
     if not cleaned:
+        return False
+    if len(cleaned) == 1:
         return False
     return not detect_output_anomalies(response, cleaned)
 

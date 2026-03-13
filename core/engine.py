@@ -209,7 +209,7 @@ class Engine:
         async with self._track_request(chat_id, stream=False):
             try:
                 routing = await self._decide_routing(
-                    chat_id, text, model_override, images=images,
+                    chat_id, text, model_override, images=images, metadata=metadata,
                 )
 
                 if routing.tier is RoutingTier.SKILL:
@@ -298,6 +298,7 @@ class Engine:
                     images=images,
                     model_override=model_override,
                     intent=routing.intent,
+                    metadata=metadata,
                 )
 
                 self._log_request(

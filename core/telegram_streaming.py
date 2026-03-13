@@ -222,7 +222,12 @@ async def handle_message_impl(
                 )
             try:
                 recovered_response = await asyncio.wait_for(
-                    self._engine.process_message(chat_id, text, images=images),
+                    self._engine.process_message(
+                        chat_id,
+                        text,
+                        images=images,
+                        metadata={"skip_semantic_cache": True},
+                    ),
                     timeout=_STREAM_RECOVERY_TIMEOUT_SECONDS,
                 )
             except Exception as exc:

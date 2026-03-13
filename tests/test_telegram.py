@@ -736,6 +736,7 @@ class TestHandleMessage:
             111,
             "hello",
             images=None,
+            metadata={"skip_semantic_cache": True},
         )
         edited_texts = [call.args[0] for call in sent_message.edit_text.await_args_list]
         assert "복구된 최종 답변" in edited_texts
@@ -795,6 +796,7 @@ class TestHandleMessage:
             111,
             "박사과정 중인데 너무 힘들어 그만두고 싶어",
             images=None,
+            metadata={"skip_semantic_cache": True},
         )
         edited_texts = [call.args[0] for call in sent_message.edit_text.await_args_list]
         assert "복구된 최종 답변" in edited_texts

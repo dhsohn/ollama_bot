@@ -55,6 +55,7 @@ async def _decide_routing(
     model_override: str | None = None,
     *,
     images: list[bytes] | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> _RoutingDecision:
     return await engine_routing.decide_routing(
         self,
@@ -62,6 +63,7 @@ async def _decide_routing(
         text,
         model_override=model_override,
         images=images,
+        metadata=metadata,
         decision_factory=_RoutingDecision,
     )
 
@@ -268,8 +270,11 @@ async def _maybe_store_semantic_cache(
     images: list[bytes] | None,
     model_override: str | None,
     intent: str | None,
+    metadata: dict[str, Any] | None = None,
 ) -> int | None:
     if (
+        (metadata and metadata.get("skip_semantic_cache"))
+        or
         self._semantic_cache is None
         or images
         or not self._semantic_cache.is_cacheable(text)
