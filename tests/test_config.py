@@ -89,16 +89,16 @@ def test_yaml_values_preserved(tmp_path: Path) -> None:
         "telegram:\n"
         "  bot_token: \"test_token\"\n"
         "  allowed_users: \"123456789\"\n"
-        "lemonade:\n"
-        "  host: \"http://yaml-host:8000\"\n"
-        "  default_model: \"yaml-model\"\n"
+        "ollama:\n"
+        "  host: \"http://yaml-host:11434\"\n"
+        "  chat_model: \"yaml-model\"\n"
         "scheduler:\n"
         "  timezone: \"UTC\"\n"
     ))
 
     settings = load_config(config_path=str(config_path))
-    assert settings.lemonade.host == "http://yaml-host:8000"
-    assert settings.lemonade.default_model == "yaml-model"
+    assert settings.ollama.host == "http://yaml-host:11434"
+    assert settings.ollama.chat_model == "yaml-model"
     assert settings.scheduler.timezone == "UTC"
 
 
@@ -227,19 +227,19 @@ def test_response_reviewer_section_loaded_from_yaml(tmp_path: Path) -> None:
     assert settings.response_reviewer.stream_buffering is False
 
 
-def test_partial_lemonade_section_preserves_defaults(tmp_path: Path) -> None:
-    """lemonade 섹션 일부만 지정해도 누락 필드는 기본값을 유지한다."""
+def test_partial_ollama_section_preserves_defaults(tmp_path: Path) -> None:
+    """ollama 섹션 일부만 지정해도 누락 필드는 기본값을 유지한다."""
     config_path = tmp_path / "config.yaml"
     _write_yaml(config_path, _minimal_yaml(
-        "lemonade:\n"
-        "  default_model: \"custom-model\"\n"
+        "ollama:\n"
+        "  chat_model: \"custom-model\"\n"
     ))
 
     settings = load_config(config_path=str(config_path))
-    assert settings.lemonade.default_model == "custom-model"
-    assert settings.lemonade.host == "http://localhost:8000"
-    assert settings.lemonade.temperature == 0.7
-    assert settings.lemonade.max_tokens == 4096
+    assert settings.ollama.chat_model == "custom-model"
+    assert settings.ollama.host == "http://localhost:11434"
+    assert settings.ollama.chat_temperature == 0.7
+    assert settings.ollama.chat_max_tokens == 4096
 
 
 def test_partial_feedback_section_preserves_defaults(tmp_path: Path) -> None:
@@ -258,17 +258,17 @@ def test_partial_feedback_section_preserves_defaults(tmp_path: Path) -> None:
     assert settings.feedback.preview_cache_ttl_hours == 24
 
 
-def test_lemonade_values_from_yaml_only(tmp_path: Path) -> None:
-    """lemonade 설정은 YAML에서만 로드된다."""
+def test_ollama_values_from_yaml_only(tmp_path: Path) -> None:
+    """ollama 설정은 YAML에서만 로드된다."""
     config_path = tmp_path / "config.yaml"
     _write_yaml(config_path, _minimal_yaml())
 
     settings = load_config(config_path=str(config_path))
-    assert settings.lemonade.host == "http://localhost:8000"
-    assert settings.lemonade.default_model == "gpt-oss-20b-NPU"
-    assert settings.lemonade.api_key == ""
-    assert settings.lemonade.base_path == "/api/v1"
-    assert settings.lemonade.timeout_seconds == 60
+    assert settings.ollama.host == "http://localhost:11434"
+    assert settings.ollama.chat_model == "gpt-oss:20b"
+    assert settings.ollama.embedding_model == "Qwen3-Embedding-0.6B-GGUF"
+    assert settings.ollama.reranker_model == "bge-reranker-v2-m3-GGUF"
+    assert settings.ollama.prompt_version == "v1"
 
 
 def test_unknown_top_level_key_ignored(tmp_path: Path) -> None:
@@ -279,7 +279,7 @@ def test_unknown_top_level_key_ignored(tmp_path: Path) -> None:
     ))
 
     settings = load_config(config_path=str(config_path))
-    assert settings.lemonade.default_model == "gpt-oss-20b-NPU"
+    assert settings.ollama.chat_model == "gpt-oss:20b"
 
 
 def test_rag_kb_dirs_loaded_from_yaml(tmp_path: Path) -> None:

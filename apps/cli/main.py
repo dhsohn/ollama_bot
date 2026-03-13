@@ -30,12 +30,24 @@ _ensure_project_root_on_path()
 async def _init_components():
     """설정 기반 LLM 클라이언트와 선택적 RAGPipeline을 초기화한다."""
     from core.config import OllamaConfig, load_config
-    from core.lemonade_client import LemonadeClient
     from core.ollama_client import OllamaClient
 
     config = load_config()
-    llm: Any = LemonadeClient(config.lemonade)
-    llm.default_model = config.lemonade.default_model
+    if not config.ollama.chat_model.strip():
+        raise ValueError(
+            "ollama.chat_model을 설정해야 합니다."
+        )
+    llm: Any = OllamaClient(
+        OllamaConfig(
+            host=config.ollama.host,
+            model=config.ollama.chat_model,
+            temperature=config.ollama.chat_temperature,
+            max_tokens=config.ollama.chat_max_tokens,
+            num_ctx=config.ollama.chat_num_ctx,
+            system_prompt=config.ollama.chat_system_prompt,
+        )
+    )
+    llm.default_model = config.ollama.chat_model
     await llm.initialize()
 
     retrieval_client = None
@@ -92,10 +104,12 @@ async def _close_components(llm: Any, retrieval_client: Any) -> None:
 async def cmd_chat(args: argparse.Namespace) -> None:
     """대화형 채팅."""
     llm, retrieval_client, rag_pipeline, config = await _init_components()
+    from core.config import get_system_prompt
     from core.text_utils import sanitize_model_output
 
+    system_prompt = get_system_prompt(config)
+
     print("=== ollama_bot CLI Chat ===")
-    print("provider: lemonade")
     print("종료: Ctrl+C 또는 'exit'\n")
 
     try:
@@ -119,7 +133,7 @@ async def cmd_chat(args: argparse.Namespace) -> None:
                           f"{result.trace.context_tokens_estimate} tokens")
 
             # 생성
-            messages = [{"role": "system", "content": config.lemonade.system_prompt}]
+            messages = [{"role": "system", "content": system_prompt}]
             if rag_context:
                 from core.rag.context_builder import RAGContextBuilder
                 messages[0]["content"] += RAGContextBuilder.build_rag_system_suffix(rag_context)
@@ -138,10 +152,9 @@ async def cmd_dry_run(args: argparse.Namespace) -> None:
     llm, retrieval_client, rag_pipeline, _config = await _init_components()
 
     query = args.query
-    result: dict = {"query": query, "provider": "lemonade"}
+    result: dict = {"query": query}
     result["routing"] = {
         "selected_model": llm.default_model,
-        "selected_role": "default",
         "trigger": "single_model",
     }
 
@@ -178,7 +191,6 @@ _RAG_TEST_CASES: list[dict[str, Any]] = [
 async def cmd_test(args: argparse.Namespace) -> None:
     """테스트 케이스 실행."""
     llm, retrieval_client, rag_pipeline, _config = await _init_components()
-    print("provider: lemonade")
 
     print("=== Single Model Check ===\n")
     print(f"  [PASS] selected_model={llm.default_model}\n")

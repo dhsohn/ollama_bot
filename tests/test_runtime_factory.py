@@ -72,10 +72,10 @@ async def test_build_runtime_orchestrates_dependencies(tmp_path, monkeypatch: py
     async def fake_initialize_memory_stack(_config, _cleanup_stack, _logger):
         return memory, feedback
 
-    def fake_rewrite_provider_hosts(_config, _provider, _logger) -> None:
+    def fake_rewrite_ollama_host(_config, _logger) -> None:
         return None
 
-    async def fake_initialize_llm_stack(_config, _provider, _cleanup_stack, _logger):
+    async def fake_initialize_chat_client(_config, _cleanup_stack, _logger):
         return llm, "default-model"
 
     async def fake_initialize_skills(_security, _logger):
@@ -155,8 +155,8 @@ async def test_build_runtime_orchestrates_dependencies(tmp_path, monkeypatch: py
     monkeypatch.setattr(runtime_factory, "_acquire_runtime_lock", lambda *_args: None)
     monkeypatch.setattr(runtime_factory, "SecurityManager", lambda _security: "security")
     monkeypatch.setattr(runtime_factory, "initialize_memory_stack", fake_initialize_memory_stack)
-    monkeypatch.setattr(runtime_factory, "rewrite_provider_hosts", fake_rewrite_provider_hosts)
-    monkeypatch.setattr(runtime_factory, "initialize_llm_stack", fake_initialize_llm_stack)
+    monkeypatch.setattr(runtime_factory, "rewrite_ollama_host", fake_rewrite_ollama_host)
+    monkeypatch.setattr(runtime_factory, "initialize_chat_client", fake_initialize_chat_client)
     monkeypatch.setattr(runtime_factory, "initialize_skills", fake_initialize_skills)
     monkeypatch.setattr(
         runtime_factory,
@@ -188,7 +188,6 @@ async def test_build_runtime_orchestrates_dependencies(tmp_path, monkeypatch: py
         assert runtime_state.app == "telegram-app"
         assert runtime_state.skill_count == 7
         assert runtime_state.auto_count == 3
-        assert runtime_state.llm_provider == config.bot.llm_provider
         assert runtime_state.rag_startup_index_task == "rag-task"
         assert runtime_state.semantic_cache == "cache"
         assert runtime_state.degraded_components == [degraded_sample]
@@ -217,14 +216,14 @@ async def test_build_runtime_closes_cleanup_stack_on_failure(
     async def fake_initialize_memory_stack(_config, _cleanup_stack, _logger):
         return SimpleNamespace(), None
 
-    async def fail_initialize_llm_stack(_config, _provider, _cleanup_stack, _logger):
+    async def fail_initialize_chat_client(_config, _cleanup_stack, _logger):
         raise RuntimeError("llm init failed")
 
     monkeypatch.setattr(runtime_factory, "_acquire_runtime_lock", fake_acquire_runtime_lock)
     monkeypatch.setattr(runtime_factory, "SecurityManager", lambda _security: "security")
     monkeypatch.setattr(runtime_factory, "initialize_memory_stack", fake_initialize_memory_stack)
-    monkeypatch.setattr(runtime_factory, "rewrite_provider_hosts", lambda *_args: None)
-    monkeypatch.setattr(runtime_factory, "initialize_llm_stack", fail_initialize_llm_stack)
+    monkeypatch.setattr(runtime_factory, "rewrite_ollama_host", lambda *_args: None)
+    monkeypatch.setattr(runtime_factory, "initialize_chat_client", fail_initialize_chat_client)
 
     with pytest.raises(RuntimeError, match="llm init failed"):
         await runtime_factory.build_runtime(config, logger)

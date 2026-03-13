@@ -60,7 +60,7 @@ class LLMClientProtocol(Protocol):
 
 
 class RetrievalClientProtocol(LLMClientProtocol, Protocol):
-    """임베딩/리랭크가 필요한 Lemonade 계열 확장 인터페이스."""
+    """임베딩/리랭크를 지원하는 retrieval-capable LLM 인터페이스."""
 
     @property
     def host(self) -> str: ...

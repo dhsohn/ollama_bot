@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from core.config import get_default_chat_model
 from core.constants import (
     SUMMARY_CHUNK_MAX_CHARS,
     SUMMARY_CHUNK_OVERLAP_CHARS,
@@ -159,9 +160,9 @@ async def run_chunked_summary_pipeline(
         reduce_model_candidate = model_override
         reduce_role = "skill"
     else:
-        map_model_candidate = engine._config.lemonade.default_model
+        map_model_candidate = get_default_chat_model(engine._config)
         map_role = "default"
-        reduce_model_candidate = engine._config.lemonade.default_model
+        reduce_model_candidate = get_default_chat_model(engine._config)
         reduce_role = "default"
 
     map_model, _ = await engine._prepare_target_model(

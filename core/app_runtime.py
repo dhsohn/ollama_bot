@@ -31,7 +31,6 @@ from core.runtime_factory import (
 from core.runtime_factory import (
     log_degraded_startup_summary as _log_degraded_startup_summary,
 )
-from core.runtime_factory import model_for_provider as _model_for_provider
 from core.runtime_factory import (
     validate_required_settings as _validate_required_settings,
 )

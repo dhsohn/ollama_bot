@@ -36,7 +36,7 @@ def _make_runtime() -> SimpleNamespace:
         app=FakeApp(),
         scheduler=SimpleNamespace(start=MagicMock(), stop=MagicMock()),
         memory=SimpleNamespace(),
-        llm=SimpleNamespace(),
+        llm=SimpleNamespace(default_model="test-model"),
         config=SimpleNamespace(
             telegram=SimpleNamespace(polling_interval=1),
             runtime_maintenance=SimpleNamespace(
@@ -48,7 +48,6 @@ def _make_runtime() -> SimpleNamespace:
         ),
         feedback=None,
         semantic_cache=None,
-        llm_provider="lemonade",
         skill_count=3,
         auto_count=4,
         cleanup_stack=AsyncExitStack(),
@@ -116,7 +115,6 @@ async def test_run_runtime_starts_background_loops_and_stops_on_signal(monkeypat
     monkeypatch.setattr("core.runtime_lifecycle.asyncio.get_running_loop", lambda: FakeLoop())
     monkeypatch.setattr("core.runtime_lifecycle.memory_maintenance_loop", fake_memory_loop)
     monkeypatch.setattr("core.runtime_lifecycle.llm_recovery_loop", fake_recovery_loop)
-    monkeypatch.setattr("core.runtime_lifecycle.model_for_provider", lambda _config: "test-model")
 
     await run_runtime(runtime)
 
@@ -128,7 +126,6 @@ async def test_run_runtime_starts_background_loops_and_stops_on_signal(monkeypat
     runtime.logger.info.assert_any_call("shutdown_signal_received")
     runtime.logger.info.assert_any_call(
         "bot_running",
-        provider="lemonade",
         model="test-model",
         skills=3,
         automations=4,

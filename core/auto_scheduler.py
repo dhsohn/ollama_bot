@@ -21,7 +21,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from pydantic import BaseModel, Field, field_validator
 
-from core.config import AppSettings
+from core.config import AppSettings, get_default_chat_model
 from core.logging_setup import get_logger
 from core.security import SecurityManager
 
@@ -496,7 +496,7 @@ class AutoScheduler:
         model_role = action.model_role
         if model_override is not None or model_role is not None:
             return model_override, model_role
-        fallback_model = self._config.lemonade.default_model.strip() or None
+        fallback_model = get_default_chat_model(self._config).strip() or None
         return fallback_model, "default"
 
     @staticmethod

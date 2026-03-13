@@ -313,7 +313,7 @@ async def test_initialize_memory_stack_with_feedback(
     assert feedback_db.closed is True
 
 
-def test_rewrite_provider_hosts_rewrites_active_provider(
+def test_rewrite_ollama_host_rewrites_local_host(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -326,20 +326,12 @@ def test_rewrite_provider_hosts_rewrites_active_provider(
         lambda *, url, service_name, logger: f"{service_name}:{url}",
     )
 
-    runtime_factory_steps.rewrite_provider_hosts(config, "openai", logger)
-    assert config.openai.host.startswith("openai:")
+    runtime_factory_steps.rewrite_ollama_host(config, logger)
     assert config.ollama.host.startswith("ollama:")
-    assert config.lemonade.host == "http://localhost:8000"
-
-    config = AppSettings(data_dir=str(tmp_path))
-    runtime_factory_steps.rewrite_provider_hosts(config, "lemonade", logger)
-    assert config.lemonade.host.startswith("lemonade:")
-    assert config.ollama.host.startswith("ollama:")
-    assert config.openai.host == "https://api.openai.com"
 
 
 @pytest.mark.asyncio
-async def test_initialize_llm_stack_sets_default_model_and_registers_cleanup(
+async def test_initialize_chat_client_sets_default_model_and_registers_cleanup(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -348,13 +340,12 @@ async def test_initialize_llm_stack_sets_default_model_and_registers_cleanup(
     logger = MagicMock()
     llm = DummyLLM()
 
-    monkeypatch.setattr(runtime_factory_steps, "_create_llm_client", lambda _config: llm)
-    monkeypatch.setattr(runtime_factory_steps, "model_for_provider", lambda _config: "model-x")
+    monkeypatch.setattr(runtime_factory_steps, "OllamaClient", lambda _config: llm)
+    monkeypatch.setattr(runtime_factory_steps, "get_default_chat_model", lambda _config: "model-x")
 
     try:
-        resolved_llm, default_model = await runtime_factory_steps.initialize_llm_stack(
+        resolved_llm, default_model = await runtime_factory_steps.initialize_chat_client(
             config,
-            "lemonade",
             cleanup_stack,
             logger,
         )
@@ -368,7 +359,7 @@ async def test_initialize_llm_stack_sets_default_model_and_registers_cleanup(
 
 
 @pytest.mark.asyncio
-async def test_initialize_llm_stack_wraps_startup_failures(
+async def test_initialize_chat_client_wraps_startup_failures(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -377,13 +368,12 @@ async def test_initialize_llm_stack_wraps_startup_failures(
     logger = MagicMock()
     llm = DummyLLM(should_fail=True)
 
-    monkeypatch.setattr(runtime_factory_steps, "_create_llm_client", lambda _config: llm)
-    monkeypatch.setattr(runtime_factory_steps, "model_for_provider", lambda _config: "model-x")
+    monkeypatch.setattr(runtime_factory_steps, "OllamaClient", lambda _config: llm)
+    monkeypatch.setattr(runtime_factory_steps, "get_default_chat_model", lambda _config: "model-x")
 
     with pytest.raises(StartupError, match="ollama 초기화 실패"):
-        await runtime_factory_steps.initialize_llm_stack(
+        await runtime_factory_steps.initialize_chat_client(
             config,
-            "ollama",
             cleanup_stack,
             logger,
         )
@@ -547,7 +537,7 @@ async def test_initialize_retrieval_components_initializes_registry(
         "_create_retrieval_client",
         lambda _config: retrieval_client,
     )
-    monkeypatch.setattr(runtime_factory_steps, "model_for_provider", lambda _config: "chat-model")
+    monkeypatch.setattr(runtime_factory_steps, "get_default_chat_model", lambda _config: "chat-model")
     _install_module(monkeypatch, "core.model_registry", ModelRegistry=DummyModelRegistry)
 
     try:

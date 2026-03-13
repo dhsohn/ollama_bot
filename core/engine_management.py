@@ -30,16 +30,7 @@ async def route_request(
     _ = (text, images, metadata)
     return {
         "selected_model": self._llm_client.default_model,
-        "selected_role": "default",
         "trigger": "single_model",
-        "confidence": 1.0,
-        "anchor_scores": {},
-        "fallback_used": False,
-        "original_role": None,
-        "classifier_used": False,
-        "latency_ms": 0.0,
-        "degraded": False,
-        "degradation_reasons": [],
     }
 
 

@@ -20,8 +20,8 @@ import core.semantic_cache as semantic_cache_module
 from core.config import (
     AppSettings,
     BotConfig,
-    LemonadeConfig,
     MemoryConfig,
+    RetrievalProviderConfig,
     SecurityConfig,
     TelegramConfig,
 )
@@ -172,9 +172,9 @@ async def e2e_runtime(tmp_path: Path, monkeypatch):
     config = AppSettings(
         data_dir=str(tmp_path),
         bot=BotConfig(max_conversation_length=10, response_timeout=60),
-        lemonade=LemonadeConfig(
-            default_model="test-model",
-            system_prompt="You are a test bot.",
+        ollama=RetrievalProviderConfig(
+            chat_model="test-model",
+            chat_system_prompt="You are a test bot.",
         ),
         security=SecurityConfig(allowed_users=[111]),
         memory=MemoryConfig(),
@@ -242,7 +242,7 @@ async def e2e_runtime(tmp_path: Path, monkeypatch):
     runtime = SimpleNamespace(
         engine=engine,
         memory=memory,
-        lemonade=ollama,
+        llm=ollama,
         semantic_cache=semantic_cache,
         cache_db=cache_db,
         skills=skills,
@@ -266,7 +266,7 @@ class TestFourTierRoutingFlow:
     async def test_skill_tier_takes_priority(self, e2e_runtime) -> None:
         """스킬 트리거 매칭 시 RoutingTier.SKILL로 처리된다."""
         engine = e2e_runtime.engine
-        llm = e2e_runtime.lemonade
+        llm = e2e_runtime.llm
 
         result = await engine.process_message(111, "/summarize 이 텍스트를 요약해줘")
 
@@ -282,7 +282,7 @@ class TestFourTierRoutingFlow:
     async def test_instant_tier_bypasses_llm(self, e2e_runtime) -> None:
         """즉시 응답 규칙 매칭 시 LLM을 호출하지 않는다."""
         engine = e2e_runtime.engine
-        llm = e2e_runtime.lemonade
+        llm = e2e_runtime.llm
 
         result = await engine.process_message(111, "ping")
 
@@ -293,7 +293,7 @@ class TestFourTierRoutingFlow:
     async def test_cache_tier_reuses_previous_response(self, e2e_runtime) -> None:
         """동일 질문 시 캐시에서 응답을 재사용한다."""
         engine = e2e_runtime.engine
-        llm = e2e_runtime.lemonade
+        llm = e2e_runtime.llm
 
         # 첫 번째: Full LLM
         first = await engine.process_message(111, "캐시 테스트 질문입니다")
@@ -308,7 +308,7 @@ class TestFourTierRoutingFlow:
     async def test_full_tier_fallthrough(self, e2e_runtime) -> None:
         """스킬/즉시/캐시 모두 미스 시 Full LLM으로 처리된다."""
         engine = e2e_runtime.engine
-        llm = e2e_runtime.lemonade
+        llm = e2e_runtime.llm
 
         result = await engine.process_message(111, "이것은 새로운 질문입니다")
 
@@ -319,7 +319,7 @@ class TestFourTierRoutingFlow:
     async def test_tier_priority_order(self, e2e_runtime) -> None:
         """4-tier 우선순위: skill > instant > cache > full 순서로 처리된다."""
         engine = e2e_runtime.engine
-        llm = e2e_runtime.lemonade
+        llm = e2e_runtime.llm
         memory = e2e_runtime.memory
 
         # 1. Skill
@@ -359,7 +359,7 @@ class TestStreamErrorFallback:
     async def test_stream_error_falls_back_to_chat(self, e2e_runtime) -> None:
         """스트림이 청크 전달 전에 실패하면 chat 폴백으로 응답한다."""
         engine = e2e_runtime.engine
-        llm = e2e_runtime.lemonade
+        llm = e2e_runtime.llm
 
         # 첫 번째 청크에서 즉시 실패하도록 설정
         llm.stream_error_after = 0
@@ -379,7 +379,7 @@ class TestStreamErrorFallback:
     async def test_stream_partial_then_error_keeps_partial(self, e2e_runtime) -> None:
         """스트림이 일부 청크 전달 후 실패하면 부분 응답을 유지한다."""
         engine = e2e_runtime.engine
-        llm = e2e_runtime.lemonade
+        llm = e2e_runtime.llm
 
         # 청크 2개 후 에러
         llm.stream_chunks = ["Part1", "Part2", "Part3", "Part4"]
@@ -398,7 +398,7 @@ class TestStreamErrorFallback:
     async def test_stream_success_persists_turn(self, e2e_runtime) -> None:
         """스트리밍 성공 시 대화 기록이 저장된다."""
         engine = e2e_runtime.engine
-        llm = e2e_runtime.lemonade
+        llm = e2e_runtime.llm
         memory = e2e_runtime.memory
 
         llm.stream_chunks = ["응답", " 내용"]
@@ -416,7 +416,7 @@ class TestStreamErrorFallback:
     async def test_instant_response_via_stream(self, e2e_runtime) -> None:
         """스트리밍 모드에서도 즉시 응답이 정상 작동한다."""
         engine = e2e_runtime.engine
-        llm = e2e_runtime.lemonade
+        llm = e2e_runtime.llm
 
         chunks = []
         async for chunk in engine.process_message_stream(111, "ping"):
@@ -436,7 +436,7 @@ class TestSemanticCacheLifecycle:
     async def test_cache_miss_then_hit_then_invalidate(self, e2e_runtime) -> None:
         """query -> miss -> LLM -> same query -> hit -> invalidate -> miss."""
         engine = e2e_runtime.engine
-        llm = e2e_runtime.lemonade
+        llm = e2e_runtime.llm
         cache = e2e_runtime.semantic_cache
 
         query = "시맨틱 캐시 라이프사이클 테스트 질문"
@@ -491,7 +491,7 @@ class TestSemanticCacheLifecycle:
     async def test_cache_not_used_for_short_queries(self, e2e_runtime) -> None:
         """짧은 질의는 캐시 대상에서 제외된다."""
         engine = e2e_runtime.engine
-        llm = e2e_runtime.lemonade
+        llm = e2e_runtime.llm
         cache = e2e_runtime.semantic_cache
 
         # 짧은 질의 (min_query_chars 미만)
@@ -520,9 +520,9 @@ class TestRAGIntegration:
         config = AppSettings(
             data_dir=str(tmp_path),
             bot=BotConfig(max_conversation_length=10, response_timeout=60),
-            lemonade=LemonadeConfig(
-                default_model="test-model",
-                system_prompt="You are a test bot.",
+            ollama=RetrievalProviderConfig(
+                chat_model="test-model",
+                chat_system_prompt="You are a test bot.",
             ),
             security=SecurityConfig(allowed_users=[111]),
             memory=MemoryConfig(),
@@ -567,7 +567,7 @@ class TestRAGIntegration:
         runtime = SimpleNamespace(
             engine=engine,
             memory=memory,
-            lemonade=ollama,
+            llm=ollama,
             rag_pipeline=rag_pipeline,
         )
         try:
@@ -579,7 +579,7 @@ class TestRAGIntegration:
     async def test_rag_context_injected_into_messages(self, rag_runtime) -> None:
         """RAG 컨텍스트가 LLM 호출 메시지에 주입된다."""
         engine = rag_runtime.engine
-        llm = rag_runtime.lemonade
+        llm = rag_runtime.llm
         rag = rag_runtime.rag_pipeline
 
         result = await engine.process_message(111, "파이썬이란 무엇인가요?")
@@ -602,7 +602,7 @@ class TestRAGIntegration:
         """should_trigger_rag가 False이면 RAG를 실행하지 않는다."""
         engine = rag_runtime.engine
         rag = rag_runtime.rag_pipeline
-        llm = rag_runtime.lemonade
+        llm = rag_runtime.llm
 
         rag.should_trigger_rag.return_value = False
 
@@ -624,7 +624,7 @@ class TestRAGIntegration:
         """RAG 결과에 contexts가 비어있으면 주입을 건너뛴다."""
         engine = rag_runtime.engine
         rag = rag_runtime.rag_pipeline
-        llm = rag_runtime.lemonade
+        llm = rag_runtime.llm
 
         rag.execute = AsyncMock(
             return_value=RAGResult(

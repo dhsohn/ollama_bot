@@ -3,10 +3,9 @@
 [![CI](https://github.com/dhsohn/ollama_bot/actions/workflows/ci.yml/badge.svg)](https://github.com/dhsohn/ollama_bot/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-WSL2/리눅스 환경용 텔레그램 private-chat 봇. Dual-Provider 아키텍처 기반.
+WSL2/리눅스 환경용 텔레그램 private-chat 봇. Ollama 단일 서버 아키텍처 기반.
 
-- **Lemonade Server**: LLM 응답 (`gpt-oss-20b-NPU`)
-- **Ollama Server**: 임베딩/리랭킹 (`Qwen3-Embedding-0.6B`, `bge-reranker-v2-m3`)
+- **Ollama Server**: LLM 응답 + 임베딩 + 리랭킹
 
 ## 핵심 기능
 
@@ -41,14 +40,14 @@ telegram:
 
 ### LLM 백엔드
 
-로컬/원격 환경에서 두 서버 실행:
+기본 구성은 Ollama 단일 서버다.
 
 | 서버 | 포트 | 역할 |
 |---|---|---|
-| Lemonade | 8000 | LLM 응답 (`gpt-oss-20b-NPU`) |
-| Ollama | 11434 | 임베딩 + 리랭킹 |
+| Ollama | 11434 | 채팅 + 임베딩 + 리랭킹 |
 
 ```bash
+ollama pull gpt-oss:20b
 ollama pull dengcao/Qwen3-Embedding-0.6B:Q8_0
 ollama pull dengcao/bge-reranker-v2-m3:latest
 ```
@@ -178,7 +177,7 @@ ollama_bot/
 - `config/config.yaml`: 전역 런타임 설정 (시크릿 포함, gitignore 대상)
 - `config/config.yaml.example`: 설정 템플릿 (git 추적)
 
-주요 YAML 섹션: `bot`, `lemonade`, `ollama`, `rag`, `security`, `memory`, `feedback`, `semantic_cache`, `intent_router`, `response_planner`, `response_reviewer`
+주요 YAML 섹션: `bot`, `ollama`, `rag`, `security`, `memory`, `feedback`, `semantic_cache`, `intent_router`, `response_planner`, `response_reviewer`
 
 ## 운영 스크립트
 
@@ -191,7 +190,6 @@ ollama_bot/
 | `scripts/healthcheck.sh` | 헬스체크 |
 | `scripts/soak_monitor.sh` | 장시간 안정성 모니터링 (systemd) |
 | `scripts/check_requirements_lock.sh` | 의존성 잠금 파일 검사 |
-| `scripts/configure_windows_lemonade.sh` | Windows 방화벽/portproxy 설정 |
 
 ## 의존성
 

@@ -4,6 +4,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from core.async_utils import run_in_thread
+from core.config import get_prompt_version
 from core.constants import (
     REASONING_INTENTS,
     REASONING_MODEL_ROLES,
@@ -104,7 +105,7 @@ def build_cache_context(
 
     return CacheContext(
         model=model_override or engine._llm_client.default_model,
-        prompt_ver=engine._config.lemonade.prompt_version,
+        prompt_ver=get_prompt_version(engine._config),
         intent=intent,
         scope="user",
         chat_id=chat_id,

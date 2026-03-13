@@ -12,7 +12,7 @@ from typing import Any, cast
 from core.async_utils import run_in_thread
 from core.auto_scheduler import AutoScheduler
 from core.automation_callables import register_builtin_callables
-from core.config import AppSettings
+from core.config import AppSettings, OllamaConfig, get_default_chat_model
 from core.context_compressor import ContextCompressor
 from core.feedback_manager import FeedbackManager
 from core.instant_responder import InstantResponder
@@ -22,11 +22,9 @@ from core.ollama_client import OllamaClient
 from core.runtime_env import resolve_wsl_loopback_host
 from core.runtime_factory_support import (
     StartupError,
-    _create_llm_client,
     _create_retrieval_client,
     _open_sqlite_db,
     handle_optional_component_failure,
-    model_for_provider,
 )
 
 
@@ -87,19 +85,7 @@ async def initialize_memory_stack(
     return memory, feedback
 
 
-def rewrite_provider_hosts(config: AppSettings, llm_provider: str, logger: Any) -> None:
-    if llm_provider == "openai":
-        config.openai.host = resolve_wsl_loopback_host(
-            url=config.openai.host,
-            service_name="openai",
-            logger=logger,
-        )
-    else:
-        config.lemonade.host = resolve_wsl_loopback_host(
-            url=config.lemonade.host,
-            service_name="lemonade",
-            logger=logger,
-        )
+def rewrite_ollama_host(config: AppSettings, logger: Any) -> None:
     config.ollama.host = resolve_wsl_loopback_host(
         url=config.ollama.host,
         service_name="ollama",
@@ -107,32 +93,34 @@ def rewrite_provider_hosts(config: AppSettings, llm_provider: str, logger: Any) 
     )
 
 
-async def initialize_llm_stack(
+async def initialize_chat_client(
     config: AppSettings,
-    llm_provider: str,
     cleanup_stack: AsyncExitStack,
     logger: Any,
 ) -> tuple[LLMClientProtocol, str]:
-    llm = _create_llm_client(config)
-    default_model = model_for_provider(config)
+    default_model = get_default_chat_model(config)
+    llm = OllamaClient(
+        OllamaConfig(
+            host=config.ollama.host,
+            model=default_model,
+            temperature=config.ollama.chat_temperature,
+            max_tokens=config.ollama.chat_max_tokens,
+            num_ctx=config.ollama.chat_num_ctx,
+            system_prompt=config.ollama.chat_system_prompt,
+        )
+    )
     llm.default_model = default_model
     llm_host = getattr(llm, "host", "unknown")
     try:
         await llm.initialize()
     except Exception as exc:
-        logger.error("llm_init_failed", provider=llm_provider, error=str(exc))
-        if llm_provider == "ollama":
-            hint = (
-                f"\n힌트: Ollama 서버가 {config.ollama.host} 에서 실행 중인지 확인하세요."
-                f"\n      채팅 모델({default_model})이 pull 되었는지 확인하세요."
-            )
-        else:
-            hint = (
-                "\n힌트: WSL 환경에서는 서버가 0.0.0.0에 바인딩되어야 합니다."
-                "\n      Windows 방화벽에서 해당 포트의 인바운드를 허용했는지 확인하세요."
-            )
+        logger.error("llm_init_failed", error=str(exc))
+        hint = (
+            f"\n힌트: Ollama 서버가 {config.ollama.host} 에서 실행 중인지 확인하세요."
+            f"\n      채팅 모델({default_model})이 pull 되었는지 확인하세요."
+        )
         raise StartupError(
-            f"오류: {llm_provider} 초기화 실패 ({llm_host})\n"
+            f"오류: ollama 초기화 실패 ({llm_host})\n"
             f"{exc}{hint}\n"
             "백엔드 실행 상태와 기본 모델 준비 상태를 확인하세요. 봇 시작을 중단합니다."
         ) from exc
@@ -300,7 +288,7 @@ async def initialize_retrieval_components(
             retrieval_proto = cast(RetrievalClientProtocol, components.retrieval_client)
             components.model_registry = ModelRegistry(
                 ModelRegistryConfig(
-                    default_model=model_for_provider(config),
+                    default_model=get_default_chat_model(config),
                     embedding_model=config.ollama.embedding_model,
                     reranker_model=config.ollama.reranker_model,
                 ),

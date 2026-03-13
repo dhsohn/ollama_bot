@@ -12,8 +12,8 @@ from core.config import (
     AppSettings,
     BotConfig,
     FeedbackConfig,
-    LemonadeConfig,
     MemoryConfig,
+    RetrievalProviderConfig,
     SecurityConfig,
     TelegramConfig,
 )
@@ -26,7 +26,7 @@ def app_config() -> AppSettings:
     return AppSettings(
         data_dir="/tmp/test",
         bot=BotConfig(),
-        lemonade=LemonadeConfig(),
+        ollama=RetrievalProviderConfig(chat_model="test-model"),
         security=SecurityConfig(allowed_users=[111, 222]),
         memory=MemoryConfig(),
         telegram=TelegramConfig(bot_token="test_token"),
@@ -913,7 +913,7 @@ class TestFeedbackButtons:
         config = AppSettings(
             data_dir="/tmp/test",
             bot=BotConfig(),
-            lemonade=LemonadeConfig(),
+            ollama=RetrievalProviderConfig(chat_model="test-model"),
             security=SecurityConfig(allowed_users=[111, 222]),
             memory=MemoryConfig(),
             telegram=TelegramConfig(bot_token="test_token"),
@@ -1386,7 +1386,7 @@ class TestFeedbackButtons:
         config = AppSettings(
             data_dir="/tmp/test",
             bot=BotConfig(),
-            lemonade=LemonadeConfig(),
+            ollama=RetrievalProviderConfig(chat_model="test-model"),
             security=SecurityConfig(allowed_users=[111], rate_limit=1),
             memory=MemoryConfig(),
             telegram=TelegramConfig(bot_token="test_token"),

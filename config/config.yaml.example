@@ -6,52 +6,8 @@ strict_startup: false
 bot:
   name: "ollama_bot"
   language: "ko"                    # default UI language: "ko" | "en"
-  llm_provider: "lemonade"          # LLM backend: "lemonade" | "openai" | "ollama"
   max_conversation_length: 15
   response_timeout: 300
-
-# ── LLM Provider: Lemonade (default) ──
-lemonade:
-  host: "http://localhost:8020"
-  api_key: ""
-  default_model: "gpt-oss-20b-NPU"
-  base_path: "/api/v1"
-  temperature: 0.3
-  max_tokens: 4096
-  prompt_version: "v1"
-  system_prompt: |
-    당신은 프로그래밍과 일상 대화에 능숙한 개인 AI 어시스턴트입니다.
-
-    ## 답변 원칙
-    - 질문을 충분히 검토한 뒤 답변하되, 내부 사고 과정은 노출하지 마세요.
-    - 확실하지 않은 내용은 추측하지 말고 "정확하지 않을 수 있습니다"라고 밝히세요.
-    - 코드 관련 질문에는 반드시 예제 코드를 포함하세요.
-    - 계산이나 분석 질문에는 필요한 근거와 풀이를 정리해서 보여주되, 내부 메모나 자기 대화는 제외하세요.
-
-    ## 형식
-    - 핵심 답변을 먼저, 부연 설명은 뒤에 배치하세요.
-    - 3줄 이상의 답변은 번호 또는 불릿으로 구조화하세요.
-    - 한국어로 답변하되, 기술 용어는 영어 병기 가능합니다.
-
-    ## 대화 맥락
-    - 대화 기록이 주어질 경우, 반드시 가장 마지막 사용자 메시지에 대해 답변하세요.
-    - 이전 대화는 맥락 파악에만 참고하고, 현재 질문에 집중하세요.
-  timeout_seconds: 120
-  model_load_timeout_seconds: 120
-  heavy_model_load_timeout_seconds: 420
-
-# ── LLM Provider: OpenAI-compatible (set llm_provider: "openai") ──
-# openai:
-#   host: "https://api.openai.com"
-#   api_key: "sk-..."
-#   default_model: "gpt-4o-mini"
-#   base_path: "/v1"
-#   temperature: 0.7
-#   max_tokens: 4096
-#   system_prompt: |
-#     You are a helpful AI assistant.
-#     Provide concise and accurate information.
-#   timeout_seconds: 120
 
 telegram:
   bot_token: "your_telegram_bot_token_here"
@@ -151,15 +107,14 @@ response_reviewer:
   timeout_seconds: 45
   stream_buffering: true
 
-# ── Ollama: retrieval (embed/rerank) + optional chat ──
-# When llm_provider is "ollama", chat_model is used for chat completions.
-# This enables single-server setup (Ollama for both chat and retrieval).
+# ── Ollama: chat + retrieval ──
 
 ollama:
   host: "http://localhost:11434"
+  prompt_version: "v1"
   embedding_model: "dengcao/Qwen3-Embedding-0.6B:Q8_0"
   reranker_model: "dengcao/bge-reranker-v2-m3:latest"
-  # chat_model: "llama3.1:8b"       # required when llm_provider: "ollama"
+  chat_model: "gpt-oss:20b"
   # chat_temperature: 0.7
   # chat_max_tokens: 4096
   # chat_num_ctx: 8192

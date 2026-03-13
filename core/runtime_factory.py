@@ -14,7 +14,7 @@ from core.feedback_manager import FeedbackManager
 from core.llm_protocol import LLMClientProtocol
 from core.memory import MemoryManager
 from core.runtime_factory_steps import (
-    initialize_llm_stack,
+    initialize_chat_client,
     initialize_memory_stack,
     initialize_optional_components,
     initialize_rag_pipeline,
@@ -22,14 +22,13 @@ from core.runtime_factory_steps import (
     initialize_scheduler_stack,
     initialize_skills,
     preload_default_model,
-    rewrite_provider_hosts,
+    rewrite_ollama_host,
 )
 from core.runtime_factory_support import (
     StartupError,
     _acquire_runtime_lock,
     handle_optional_component_failure,
     log_degraded_startup_summary,
-    model_for_provider,
     validate_required_settings,
 )
 from core.security import SecurityManager
@@ -48,7 +47,6 @@ class RuntimeState:
     scheduler: AutoScheduler
     skill_count: int
     auto_count: int
-    llm_provider: str
     cleanup_stack: AsyncExitStack
     feedback: FeedbackManager | None = None
     semantic_cache: Any = None
@@ -74,12 +72,10 @@ async def build_runtime(
 
         memory, feedback = await initialize_memory_stack(config, cleanup_stack, logger)
 
-        llm_provider = config.bot.llm_provider
-        rewrite_provider_hosts(config, llm_provider, logger)
+        rewrite_ollama_host(config, logger)
 
-        llm, default_model = await initialize_llm_stack(
+        llm, default_model = await initialize_chat_client(
             config,
-            llm_provider,
             cleanup_stack,
             logger,
         )
@@ -166,7 +162,6 @@ async def build_runtime(
             scheduler=scheduler,
             skill_count=skill_count,
             auto_count=auto_count,
-            llm_provider=llm_provider,
             cleanup_stack=cleanup_stack,
             feedback=feedback,
             semantic_cache=semantic_cache,

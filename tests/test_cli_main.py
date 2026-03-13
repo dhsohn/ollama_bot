@@ -72,7 +72,6 @@ async def test_cmd_test_reports_passes_and_closes_components(monkeypatch, capsys
     await cli_main.cmd_test(SimpleNamespace())
 
     output = capsys.readouterr().out
-    assert "provider: lemonade" in output
     assert "RAG Trigger:" in output
     retrieval.close.assert_awaited_once()
     llm.close.assert_awaited_once()
@@ -96,7 +95,7 @@ async def test_cmd_chat_runs_single_round_trip_with_rag(monkeypatch, capsys) -> 
         execute=AsyncMock(return_value=rag_result),
     )
     config = SimpleNamespace(
-        lemonade=SimpleNamespace(system_prompt="system prompt"),
+        ollama=SimpleNamespace(chat_system_prompt="system prompt"),
     )
 
     monkeypatch.setattr(

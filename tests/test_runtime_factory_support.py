@@ -3,83 +3,38 @@
 from __future__ import annotations
 
 from contextlib import AsyncExitStack
-from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
 from core.config import (
     AppSettings,
     BotConfig,
-    LemonadeConfig,
     MemoryConfig,
-    OllamaConfig,
-    OpenAIConfig,
+    RetrievalProviderConfig,
     SecurityConfig,
     TelegramConfig,
 )
 from core.runtime_factory_support import (
     StartupError,
-    _create_llm_client,
     _create_retrieval_client,
     _release_runtime_lock,
     handle_optional_component_failure,
     log_degraded_startup_summary,
-    model_for_provider,
     validate_required_settings,
 )
 
 
 def _make_config(**overrides) -> AppSettings:
     defaults = dict(
-        bot=BotConfig(llm_provider="lemonade"),
-        lemonade=LemonadeConfig(
-            host="http://localhost:8000",
-            default_model="lemonade-model",
-        ),
+        bot=BotConfig(),
+        ollama=RetrievalProviderConfig(chat_model="chat-model"),
         security=SecurityConfig(allowed_users=[111]),
         memory=MemoryConfig(),
         telegram=TelegramConfig(bot_token="valid_token", allowed_users="111"),
     )
     defaults.update(overrides)
     return AppSettings(**defaults)
-
-
-class TestModelForProvider:
-    def test_ollama_provider(self) -> None:
-        config = _make_config(bot=BotConfig(llm_provider="ollama"))
-        result = model_for_provider(config)
-        assert result == config.ollama.embedding_model
-
-    def test_openai_provider(self) -> None:
-        config = _make_config(bot=BotConfig(llm_provider="openai"))
-        result = model_for_provider(config)
-        assert result == config.openai.default_model
-
-    def test_lemonade_provider(self) -> None:
-        config = _make_config(bot=BotConfig(llm_provider="lemonade"))
-        result = model_for_provider(config)
-        assert result == "lemonade-model"
-
-
-class TestCreateLlmClient:
-    def test_ollama_provider(self) -> None:
-        config = _make_config(bot=BotConfig(llm_provider="ollama"))
-        client = _create_llm_client(config)
-        from core.ollama_client import OllamaClient
-        assert isinstance(client, OllamaClient)
-
-    def test_openai_provider(self) -> None:
-        config = _make_config(bot=BotConfig(llm_provider="openai"))
-        client = _create_llm_client(config)
-        from core.lemonade_client import LemonadeClient
-        assert isinstance(client, LemonadeClient)
-
-    def test_lemonade_provider(self) -> None:
-        config = _make_config(bot=BotConfig(llm_provider="lemonade"))
-        client = _create_llm_client(config)
-        from core.lemonade_client import LemonadeClient
-        assert isinstance(client, LemonadeClient)
 
 
 class TestCreateRetrievalClient:
@@ -91,6 +46,13 @@ class TestCreateRetrievalClient:
 
 
 class TestValidateRequiredSettings:
+    def test_missing_ollama_chat_model_raises(self) -> None:
+        config = _make_config(
+            ollama=RetrievalProviderConfig(chat_model=""),
+        )
+        with pytest.raises(StartupError, match="ollama\\.chat_model"):
+            validate_required_settings(config, MagicMock())
+
     def test_missing_bot_token_raises(self) -> None:
         config = _make_config(
             telegram=TelegramConfig(bot_token="your_telegram_bot_token_here", allowed_users="111"),

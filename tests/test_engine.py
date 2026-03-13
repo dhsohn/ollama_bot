@@ -14,8 +14,8 @@ import pytest_asyncio
 from core.config import (
     AppSettings,
     BotConfig,
-    LemonadeConfig,
     MemoryConfig,
+    RetrievalProviderConfig,
     SecurityConfig,
     TelegramConfig,
 )
@@ -32,9 +32,9 @@ from core.skill_manager import SkillDefinition, SkillManager
 def app_settings() -> AppSettings:
     return AppSettings(
         bot=BotConfig(max_conversation_length=10),
-        lemonade=LemonadeConfig(
-            default_model="test-model",
-            system_prompt="You are a test bot.",
+        ollama=RetrievalProviderConfig(
+            chat_model="test-model",
+            chat_system_prompt="You are a test bot.",
         ),
         security=SecurityConfig(allowed_users=[111]),
         memory=MemoryConfig(),
@@ -232,8 +232,8 @@ class TestProcessMessage:
         assert result == "최종 요약"
         assert mock_ollama.chat.await_count == 3
         models = [call.kwargs.get("model") for call in mock_ollama.chat.await_args_list]
-        assert models[:2] == [app_settings.lemonade.default_model] * 2
-        assert models[2] == app_settings.lemonade.default_model
+        assert models[:2] == [app_settings.ollama.chat_model] * 2
+        assert models[2] == app_settings.ollama.chat_model
 
     @pytest.mark.asyncio
     async def test_stream_summarize_long_input_uses_chunk_pipeline_without_stream(
@@ -326,7 +326,7 @@ class TestProcessMessage:
         semantic_cache.get.assert_not_awaited()
         semantic_cache.put.assert_not_awaited()
         call_args = mock_ollama.chat.call_args
-        assert call_args.kwargs.get("model") == app_settings.lemonade.default_model
+        assert call_args.kwargs.get("model") == app_settings.ollama.chat_model
 
     @pytest.mark.asyncio
     async def test_metadata_can_bypass_semantic_cache(
@@ -422,7 +422,7 @@ class TestProcessMessage:
         await engine.process_message(111, "내 문서에서 검색해줘")
 
         chat_kwargs = mock_ollama.chat.await_args.kwargs
-        assert chat_kwargs.get("model") == app_settings.lemonade.default_model
+        assert chat_kwargs.get("model") == app_settings.ollama.chat_model
 
     @pytest.mark.asyncio
     async def test_process_message_uses_response_planner_for_complex_query(
@@ -1495,10 +1495,10 @@ class TestProcessPrompt:
         )
 
         call_kwargs = mock_ollama.chat.call_args.kwargs
-        assert call_kwargs["model"] == app_settings.lemonade.default_model
+        assert call_kwargs["model"] == app_settings.ollama.chat_model
         mock_ollama.prepare_model.assert_awaited_once()
         assert mock_ollama.prepare_model.await_args.kwargs["model"] == (
-            app_settings.lemonade.default_model
+            app_settings.ollama.chat_model
         )
         assert mock_ollama.prepare_model.await_args.kwargs["role"] == "default"
 
@@ -1520,7 +1520,6 @@ class TestPlanInterfaces:
     async def test_route_request_default_shape(self, engine: Engine) -> None:
         decision = await engine.route_request("안녕하세요")
         assert decision["selected_model"] == "test-model"
-        assert decision["selected_role"] == "default"
         assert decision["trigger"] == "single_model"
 
     @pytest.mark.asyncio

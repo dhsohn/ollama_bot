@@ -45,7 +45,7 @@ def _make_engine(**overrides):
     engine._semantic_cache = None
     engine._config = MagicMock()
     engine._config.bot.response_timeout = 60
-    engine._config.lemonade.default_model = "test-model"
+    engine._config.ollama.chat_model = "test-model"
     engine._system_prompt = "sys"
     engine._inject_language_policy = MagicMock(side_effect=lambda x: x)
     engine._resolve_inference_timeout = MagicMock(return_value=60)

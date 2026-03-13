@@ -19,8 +19,8 @@ from core.automation_callables import (
 from core.config import (
     AppSettings,
     BotConfig,
-    LemonadeConfig,
     MemoryConfig,
+    RetrievalProviderConfig,
     SecurityConfig,
     TelegramConfig,
 )
@@ -33,7 +33,7 @@ def app_settings(tmp_path: Path) -> AppSettings:
     return AppSettings(
         data_dir=str(tmp_path),
         bot=BotConfig(),
-        lemonade=LemonadeConfig(),
+        ollama=RetrievalProviderConfig(chat_model="test-model"),
         security=SecurityConfig(allowed_users=[111]),
         memory=MemoryConfig(),
         telegram=TelegramConfig(bot_token="test_token"),
@@ -1167,7 +1167,7 @@ class TestMemoryHygieneCallable:
         settings = AppSettings(
             data_dir=str(tmp_path),
             bot=BotConfig(),
-            lemonade=LemonadeConfig(),
+            ollama=RetrievalProviderConfig(chat_model="test-model"),
             security=SecurityConfig(allowed_users=[111, 222]),
             memory=MemoryConfig(),
             telegram=TelegramConfig(bot_token="test_token"),
@@ -1243,5 +1243,3 @@ class TestMemoryHygieneCallable:
         assert result == ""
         prefs = await memory_manager.recall_memory(111)
         assert len(prefs) == 1
-
-

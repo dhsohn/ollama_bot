@@ -23,7 +23,7 @@ from core import (
     engine_management,
     engine_rag,
 )
-from core.config import AppSettings
+from core.config import AppSettings, get_system_prompt
 from core.engine_types import (
     ContextProvider,
     _FullScanSegment,
@@ -172,13 +172,8 @@ class Engine:
 
     @staticmethod
     def _resolve_system_prompt(config: AppSettings) -> str:
-        """Return the system prompt from the active provider config."""
-        provider = config.bot.llm_provider
-        if provider == "ollama":
-            return config.ollama.chat_system_prompt
-        if provider == "openai":
-            return config.openai.system_prompt
-        return config.lemonade.system_prompt
+        """Return the configured Ollama system prompt."""
+        return get_system_prompt(config)
 
     @staticmethod
     def _finalize_stream_response(full_response: str) -> str:

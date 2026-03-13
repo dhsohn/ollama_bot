@@ -16,19 +16,8 @@ from pydantic import BaseModel, Field, field_validator
 class BotConfig(BaseModel):
     name: str = "ollama_bot"
     language: str = "ko"
-    llm_provider: str = "lemonade"  # "lemonade" | "openai" | "ollama"
     max_conversation_length: int = 50
     response_timeout: int = 60
-
-    @field_validator("llm_provider")
-    @classmethod
-    def validate_llm_provider(cls, value: str) -> str:
-        normalized = value.strip().lower()
-        if normalized not in {"lemonade", "openai", "ollama"}:
-            raise ValueError(
-                f"llm_provider must be one of: lemonade, openai, ollama (got '{value}')"
-            )
-        return normalized
 
 
 class OllamaConfig(BaseModel):
@@ -42,56 +31,6 @@ class OllamaConfig(BaseModel):
         "당신은 유용한 AI 어시스턴트입니다.\n"
         "한국어로 답변하며, 간결하고 정확한 정보를 제공합니다.\n"
     )
-
-
-class LemonadeConfig(BaseModel):
-    host: str = "http://localhost:8000"
-    api_key: str = ""
-    default_model: str = "gpt-oss-20b-NPU"
-    base_path: str = "/api/v1"
-    temperature: float = 0.7
-    max_tokens: int = 4096
-    context_window: int = 0
-    min_output_tokens: int = 128
-    prompt_version: str = "v1"
-    system_prompt: str = (
-        "당신은 유용한 AI 어시스턴트입니다.\n"
-        "한국어로 답변하며, 간결하고 정확한 정보를 제공합니다.\n"
-    )
-    timeout_seconds: int = 60
-    model_load_timeout_seconds: int = 120
-    heavy_model_load_timeout_seconds: int = 420
-    reconnect_cooldown_seconds: float = 15.0
-
-    @field_validator(
-        "timeout_seconds",
-        "model_load_timeout_seconds",
-        "heavy_model_load_timeout_seconds",
-    )
-    @classmethod
-    def validate_timeout_positive(cls, value: int) -> int:
-        if value < 1:
-            raise ValueError("lemonade timeout settings must be >= 1")
-        return value
-
-
-class OpenAIConfig(BaseModel):
-    """OpenAI-compatible API provider settings."""
-
-    host: str = "https://api.openai.com"
-    api_key: str = ""
-    default_model: str = "gpt-4o-mini"
-    base_path: str = "/v1"
-    temperature: float = 0.7
-    max_tokens: int = 4096
-    system_prompt: str = (
-        "You are a helpful AI assistant.\n"
-        "Provide concise and accurate information.\n"
-    )
-    timeout_seconds: int = 120
-    model_load_timeout_seconds: int = 120
-    heavy_model_load_timeout_seconds: int = 420
-    reconnect_cooldown_seconds: float = 15.0
 
 
 class TelegramConfig(BaseModel):
@@ -292,19 +231,16 @@ class ResponseReviewerConfig(BaseModel):
 
 
 class RetrievalProviderConfig(BaseModel):
-    """Ollama 기반 retrieval(임베딩/리랭킹) 전용 프로바이더 설정.
-
-    When ``bot.llm_provider`` is ``"ollama"``, the ``chat_model`` field
-    is also used for chat completions via OllamaClient.
-    """
+    """Ollama 기반 chat + retrieval 설정."""
 
     host: str = "http://localhost:11434"
     embedding_model: str = "Qwen3-Embedding-0.6B-GGUF"
     reranker_model: str = "bge-reranker-v2-m3-GGUF"
-    chat_model: str = ""
+    chat_model: str = "gpt-oss:20b"
     chat_temperature: float = 0.7
     chat_max_tokens: int = 4096
     chat_num_ctx: int = 8192
+    prompt_version: str = "v1"
     chat_system_prompt: str = (
         "You are a helpful AI assistant.\n"
         "Provide concise and accurate information.\n"
@@ -314,7 +250,7 @@ class RetrievalProviderConfig(BaseModel):
 class ModelRegistryConfig(BaseModel):
     """모델 레지스트리 설정 (단일 기본 모델 + retrieval 모델)."""
 
-    default_model: str = "gpt-oss-20b-NPU"
+    default_model: str = "gpt-oss:20b"
     embedding_model: str = "Qwen3-Embedding-0.6B-GGUF"
     reranker_model: str = "bge-reranker-v2-m3-GGUF"
 
@@ -369,8 +305,6 @@ class AppSettings(BaseModel):
     data_dir: str = "data"
 
     bot: BotConfig = Field(default_factory=BotConfig)
-    lemonade: LemonadeConfig = Field(default_factory=LemonadeConfig)
-    openai: OpenAIConfig = Field(default_factory=OpenAIConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
     security: SecurityConfig = Field(default_factory=SecurityConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
@@ -387,6 +321,21 @@ class AppSettings(BaseModel):
     rag: RAGConfig = Field(default_factory=RAGConfig)
 
 
+def get_default_chat_model(settings: AppSettings) -> str:
+    """Return the Ollama chat model used for completions."""
+    return settings.ollama.chat_model or settings.ollama.embedding_model
+
+
+def get_system_prompt(settings: AppSettings) -> str:
+    """Return the Ollama chat system prompt."""
+    return settings.ollama.chat_system_prompt
+
+
+def get_prompt_version(settings: AppSettings) -> str:
+    """Return the prompt-version marker used for cache invalidation."""
+    return settings.ollama.prompt_version
+
+
 def load_config(
     config_path: str = "config/config.yaml",
 ) -> AppSettings:
@@ -399,6 +348,7 @@ def load_config(
 
     if not isinstance(yaml_data, dict):
         raise ValueError("config.yaml 최상위 구조는 mapping(dict)이어야 합니다.")
+
     settings = AppSettings.model_validate(yaml_data)
 
     # telegram.allowed_users CSV → security.allowed_users 리스트

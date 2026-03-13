@@ -16,8 +16,8 @@ import core.semantic_cache as semantic_cache_module
 from core.config import (
     AppSettings,
     BotConfig,
-    LemonadeConfig,
     MemoryConfig,
+    RetrievalProviderConfig,
     SecurityConfig,
     TelegramConfig,
 )
@@ -107,7 +107,10 @@ async def integration_runtime(tmp_path: Path, monkeypatch):
     config = AppSettings(
         data_dir=str(tmp_path),
         bot=BotConfig(max_conversation_length=10, response_timeout=60),
-        lemonade=LemonadeConfig(default_model="test-model", system_prompt="integration prompt"),
+        ollama=RetrievalProviderConfig(
+            chat_model="test-model",
+            chat_system_prompt="integration prompt",
+        ),
         security=SecurityConfig(allowed_users=[111]),
         memory=MemoryConfig(),
         telegram=TelegramConfig(bot_token="test-token"),
@@ -158,7 +161,7 @@ async def integration_runtime(tmp_path: Path, monkeypatch):
     runtime = SimpleNamespace(
         engine=engine,
         memory=memory,
-        lemonade=ollama,
+        llm=ollama,
         semantic_cache=semantic_cache,
         cache_db=cache_db,
     )
@@ -174,7 +177,7 @@ class TestRoutingIntegration:
     @pytest.mark.asyncio
     async def test_full_then_cache_then_instant(self, integration_runtime) -> None:
         engine = integration_runtime.engine
-        llm = integration_runtime.lemonade
+        llm = integration_runtime.llm
         memory = integration_runtime.memory
 
         first = await engine.process_message(111, "간단 질문")
@@ -195,7 +198,7 @@ class TestRoutingIntegration:
     @pytest.mark.asyncio
     async def test_intent_strategy_max_tokens_applied(self, integration_runtime) -> None:
         engine = integration_runtime.engine
-        llm = integration_runtime.lemonade
+        llm = integration_runtime.llm
 
         await engine.process_message(111, "간단 토큰 테스트")
 

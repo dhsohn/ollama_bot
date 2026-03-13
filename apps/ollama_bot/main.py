@@ -6,7 +6,7 @@ from core.app_runtime import run_app
 
 
 def main() -> None:
-    """Dual-Provider 고정 구성(lemonade chat + ollama retrieval)으로 봇을 실행한다."""
+    """Ollama 단일 스택으로 봇을 실행한다."""
     run_app(app_name="ollama_bot")
 
 

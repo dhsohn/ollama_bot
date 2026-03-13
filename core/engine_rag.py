@@ -7,6 +7,7 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 from core import engine_planner, engine_reviewer
+from core.config import get_default_chat_model
 from core.constants import (
     FULL_SCAN_FINAL_MAX_TOKENS,
     FULL_SCAN_MAP_MAX_TOKENS,
@@ -180,7 +181,11 @@ async def prepare_full_request(
     컨텍스트 빌드, RAG 실행, ContextProvider 주입, 모델 선택, 타임아웃 계산을
     통합 처리하여 LLM 호출에 필요한 messages/timeout/max_tokens/target_model을 반환한다.
     """
-    target_model = model_override or engine._resolve_model_for_role("default") or engine._config.lemonade.default_model
+    target_model = (
+        model_override
+        or engine._resolve_model_for_role("default")
+        or get_default_chat_model(engine._config)
+    )
     rag_result = None
 
     if engine._rag_pipeline and engine._rag_pipeline.should_trigger_rag(text, metadata):

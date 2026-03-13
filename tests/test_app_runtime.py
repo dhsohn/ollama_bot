@@ -90,7 +90,7 @@ def test_resolve_wsl_loopback_host_keeps_localhost_when_reachable(
 
     resolved = _resolve_wsl_loopback_host(
         url="http://localhost:8020",
-        service_name="lemonade",
+        service_name="ollama",
         logger=logger,
     )
 

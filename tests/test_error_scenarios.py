@@ -12,8 +12,8 @@ import pytest_asyncio
 from core.config import (
     AppSettings,
     BotConfig,
-    LemonadeConfig,
     MemoryConfig,
+    RetrievalProviderConfig,
     SecurityConfig,
     TelegramConfig,
 )
@@ -43,9 +43,9 @@ def security_config() -> SecurityConfig:
 def app_settings(security_config: SecurityConfig) -> AppSettings:
     return AppSettings(
         bot=BotConfig(max_conversation_length=10),
-        lemonade=LemonadeConfig(
-            default_model="test-model",
-            system_prompt="You are a test bot.",
+        ollama=RetrievalProviderConfig(
+            chat_model="test-model",
+            chat_system_prompt="You are a test bot.",
         ),
         security=security_config,
         memory=MemoryConfig(),

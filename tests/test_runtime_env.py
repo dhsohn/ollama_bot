@@ -86,7 +86,7 @@ def test_resolve_wsl_loopback_host_returns_original_for_non_loopback() -> None:
     logger = MagicMock()
     result = runtime_env.resolve_wsl_loopback_host(
         url="http://homelab:8020",
-        service_name="lemonade",
+        service_name="ollama",
         logger=logger,
     )
     assert result == "http://homelab:8020"
@@ -97,7 +97,7 @@ def test_resolve_wsl_loopback_host_rewrites_with_credentials_and_ipv6() -> None:
     logger = MagicMock()
     result = runtime_env.resolve_wsl_loopback_host(
         url="http://user:pass@localhost:8000/api",
-        service_name="lemonade",
+        service_name="ollama",
         logger=logger,
         is_wsl_environment_fn=lambda: True,
         iter_wsl_bridge_candidates_fn=lambda: ["fe80::1"],

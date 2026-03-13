@@ -3,6 +3,8 @@ from __future__ import annotations
 import inspect
 from typing import TYPE_CHECKING
 
+from core.config import get_default_chat_model
+
 if TYPE_CHECKING:
     from core.engine import Engine
 
@@ -44,14 +46,9 @@ async def prepare_target_model(
     return target_model, target_role
 
 
-def _default_model_for_provider(engine: Engine) -> str:
-    """Return the default chat model based on the configured provider."""
-    provider = engine._config.bot.llm_provider
-    if provider == "ollama":
-        return engine._config.ollama.chat_model or engine._config.ollama.embedding_model
-    if provider == "openai":
-        return engine._config.openai.default_model
-    return engine._config.lemonade.default_model
+def _default_chat_model(engine: Engine) -> str:
+    """Return the configured Ollama chat model."""
+    return get_default_chat_model(engine._config)
 
 
 def resolve_model_for_role(engine: Engine, role: str | None) -> str | None:
@@ -60,7 +57,7 @@ def resolve_model_for_role(engine: Engine, role: str | None) -> str | None:
     if not role_key:
         return None
     role_model_map = {
-        "default": _default_model_for_provider(engine),
+        "default": _default_chat_model(engine),
         "embedding": engine._config.ollama.embedding_model,
         "reranker": engine._config.ollama.reranker_model,
     }

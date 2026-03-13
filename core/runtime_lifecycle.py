@@ -6,7 +6,7 @@ import asyncio
 import signal
 from contextlib import suppress
 
-from core.runtime_factory import RuntimeState, model_for_provider
+from core.runtime_factory import RuntimeState
 from core.runtime_tasks import llm_recovery_loop, memory_maintenance_loop
 
 
@@ -113,8 +113,7 @@ async def run_runtime(runtime: RuntimeState) -> None:
 
             logger.info(
                 "bot_running",
-                provider=runtime.llm_provider,
-                model=model_for_provider(runtime.config),
+                model=runtime.llm.default_model,
                 skills=runtime.skill_count,
                 automations=runtime.auto_count,
                 degraded_count=len(runtime.degraded_components),

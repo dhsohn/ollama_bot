@@ -10,9 +10,10 @@ from typing import Any, TextIO
 
 import aiosqlite
 
-from core.config import AppSettings, LemonadeConfig, OllamaConfig
-from core.lemonade_client import LemonadeClient
-from core.llm_protocol import LLMClientProtocol
+from core.config import (
+    AppSettings,
+    OllamaConfig,
+)
 from core.ollama_client import OllamaClient
 
 
@@ -22,52 +23,6 @@ class StartupError(RuntimeError):
     def __init__(self, message: str) -> None:
         super().__init__(message)
         self.message = message
-
-
-def model_for_provider(config: AppSettings) -> str:
-    """Return the default chat model name for the configured provider."""
-    provider = config.bot.llm_provider
-    if provider == "ollama":
-        return config.ollama.chat_model or config.ollama.embedding_model
-    if provider == "openai":
-        return config.openai.default_model
-    return config.lemonade.default_model
-
-
-def _create_llm_client(config: AppSettings) -> LLMClientProtocol:
-    """Create the chat LLM client based on ``bot.llm_provider``."""
-    provider = config.bot.llm_provider
-
-    if provider == "ollama":
-        chat_model = config.ollama.chat_model or config.ollama.embedding_model
-        ollama_cfg = OllamaConfig(
-            host=config.ollama.host,
-            model=chat_model,
-            temperature=config.ollama.chat_temperature,
-            max_tokens=config.ollama.chat_max_tokens,
-            num_ctx=config.ollama.chat_num_ctx,
-            system_prompt=config.ollama.chat_system_prompt,
-        )
-        return OllamaClient(ollama_cfg)
-
-    if provider == "openai":
-        openai_cfg = config.openai
-        lemonade_cfg = LemonadeConfig(
-            host=openai_cfg.host,
-            api_key=openai_cfg.api_key,
-            default_model=openai_cfg.default_model,
-            base_path=openai_cfg.base_path,
-            temperature=openai_cfg.temperature,
-            max_tokens=openai_cfg.max_tokens,
-            system_prompt=openai_cfg.system_prompt,
-            timeout_seconds=openai_cfg.timeout_seconds,
-            model_load_timeout_seconds=openai_cfg.model_load_timeout_seconds,
-            heavy_model_load_timeout_seconds=openai_cfg.heavy_model_load_timeout_seconds,
-            reconnect_cooldown_seconds=openai_cfg.reconnect_cooldown_seconds,
-        )
-        return LemonadeClient(lemonade_cfg)
-
-    return LemonadeClient(config.lemonade)
 
 
 def _create_retrieval_client(config: AppSettings) -> OllamaClient:
@@ -91,6 +46,13 @@ async def _open_sqlite_db(path: Path) -> aiosqlite.Connection:
 
 def validate_required_settings(config: AppSettings, logger: Any) -> None:
     """필수 런타임 설정을 검사한다."""
+    if not config.ollama.chat_model.strip():
+        logger.error("ollama_chat_model_not_set")
+        raise StartupError(
+            "오류: ollama.chat_model이 비어 있습니다.\n"
+            "config/config.yaml의 ollama.chat_model에 채팅 모델을 설정하세요."
+        )
+
     if (
         not config.telegram.bot_token
         or config.telegram.bot_token == "your_telegram_bot_token_here"

@@ -199,7 +199,7 @@ class TestRunChunkedSummaryPipeline:
         engine = MagicMock()
         engine._extract_skill_user_input = MagicMock(return_value="long text")
         engine._split_text_for_summary = MagicMock(return_value=["chunk1", "chunk2"])
-        engine._config.lemonade.default_model = "default-model"
+        engine._config.ollama.chat_model = "default-model"
         engine._prepare_target_model = AsyncMock(return_value=("model-x", None))
         engine._inject_language_policy = MagicMock(side_effect=lambda x: x)
         engine._logger = MagicMock()
@@ -227,7 +227,7 @@ class TestRunChunkedSummaryPipeline:
         engine = MagicMock()
         engine._extract_skill_user_input = MagicMock(return_value="long text")
         engine._split_text_for_summary = MagicMock(return_value=["chunk1", "chunk2"])
-        engine._config.lemonade.default_model = "default-model"
+        engine._config.ollama.chat_model = "default-model"
         engine._prepare_target_model = AsyncMock(return_value=("model-x", None))
         engine._inject_language_policy = MagicMock(side_effect=lambda x: x)
         engine._logger = MagicMock()
@@ -252,7 +252,7 @@ class TestRunChunkedSummaryPipeline:
         engine = MagicMock()
         engine._extract_skill_user_input = MagicMock(return_value="long text")
         engine._split_text_for_summary = MagicMock(return_value=["chunk1", "chunk2"])
-        engine._config.lemonade.default_model = "default-model"
+        engine._config.ollama.chat_model = "default-model"
         engine._prepare_target_model = AsyncMock(return_value=("model-x", None))
         engine._inject_language_policy = MagicMock(side_effect=lambda x: x)
         engine._logger = MagicMock()
@@ -299,7 +299,7 @@ class TestRunChunkedSummaryPipeline:
         engine = MagicMock()
         engine._extract_skill_user_input = MagicMock(return_value="long text")
         engine._split_text_for_summary = MagicMock(return_value=["chunk1", "chunk2"])
-        engine._config.lemonade.default_model = "model"
+        engine._config.ollama.chat_model = "model"
         engine._prepare_target_model = AsyncMock(return_value=("model", None))
         engine._inject_language_policy = MagicMock(side_effect=lambda x: x)
         engine._logger = MagicMock()
