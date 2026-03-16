@@ -1,4 +1,4 @@
-"""텔레그램 메시지 렌더링 유틸리티."""
+"""Utilities for rendering Telegram messages."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from html import escape
 from typing import Any
 
+from core.i18n import t
 from core.logging_setup import get_logger
 from core.text_utils import sanitize_model_output, should_defer_stream_display
 
@@ -19,7 +20,7 @@ _MAX_RENDERED_DUPLICATE_CHUNKS = 0
 
 @dataclass
 class StreamResult:
-    """stream_and_render의 반환 결과."""
+    """Return payload from ``stream_and_render``."""
 
     full_response: str
     last_message: Any  # telegram.Message
@@ -31,12 +32,12 @@ class StreamResult:
 
 
 def escape_html(value: object) -> str:
-    """HTML parse mode용 최소 이스케이프."""
+    """Escape a value for Telegram HTML parse mode."""
     return escape(str(value), quote=False)
 
 
 def split_message(text: str, max_length: int = 4096) -> list[str]:
-    """긴 메시지를 단락 기준으로 분할한다."""
+    """Split a long message near paragraph boundaries."""
     if len(text) <= max_length:
         return [text]
 
@@ -61,11 +62,7 @@ def split_message(text: str, max_length: int = 4096) -> list[str]:
 
 
 def _calc_edit_interval(elapsed: float) -> float:
-    """경과 시간에 따라 동적 편집 간격을 계산한다.
-
-    초반엔 빠르게 편집하여 응답이 오는 느낌을 주고,
-    시간이 길어지면 간격을 넓혀 API 호출을 줄인다.
-    """
+    """Adjust edit cadence over time to balance responsiveness and API churn."""
     if elapsed < 3.0:
         return 0.5
     if elapsed < 10.0:
@@ -87,8 +84,9 @@ async def stream_and_render(
     max_stream_seconds: float = 180.0,
     max_total_chars: int = 262_144,
     max_repeated_chunks: int = 200,
+    lang: str = "ko",
 ) -> StreamResult:
-    """스트리밍 청크를 텔레그램 메시지 편집/분할 전송으로 렌더링한다."""
+    """Render streaming chunks via Telegram edits and follow-up messages."""
     full_response = ""
     stream_start = time.monotonic()
     last_edit_time = stream_start
@@ -140,7 +138,7 @@ async def stream_and_render(
             if max_repeated_chunks > 0 and repeated_chunk_count >= max_repeated_chunks:
                 stop_reason = "repeated_chunks"
                 break
-            # 동일 청크 반복은 일부만 누적해 과도한 반복 출력을 완화한다.
+            # Suppress duplicated chunks so repetition does not flood the chat.
             if repeated_chunk_count > _MAX_RENDERED_DUPLICATE_CHUNKS:
                 continue
         else:
@@ -171,7 +169,7 @@ async def stream_and_render(
                 continue
             display_text = display_source + " ▌"
             if len(display_text) > max_edit_length:
-                # 길이 초과 시 중간 편집은 건너뛰고 최종 분할 전송으로 마무리한다.
+                # Skip oversized mid-stream edits and finish with split final messages.
                 last_edit_time = now
                 last_edit_len = len(full_response)
                 continue
@@ -193,16 +191,13 @@ async def stream_and_render(
 
     notice = ""
     if stop_reason == "chunk_timeout":
-        notice = "⚠️ 응답 스트림 지연으로 중단되었습니다. 다시 시도해주세요."
+        notice = t("stream_notice_chunk_timeout", lang)
     elif stop_reason == "stream_timeout":
-        notice = "⚠️ 응답 생성 시간이 초과되어 중단되었습니다. 질문 범위를 줄여 다시 시도해주세요."
+        notice = t("stream_notice_stream_timeout", lang)
     elif stop_reason == "max_total_chars":
-        notice = (
-            "⚠️ 응답이 길어서 여기서 끊었습니다. "
-            "`/continue` 또는 `계속`이라고 입력하면 이어서 보여드릴게요."
-        )
+        notice = t("stream_notice_max_total_chars", lang)
     elif stop_reason == "repeated_chunks":
-        notice = "⚠️ 반복 출력이 감지되어 스트리밍을 중단했습니다. 다시 시도해주세요."
+        notice = t("stream_notice_repeated_chunks", lang)
     if stop_reason is not None:
         _logger.warning(
             "stream_render_stopped",
@@ -227,7 +222,7 @@ async def stream_and_render(
             else:
                 last_msg = await reply_text(part)
     else:
-        await sent_message.edit_text(notice or "응답을 생성하지 못했습니다.")
+        await sent_message.edit_text(notice or t("stream_no_response", lang))
 
     final_response = sanitize_model_output(full_response)
     if notice:

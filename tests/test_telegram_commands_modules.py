@@ -60,6 +60,7 @@ async def test_cmd_help_includes_feedback_when_enabled(monkeypatch: pytest.Monke
     update.effective_message.reply_text.assert_awaited_once()
     text = update.effective_message.reply_text.await_args.args[0]
     assert "/feedback" in text
+    assert "/continue" not in text
     assert update.effective_message.reply_text.await_args.kwargs["parse_mode"] == ParseMode.HTML
 
 

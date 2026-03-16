@@ -179,6 +179,8 @@ class TestCommandRegistration:
 
         assert "analyze_all" not in handler_names
         assert "analyze_all" not in bot_command_names
+        assert "continue" not in handler_names
+        assert "continue" not in bot_command_names
 
 
 class TestReloadCommands:
@@ -342,6 +344,100 @@ class TestHandleMessage:
         assert any("자동 전환" in text for text in edited_texts)
 
     @pytest.mark.asyncio
+    async def test_handle_message_auto_routes_to_analyze_all_when_english_analysis_keyword_exists(
+        self,
+        app_config: AppSettings,
+        mock_engine: AsyncMock,
+        security: SecurityManager,
+    ) -> None:
+        app_config.bot.language = "en"
+        handler = TelegramHandler(config=app_config, engine=mock_engine, security=security)
+        handler._engine.analyze_all_corpus = AsyncMock(return_value={
+            "answer": "Analysis result",
+            "stats": {
+                "total_chunks": 10,
+                "total_segments": 3,
+                "mapped_segments": 2,
+                "evidence_lines": 4,
+                "duration_ms": 100.0,
+            },
+        })
+        handler._engine.process_message_stream = MagicMock()
+
+        chat = MagicMock()
+        chat.id = 111
+        chat.type = "private"
+        chat.send_action = AsyncMock()
+
+        sent_message = MagicMock()
+        sent_message.edit_text = AsyncMock()
+        sent_message.message_id = 42
+        sent_message.edit_reply_markup = AsyncMock()
+
+        message = MagicMock()
+        message.text = "Please analyze this request"
+        message.reply_text = AsyncMock(return_value=sent_message)
+
+        update = MagicMock()
+        update.effective_chat = chat
+        update.effective_message = message
+
+        await handler._handle_message(update, MagicMock())
+
+        handler._engine.analyze_all_corpus.assert_awaited_once()
+        handler._engine.process_message_stream.assert_not_called()
+        edited_texts = [call.args[0] for call in sent_message.edit_text.await_args_list]
+        assert any("Full-document analysis result" in text for text in edited_texts)
+
+    @pytest.mark.asyncio
+    async def test_handle_message_auto_routes_to_analyze_all_uses_english_ui_strings(
+        self,
+        app_config: AppSettings,
+        mock_engine: AsyncMock,
+        security: SecurityManager,
+    ) -> None:
+        app_config.bot.language = "en"
+        handler = TelegramHandler(config=app_config, engine=mock_engine, security=security)
+        handler._engine.analyze_all_corpus = AsyncMock(return_value={
+            "answer": "Auto-routed result",
+            "stats": {
+                "total_chunks": 10,
+                "total_segments": 3,
+                "mapped_segments": 2,
+                "evidence_lines": 4,
+                "duration_ms": 100.0,
+            },
+        })
+        handler._engine.process_message_stream = MagicMock()
+
+        chat = MagicMock()
+        chat.id = 111
+        chat.type = "private"
+        chat.send_action = AsyncMock()
+
+        sent_message = MagicMock()
+        sent_message.edit_text = AsyncMock()
+        sent_message.message_id = 42
+        sent_message.edit_reply_markup = AsyncMock()
+
+        message = MagicMock()
+        message.text = "이 요청 좀 분석해줘"
+        message.reply_text = AsyncMock(return_value=sent_message)
+
+        update = MagicMock()
+        update.effective_chat = chat
+        update.effective_message = message
+
+        await handler._handle_message(update, MagicMock())
+
+        first_reply = message.reply_text.await_args_list[0].args[0]
+        assert "Starting full-document analysis." in first_reply
+        edited_texts = [call.args[0] for call in sent_message.edit_text.await_args_list]
+        assert any("Full-document analysis result" in text for text in edited_texts)
+        assert any("(auto-routed)" in text for text in edited_texts)
+        assert any("[Analysis stats]" in text for text in edited_texts)
+
+    @pytest.mark.asyncio
     async def test_handle_message_uses_index_for_split_parts(self, telegram_handler: TelegramHandler) -> None:
         async def _stream():
             yield "result"
@@ -406,6 +502,36 @@ class TestHandleMessage:
         telegram_handler._engine.process_message_stream.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_handle_message_continue_without_pending_uses_english_notice(
+        self,
+        app_config: AppSettings,
+        mock_engine: AsyncMock,
+        security: SecurityManager,
+    ) -> None:
+        app_config.bot.language = "en"
+        handler = TelegramHandler(config=app_config, engine=mock_engine, security=security)
+
+        chat = MagicMock()
+        chat.id = 111
+        chat.type = "private"
+        chat.send_action = AsyncMock()
+
+        message = MagicMock()
+        message.text = "continue"
+        message.reply_text = AsyncMock()
+
+        update = MagicMock()
+        update.effective_chat = chat
+        update.effective_message = message
+
+        await handler._handle_message(update, MagicMock())
+
+        message.reply_text.assert_awaited_once_with(
+            "There is no response to continue yet. Please ask a question first."
+        )
+        handler._engine.process_message_stream.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_handle_message_auto_continues_then_fallback_when_still_truncated(
         self,
         app_config: AppSettings,
@@ -455,14 +581,83 @@ class TestHandleMessage:
         with patch("core.telegram_handler.stream_and_render", new=fake_stream_and_render):
             await handler._handle_message(update, MagicMock())
 
-        assert calls == 4
+        assert calls == 9
         assert 111 in handler._pending_continuation
         assert handler._pending_continuation[111]["root_query"] == "매우 긴 설명 부탁해"
         reply_texts = [item.args[0] for item in message.reply_text.await_args_list if item.args]
         assert any("자동으로 이어서" in text for text in reply_texts)
         followup_text = reply_texts[-1]
         assert "지금까지 요약" in followup_text
-        assert "/continue" in followup_text
+        assert "자동 이어쓰기" in followup_text
+        assert "/continue" not in followup_text
+
+    @pytest.mark.asyncio
+    async def test_handle_message_auto_continuation_uses_english_ui_strings(
+        self,
+        app_config: AppSettings,
+        mock_engine: AsyncMock,
+        security: SecurityManager,
+    ) -> None:
+        app_config.bot.language = "en"
+        handler = TelegramHandler(config=app_config, engine=mock_engine, security=security)
+
+        async def _stream():
+            yield "long"
+
+        handler._engine.process_message_stream = MagicMock(return_value=_stream())
+
+        chat = MagicMock()
+        chat.id = 111
+        chat.type = "private"
+        chat.send_action = AsyncMock()
+
+        sent_message = MagicMock()
+        sent_message.edit_text = AsyncMock()
+        sent_message.message_id = 42
+        sent_message.edit_reply_markup = AsyncMock()
+
+        message = MagicMock()
+        message.text = "Please explain this in detail"
+        message.reply_text = AsyncMock(return_value=sent_message)
+
+        update = MagicMock()
+        update.effective_chat = chat
+        update.effective_message = message
+
+        calls = 0
+
+        async def fake_stream_and_render(**kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return SimpleNamespace(
+                    full_response="First part",
+                    last_message=sent_message,
+                    stop_reason="max_total_chars",
+                    tier="full",
+                    intent=None,
+                    cache_id=None,
+                    usage=None,
+                )
+            return SimpleNamespace(
+                full_response="Second part",
+                last_message=sent_message,
+                stop_reason=None,
+                tier="full",
+                intent=None,
+                cache_id=None,
+                usage=None,
+            )
+
+        with patch("core.telegram_handler.stream_and_render", new=fake_stream_and_render):
+            await handler._handle_message(update, MagicMock())
+
+        reply_texts = [item.args[0] for item in message.reply_text.await_args_list if item.args]
+        assert reply_texts[0] == f"{handler._config.bot.name} is preparing a response..."
+        assert any(
+            "I'll continue automatically in the next message." in text
+            for text in reply_texts
+        )
 
     @pytest.mark.asyncio
     async def test_handle_message_auto_continues_without_manual_prompt_when_next_turn_finishes(

@@ -113,8 +113,11 @@ def set_pending_continuation(
     )
 
 
-def build_continuation_prompt(pending: dict[str, Any]) -> str:
-    return telegram_continuation.build_continuation_prompt(pending)
+def build_continuation_prompt(pending: dict[str, Any], *, lang: str) -> str:
+    return telegram_continuation.build_continuation_prompt_for_lang(
+        pending,
+        lang=lang,
+    )
 
 
 def truncate_summary_line(text: str, *, max_chars: int) -> str:
@@ -126,19 +129,27 @@ def extract_summary_points(
     text: str,
     *,
     max_points: int = 3,
+    lang: str = "ko",
 ) -> list[str]:
     return telegram_continuation.extract_summary_points(
         cls,
         text,
         max_points=max_points,
+        lang=lang,
     )
 
 
 def build_long_response_followup_message(
     cls: type[TelegramHandler],
     response_text: str,
+    *,
+    lang: str,
 ) -> str:
-    return telegram_continuation.build_long_response_followup_message(cls, response_text)
+    return telegram_continuation.build_long_response_followup_message(
+        cls,
+        response_text,
+        lang=lang,
+    )
 
 
 async def keep_typing(chat: Any, stop_event: asyncio.Event) -> None:

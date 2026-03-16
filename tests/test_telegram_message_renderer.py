@@ -216,3 +216,47 @@ class TestStreamAndRender:
         assert result.full_response.split("\n\n")[0] == "가"
         sent_message.edit_text.assert_awaited_once()
         assert "반복 출력이 감지" in sent_message.edit_text.await_args.args[0]
+
+    @pytest.mark.asyncio
+    async def test_max_total_chars_notice_uses_auto_continuation_language(self) -> None:
+        async def _stream():
+            yield "A" * 20
+
+        sent_message = AsyncMock()
+        sent_message.edit_text = AsyncMock()
+        reply_text = AsyncMock()
+
+        result = await stream_and_render(
+            stream=_stream(),
+            sent_message=sent_message,
+            reply_text=reply_text,
+            split_message_fn=lambda text: [text],
+            max_total_chars=10,
+            edit_char_threshold=10_000,
+            lang="en",
+        )
+
+        assert result.stop_reason == "max_total_chars"
+        assert "continue automatically in the next message" in result.full_response
+        assert "/continue" not in result.full_response
+
+    @pytest.mark.asyncio
+    async def test_empty_stream_uses_translated_no_response_fallback(self) -> None:
+        async def _stream():
+            if False:
+                yield ""
+
+        sent_message = AsyncMock()
+        sent_message.edit_text = AsyncMock()
+        reply_text = AsyncMock()
+
+        result = await stream_and_render(
+            stream=_stream(),
+            sent_message=sent_message,
+            reply_text=reply_text,
+            split_message_fn=lambda text: [text],
+            lang="en",
+        )
+
+        assert result.full_response == ""
+        sent_message.edit_text.assert_awaited_once_with("Could not generate a response.")

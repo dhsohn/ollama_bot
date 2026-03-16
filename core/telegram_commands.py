@@ -45,10 +45,9 @@ async def cmd_help(
         ("/auto", t("cmd_auto", lang)),
         ("/memory", t("cmd_memory", lang)),
         ("/status", t("cmd_status", lang)),
-        ("/continue", t("cmd_continue", lang)),
     ]
     if self._feedback_enabled:
-        commands.insert(6, ("/feedback", t("cmd_feedback", lang)))
+        commands.append(("/feedback", t("cmd_feedback", lang)))
 
     header_cmd = t("help_header_cmd", lang)
     header_desc = t("help_header_desc", lang)
@@ -125,20 +124,6 @@ async def cmd_skills(
         text,
         parse_mode=ParseMode.HTML,
     )
-
-
-async def cmd_continue(
-    self: TelegramHandler,
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> None:
-    await self._handle_message_impl(
-        update,
-        context,
-        text_override="",
-        force_continuation=True,
-    )
-
 
 async def cmd_auto(
     self: TelegramHandler,

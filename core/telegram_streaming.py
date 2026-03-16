@@ -11,6 +11,9 @@ from typing import TYPE_CHECKING, Any
 from telegram.constants import ChatAction
 from telegram.ext import ContextTypes
 
+from core.i18n import t
+from core.telegram_menus import get_user_language
+
 if TYPE_CHECKING:
     from telegram import Update
 
@@ -30,9 +33,11 @@ _STREAM_MAX_TOTAL_CHARS = 8_192
 _STREAM_MAX_REPEATED_CHUNKS = 30
 _STREAM_RENDER_WAIT_GRACE_SECONDS = 5.0
 _STREAM_RECOVERY_TIMEOUT_SECONDS = 120.0
-_AUTO_CONTINUATION_MAX_TURNS = 3
-_FULL_SCAN_AUTO_TRIGGER_RE = re.compile(r"분석", re.IGNORECASE)
-_THINKING_PLACEHOLDER_TEMPLATE = "{bot_name}이 답변을 생성 중입니다..."
+_AUTO_CONTINUATION_MAX_TURNS = 8
+_FULL_SCAN_AUTO_TRIGGER_RE = re.compile(
+    r"(분석|\banaly[sz](?:e|es|ed|ing)?\b|\banalysis\b)",
+    re.IGNORECASE,
+)
 
 
 async def handle_message(
@@ -40,7 +45,7 @@ async def handle_message(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
-    """자유 텍스트 메시지를 처리한다. 스트리밍 UX를 제공한다."""
+    """Handle a free-form chat message with streaming UX."""
     await self._handle_message_impl(update, context)
 
 
@@ -60,6 +65,7 @@ async def handle_message_impl(
     if chat is None or message is None:
         return
     chat_id = chat.id
+    lang = await get_user_language(self, chat_id)
     raw_text = (
         text_override
         if text_override is not None
@@ -84,7 +90,7 @@ async def handle_message_impl(
 
     if not raw_text and not images and not force_continuation:
         if image_download_failed:
-            await message.reply_text("이미지 다운로드에 실패했어요. 잠시 후 다시 시도해주세요.")
+            await message.reply_text(t("stream_image_download_failed", lang))
         return
 
     text = self._security.sanitize_input(raw_text) if raw_text else ""
@@ -94,10 +100,10 @@ async def handle_message_impl(
     if force_continuation or (not images and self._is_continue_request(text)):
         continuation_state = self._take_pending_continuation(chat_id)
         if continuation_state is None:
-            await message.reply_text("이어볼 답변이 없습니다. 먼저 질문을 해주세요.")
+            await message.reply_text(t("continuation_no_pending", lang))
             return
         continuation_root_query = str(continuation_state.get("root_query", "")).strip()
-        text = self._build_continuation_prompt(continuation_state)
+        text = self._build_continuation_prompt(continuation_state, lang=lang)
     else:
         self._pending_continuation.pop(chat_id, None)
 
@@ -125,7 +131,7 @@ async def handle_message_impl(
 
     try:
         sent_message = await message.reply_text(
-            _THINKING_PLACEHOLDER_TEMPLATE.format(bot_name=self._config.bot.name)
+            t("thinking_placeholder", lang, bot_name=self._config.bot.name)
         )
 
         raw_intent = self._engine.classify_intent(text)
@@ -164,6 +170,7 @@ async def handle_message_impl(
                 max_stream_seconds=effective_stream_seconds,
                 max_total_chars=_STREAM_MAX_TOTAL_CHARS,
                 max_repeated_chunks=_STREAM_MAX_REPEATED_CHUNKS,
+                lang=lang,
             ),
             timeout=render_timeout,
         )
@@ -271,7 +278,7 @@ async def handle_message_impl(
                 turn=next_turn,
             )
             if auto_continuation_turn < _AUTO_CONTINUATION_MAX_TURNS:
-                await message.reply_text("↪️ 답변이 길어 자동으로 이어서 보여드릴게요.")
+                await message.reply_text(t("continuation_auto_followup", lang))
                 await self._handle_message_impl(
                     update,
                     context,
@@ -281,7 +288,10 @@ async def handle_message_impl(
                 )
                 return
             await message.reply_text(
-                self._build_long_response_followup_message(result.full_response)
+                self._build_long_response_followup_message(
+                    result.full_response,
+                    lang=lang,
+                )
             )
         else:
             self._pending_continuation.pop(chat_id, None)
@@ -293,7 +303,7 @@ async def handle_message_impl(
             timeout_seconds=render_timeout,
         )
         await message.reply_text(
-            "⚠️ 응답 시간이 길어져 중단했습니다. 질문을 더 짧게 나눠 다시 시도해주세요."
+            t("stream_render_timeout", lang)
         )
     except Exception as exc:
         self._logger.error(
@@ -301,7 +311,7 @@ async def handle_message_impl(
             chat_id=chat_id,
             error=str(exc),
         )
-        await message.reply_text("죄송합니다. 메시지 처리 중 오류가 발생했습니다.")
+        await message.reply_text(t("stream_processing_error", lang))
     finally:
         typing_stop.set()
         typing_task.cancel()
@@ -310,7 +320,7 @@ async def handle_message_impl(
 
 
 def should_auto_trigger_analyze_all(text: str) -> bool:
-    """일반 채팅에서 full-scan 분석으로 우회할 문구인지 검사한다."""
+    """Return whether a message should auto-route to full-document analysis."""
     text_norm = text.strip()
     if not text_norm:
         return False
@@ -327,15 +337,16 @@ async def run_analyze_all_flow(
     query: str,
     auto_triggered: bool,
 ) -> None:
-    """전체 문서 분석 실행 + 진행률 렌더링 공통 처리."""
+    """Run full-document analysis and render shared progress updates."""
+    lang = await get_user_language(self, chat.id)
     query_text = query.strip()
     if not query_text:
-        await message.reply_text("분석할 질문을 입력해주세요.")
+        await message.reply_text(t("analyze_all_empty_query", lang))
         return
 
     await chat.send_action(ChatAction.TYPING)
     progress_message = await message.reply_text(
-        "전체 문서 분석을 시작합니다.\n- 단계: 준비\n- 진행: 0%"
+        t("analyze_all_progress_prepare", lang)
     )
 
     typing_stop = asyncio.Event()
@@ -355,15 +366,15 @@ async def run_analyze_all_flow(
         last_progress_update = now
 
         if phase == "collect":
-            text = "전체 문서 분석을 시작합니다.\n- 단계: 인덱스 수집\n- 진행: 준비 중"
+            text = t("analyze_all_progress_collect", lang)
         elif phase == "map_start":
             total_chunks = int(payload.get("total_chunks", 0))
             total_segments = int(payload.get("total_segments", 0))
-            text = (
-                "전체 문서 분석을 시작합니다.\n"
-                "- 단계: 맵 분석 시작\n"
-                f"- 청크: {total_chunks}개\n"
-                f"- 세그먼트: {total_segments}개"
+            text = t(
+                "analyze_all_progress_map_start",
+                lang,
+                total_chunks=total_chunks,
+                total_segments=total_segments,
             )
         elif phase == "map":
             processed = int(payload.get("processed_segments", 0))
@@ -371,24 +382,26 @@ async def run_analyze_all_flow(
             mapped = int(payload.get("mapped_segments", 0))
             evidence = int(payload.get("evidence_lines", 0))
             percent = int((processed / total) * 100)
-            text = (
-                "전체 문서 분석 진행 중\n"
-                "- 단계: 맵 분석\n"
-                f"- 진행: {processed}/{total} ({percent}%)\n"
-                f"- 근거 세그먼트: {mapped}개\n"
-                f"- 근거 라인: {evidence}개"
+            text = t(
+                "analyze_all_progress_map",
+                lang,
+                processed=processed,
+                total=total,
+                percent=percent,
+                mapped=mapped,
+                evidence=evidence,
             )
         elif phase == "reduce":
             reduce_pass = int(payload.get("reduce_pass", 0))
             groups = int(payload.get("groups", 0))
-            text = (
-                "전체 문서 분석 진행 중\n"
-                "- 단계: 리듀스(통합)\n"
-                f"- 패스: {reduce_pass}\n"
-                f"- 그룹: {groups}개"
+            text = t(
+                "analyze_all_progress_reduce",
+                lang,
+                reduce_pass=reduce_pass,
+                groups=groups,
             )
         elif phase == "final":
-            text = "전체 문서 분석 진행 중\n- 단계: 최종 답변 생성"
+            text = t("analyze_all_progress_final", lang)
         else:
             return
 
@@ -403,7 +416,7 @@ async def run_analyze_all_flow(
         answer = str(result.get("answer", "")).strip()
         stats = result.get("stats", {}) if isinstance(result, dict) else {}
         if not answer:
-            answer = "분석 결과를 생성하지 못했습니다."
+            answer = t("analyze_all_empty_result", lang)
 
         stats_lines = []
         if isinstance(stats, dict):
@@ -413,22 +426,28 @@ async def run_analyze_all_flow(
             evidence_lines = stats.get("evidence_lines")
             duration_ms = stats.get("duration_ms")
             if total_chunks is not None:
-                stats_lines.append(f"- 총 청크: {total_chunks}")
+                stats_lines.append(t("analyze_all_stats_total_chunks", lang, total_chunks=total_chunks))
             if total_segments is not None:
-                stats_lines.append(f"- 총 세그먼트: {total_segments}")
+                stats_lines.append(
+                    t("analyze_all_stats_total_segments", lang, total_segments=total_segments)
+                )
             if mapped_segments is not None:
-                stats_lines.append(f"- 근거 세그먼트: {mapped_segments}")
+                stats_lines.append(
+                    t("analyze_all_stats_mapped_segments", lang, mapped_segments=mapped_segments)
+                )
             if evidence_lines is not None:
-                stats_lines.append(f"- 근거 라인: {evidence_lines}")
+                stats_lines.append(
+                    t("analyze_all_stats_evidence_lines", lang, evidence_lines=evidence_lines)
+                )
             if duration_ms is not None:
-                stats_lines.append(f"- 소요 시간: {duration_ms}ms")
+                stats_lines.append(t("analyze_all_stats_duration_ms", lang, duration_ms=duration_ms))
 
-        header = "📚 전체 문서 분석 결과"
+        header = t("analyze_all_header", lang)
         if auto_triggered:
-            header += " (자동 전환)"
+            header += t("analyze_all_header_auto_suffix", lang)
         final_text = f"{header}\n\n{answer}"
         if stats_lines:
-            final_text += "\n\n[분석 통계]\n" + "\n".join(stats_lines)
+            final_text += f"\n\n{t('analyze_all_stats_header', lang)}\n" + "\n".join(stats_lines)
 
         parts = self._split_message(final_text)
         if parts:
@@ -445,7 +464,7 @@ async def run_analyze_all_flow(
             error=str(exc),
         )
         await message.reply_text(
-            "전체 문서 분석 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요."
+            t("analyze_all_failed", lang)
         )
     finally:
         typing_stop.set()
@@ -455,7 +474,7 @@ async def run_analyze_all_flow(
 
 
 async def keep_typing(chat: Any, stop_event: asyncio.Event) -> None:
-    """typing 인디케이터를 주기적으로 전송한다."""
+    """Send the typing indicator until the stop event is set."""
     while not stop_event.is_set():
         with suppress(Exception):
             await chat.send_action(ChatAction.TYPING)

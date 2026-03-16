@@ -86,9 +86,180 @@ _STRINGS: dict[str, dict[str, str]] = {
     "cmd_auto": {"ko": "자동화 관리", "en": "Automations"},
     "cmd_memory": {"ko": "메모리 관리", "en": "Memory"},
     "cmd_status": {"ko": "시스템 상태", "en": "System status"},
-    "cmd_continue": {"ko": "긴 답변 이어보기", "en": "Continue long response"},
     "cmd_feedback": {"ko": "피드백 통계", "en": "Feedback stats"},
     "cmd_settings": {"ko": "설정", "en": "Settings"},
+    "thinking_placeholder": {
+        "ko": "{bot_name}이 답변을 생성 중입니다...",
+        "en": "{bot_name} is preparing a response...",
+    },
+    "stream_image_download_failed": {
+        "ko": "이미지 다운로드에 실패했어요. 잠시 후 다시 시도해주세요.",
+        "en": "Failed to download the image. Please try again shortly.",
+    },
+    "continuation_no_pending": {
+        "ko": "이어볼 답변이 없습니다. 먼저 질문을 해주세요.",
+        "en": "There is no response to continue yet. Please ask a question first.",
+    },
+    "continuation_auto_followup": {
+        "ko": "↪️ 답변이 길어 자동으로 이어서 보여드릴게요.",
+        "en": "↪️ The reply is long, so I'll continue automatically in the next message.",
+    },
+    "continuation_summary_title": {
+        "ko": "📌 지금까지 요약",
+        "en": "📌 Summary so far",
+    },
+    "continuation_manual_followup": {
+        "ko": "응답이 매우 길어 자동 이어쓰기를 여기서 멈췄습니다. 더 필요하면 '계속'이라고 입력해 주세요.",
+        "en": "The response is very long, so automatic continuation stopped here. If you want more, send 'continue'.",
+    },
+    "continuation_prompt_intro": {
+        "ko": "직전 답변을 이어서 작성해줘.",
+        "en": "Continue the previous answer.",
+    },
+    "continuation_prompt_no_repeat": {
+        "ko": "- 이미 설명한 내용은 반복하지 말고 중단 지점부터 이어서 설명해줘.",
+        "en": "- Do not repeat what was already explained; continue from where it stopped.",
+    },
+    "continuation_prompt_summary_first": {
+        "ko": "- 먼저 3줄 이내로 지금까지 핵심을 요약해줘.",
+        "en": "- First, summarize the key points so far in no more than 3 lines.",
+    },
+    "continuation_prompt_turn": {
+        "ko": "- 이어보기 턴: {turn}",
+        "en": "- Continuation turn: {turn}",
+    },
+    "continuation_prompt_root_query": {
+        "ko": "[원 질문]",
+        "en": "[Original question]",
+    },
+    "stream_notice_chunk_timeout": {
+        "ko": "⚠️ 응답 스트림 지연으로 중단되었습니다. 다시 시도해주세요.",
+        "en": "⚠️ The response stream stalled and was stopped. Please try again.",
+    },
+    "stream_notice_stream_timeout": {
+        "ko": "⚠️ 응답 생성 시간이 초과되어 중단되었습니다. 질문 범위를 줄여 다시 시도해주세요.",
+        "en": "⚠️ Response generation timed out. Please narrow the request and try again.",
+    },
+    "stream_notice_max_total_chars": {
+        "ko": "⚠️ 응답이 길어 여기까지 먼저 보냈습니다. 다음 메시지에서 자동으로 이어갑니다.",
+        "en": "⚠️ The response is long, so I sent this part first. I'll continue automatically in the next message.",
+    },
+    "stream_notice_repeated_chunks": {
+        "ko": "⚠️ 반복 출력이 감지되어 스트리밍을 중단했습니다. 다시 시도해주세요.",
+        "en": "⚠️ Repeated output was detected, so streaming was stopped. Please try again.",
+    },
+    "stream_render_timeout": {
+        "ko": "⚠️ 응답 시간이 길어져 중단했습니다. 질문을 더 짧게 나눠 다시 시도해주세요.",
+        "en": "⚠️ The response took too long, so it was stopped. Please split the request into smaller parts and try again.",
+    },
+    "stream_processing_error": {
+        "ko": "죄송합니다. 메시지 처리 중 오류가 발생했습니다.",
+        "en": "Sorry, an error occurred while processing the message.",
+    },
+    "stream_no_response": {
+        "ko": "응답을 생성하지 못했습니다.",
+        "en": "Could not generate a response.",
+    },
+    "analyze_all_empty_query": {
+        "ko": "분석할 질문을 입력해주세요.",
+        "en": "Please enter a question to analyze.",
+    },
+    "analyze_all_progress_prepare": {
+        "ko": "전체 문서 분석을 시작합니다.\n- 단계: 준비\n- 진행: 0%",
+        "en": "Starting full-document analysis.\n- Phase: Preparing\n- Progress: 0%",
+    },
+    "analyze_all_progress_collect": {
+        "ko": "전체 문서 분석을 시작합니다.\n- 단계: 인덱스 수집\n- 진행: 준비 중",
+        "en": "Starting full-document analysis.\n- Phase: Collecting index\n- Progress: Preparing",
+    },
+    "analyze_all_progress_map_start": {
+        "ko": (
+            "전체 문서 분석을 시작합니다.\n"
+            "- 단계: 맵 분석 시작\n"
+            "- 청크: {total_chunks}개\n"
+            "- 세그먼트: {total_segments}개"
+        ),
+        "en": (
+            "Starting full-document analysis.\n"
+            "- Phase: Starting map analysis\n"
+            "- Chunks: {total_chunks}\n"
+            "- Segments: {total_segments}"
+        ),
+    },
+    "analyze_all_progress_map": {
+        "ko": (
+            "전체 문서 분석 진행 중\n"
+            "- 단계: 맵 분석\n"
+            "- 진행: {processed}/{total} ({percent}%)\n"
+            "- 근거 세그먼트: {mapped}개\n"
+            "- 근거 라인: {evidence}개"
+        ),
+        "en": (
+            "Full-document analysis in progress\n"
+            "- Phase: Map analysis\n"
+            "- Progress: {processed}/{total} ({percent}%)\n"
+            "- Evidence segments: {mapped}\n"
+            "- Evidence lines: {evidence}"
+        ),
+    },
+    "analyze_all_progress_reduce": {
+        "ko": (
+            "전체 문서 분석 진행 중\n"
+            "- 단계: 리듀스(통합)\n"
+            "- 패스: {reduce_pass}\n"
+            "- 그룹: {groups}개"
+        ),
+        "en": (
+            "Full-document analysis in progress\n"
+            "- Phase: Reduce (merge)\n"
+            "- Pass: {reduce_pass}\n"
+            "- Groups: {groups}"
+        ),
+    },
+    "analyze_all_progress_final": {
+        "ko": "전체 문서 분석 진행 중\n- 단계: 최종 답변 생성",
+        "en": "Full-document analysis in progress\n- Phase: Generating final answer",
+    },
+    "analyze_all_empty_result": {
+        "ko": "분석 결과를 생성하지 못했습니다.",
+        "en": "Could not generate an analysis result.",
+    },
+    "analyze_all_stats_total_chunks": {
+        "ko": "- 총 청크: {total_chunks}",
+        "en": "- Total chunks: {total_chunks}",
+    },
+    "analyze_all_stats_total_segments": {
+        "ko": "- 총 세그먼트: {total_segments}",
+        "en": "- Total segments: {total_segments}",
+    },
+    "analyze_all_stats_mapped_segments": {
+        "ko": "- 근거 세그먼트: {mapped_segments}",
+        "en": "- Evidence segments: {mapped_segments}",
+    },
+    "analyze_all_stats_evidence_lines": {
+        "ko": "- 근거 라인: {evidence_lines}",
+        "en": "- Evidence lines: {evidence_lines}",
+    },
+    "analyze_all_stats_duration_ms": {
+        "ko": "- 소요 시간: {duration_ms}ms",
+        "en": "- Duration: {duration_ms}ms",
+    },
+    "analyze_all_header": {
+        "ko": "📚 전체 문서 분석 결과",
+        "en": "📚 Full-document analysis result",
+    },
+    "analyze_all_header_auto_suffix": {
+        "ko": " (자동 전환)",
+        "en": " (auto-routed)",
+    },
+    "analyze_all_stats_header": {
+        "ko": "[분석 통계]",
+        "en": "[Analysis stats]",
+    },
+    "analyze_all_failed": {
+        "ko": "전체 문서 분석 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.",
+        "en": "An error occurred during full-document analysis. Please try again shortly.",
+    },
     # ── /skills ──
     "skills_title": {"ko": "사용 가능한 스킬", "en": "Available Skills"},
     "skills_empty": {"ko": "등록된 스킬이 없습니다.", "en": "No skills registered."},

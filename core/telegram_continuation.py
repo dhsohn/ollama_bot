@@ -4,6 +4,8 @@ import re
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from core.i18n import t
+
 if TYPE_CHECKING:
     from core.telegram_handler import TelegramHandler
 
@@ -12,7 +14,6 @@ _CONTINUE_REQUEST_RE = re.compile(
     r"^\s*(continue|more|계속|이어서|이어줘|더\s*보여줘)\s*$",
     re.IGNORECASE,
 )
-_LONG_RESPONSE_STOP_NOTICE_PREFIX = "⚠️ 응답이 길어서 여기서 끊었습니다."
 
 
 def is_continue_request(text: str) -> bool:
@@ -67,15 +68,22 @@ def set_pending_continuation(
 
 
 def build_continuation_prompt(pending: dict[str, Any]) -> str:
+    return build_continuation_prompt_for_lang(pending, lang="ko")
+
+
+def build_continuation_prompt_for_lang(
+    pending: dict[str, Any],
+    *,
+    lang: str,
+) -> str:
     root_query = str(pending.get("root_query", "")).strip()
     turn = max(1, int(pending.get("turn", 1)))
     return (
-        "직전 답변을 이어서 작성해줘.\n"
-        "- 이미 설명한 내용은 반복하지 말고 중단 지점부터 이어서 설명해줘.\n"
-        "- 먼저 3줄 이내로 지금까지 핵심을 요약해줘.\n"
-        "- 답변이 다시 길어지면 마지막 줄에 '계속하려면 계속이라고 입력해주세요.'를 적어줘.\n"
-        f"- 이어보기 턴: {turn}\n"
-        f"[원 질문]\n{root_query}"
+        f"{t('continuation_prompt_intro', lang)}\n"
+        f"{t('continuation_prompt_no_repeat', lang)}\n"
+        f"{t('continuation_prompt_summary_first', lang)}\n"
+        f"{t('continuation_prompt_turn', lang, turn=turn)}\n"
+        f"{t('continuation_prompt_root_query', lang)}\n{root_query}"
     ).strip()
 
 
@@ -90,12 +98,14 @@ def extract_summary_points(
     text: str,
     *,
     max_points: int = 3,
+    lang: str = "ko",
 ) -> list[str]:
     content = text.strip()
-    marker = f"\n\n{_LONG_RESPONSE_STOP_NOTICE_PREFIX}"
+    long_notice = t("stream_notice_max_total_chars", lang)
+    marker = f"\n\n{long_notice}"
     if marker in content:
         content = content.split(marker, 1)[0].strip()
-    elif content.startswith(_LONG_RESPONSE_STOP_NOTICE_PREFIX):
+    elif content.startswith(long_notice):
         content = ""
 
     points: list[str] = []
@@ -124,13 +134,16 @@ def extract_summary_points(
 def build_long_response_followup_message(
     cls: type[TelegramHandler],
     response_text: str,
+    *,
+    lang: str,
 ) -> str:
-    points = cls._extract_summary_points(response_text, max_points=3)
+    points = cls._extract_summary_points(response_text, max_points=3, lang=lang)
+    followup = t("continuation_manual_followup", lang)
     if points:
         summary = "\n".join(f"- {point}" for point in points)
         return (
-            "📌 지금까지 요약\n"
+            f"{t('continuation_summary_title', lang)}\n"
             f"{summary}\n\n"
-            "계속 보려면 /continue 또는 '계속'이라고 입력하세요."
+            f"{followup}"
         )
-    return "응답이 길어서 여기서 끊었습니다. /continue 또는 '계속'이라고 입력하면 이어서 보여드릴게요."
+    return followup

@@ -95,7 +95,8 @@ Runs in the foreground. Logs are printed directly to the terminal.
 | `/memory` | View memory stats (`/memory clear` · `/memory export`) |
 | `/status` | System status (uptime, models, skills, automations) |
 | `/feedback` | Feedback statistics |
-| `/continue` | Continue a long response that was cut off |
+
+Long answers are automatically continued across follow-up messages when needed.
 
 ---
 

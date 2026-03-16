@@ -1,7 +1,7 @@
-"""텔레그램 봇 핸들러 — 메시지 수신/발신, 명령어 처리.
+"""Telegram bot handler for commands and message I/O.
 
-사용자 인터페이스 계층. 인증과 레이트리밋을 적용하고,
-엔진에 메시지를 전달하여 응답을 텔레그램으로 전송한다.
+This is the UI-facing layer. It applies authentication and rate limiting,
+hands requests to the engine, and sends the resulting responses to Telegram.
 """
 
 from __future__ import annotations
@@ -44,7 +44,7 @@ if TYPE_CHECKING:
 
 
 class TelegramHandler:
-    """텔레그램 봇 메시지 핸들러."""
+    """Telegram bot message handler."""
 
     def __init__(
         self,
@@ -89,7 +89,6 @@ class TelegramHandler:
             CommandHandler("auto", self._cmd_auto),
             CommandHandler("memory", self._cmd_memory),
             CommandHandler("status", self._cmd_status),
-            CommandHandler("continue", self._cmd_continue),
         ]
         if self._feedback_enabled:
             handlers.append(CommandHandler("feedback", self._cmd_feedback))
@@ -104,17 +103,16 @@ class TelegramHandler:
             BotCommand("auto", t("cmd_auto", lang)),
             BotCommand("memory", t("cmd_memory", lang)),
             BotCommand("status", t("cmd_status", lang)),
-            BotCommand("continue", t("cmd_continue", lang)),
         ]
         if self._feedback_enabled:
             commands.append(BotCommand("feedback", t("cmd_feedback", lang)))
         return commands
 
     async def initialize(self) -> Application:
-        """텔레그램 Application을 생성하고 핸들러를 등록한다.
+        """Build the Telegram application and register handlers.
 
         Returns:
-            초기화된 telegram.ext.Application 인스턴스.
+            The initialized ``telegram.ext.Application`` instance.
         """
         self._app = ApplicationBuilder().token(self._config.telegram.bot_token).build()
 
@@ -167,11 +165,6 @@ class TelegramHandler:
     @_global_slot_required
     async def _cmd_skills(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await telegram_commands.cmd_skills(self, update, context)
-
-    @_auth_required
-    @_global_slot_required
-    async def _cmd_continue(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        await telegram_commands.cmd_continue(self, update, context)
 
     @_auth_required
     @_global_slot_required
@@ -235,7 +228,7 @@ class TelegramHandler:
     @_auth_required
     @_global_slot_required
     async def _handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """자유 텍스트/이미지 메시지를 수신하여 엔진에 전달하고 스트리밍 응답을 반환한다."""
+        """Receive a text or image message and return a streamed response."""
         await telegram_messages.handle_message(self, update, context)
 
     async def _handle_message_impl(
@@ -247,7 +240,7 @@ class TelegramHandler:
         force_continuation: bool = False,
         auto_continuation_turn: int = 0,
     ) -> None:
-        """메시지 처리 핵심 구현. 스트리밍·폴백·자동 이어보기를 처리한다."""
+        """Core message pipeline for streaming, fallback, and continuation."""
         await telegram_messages.handle_message_impl(
             self,
             update,
@@ -292,8 +285,8 @@ class TelegramHandler:
         )
 
     @staticmethod
-    def _build_continuation_prompt(pending: dict[str, Any]) -> str:
-        return telegram_messages.build_continuation_prompt(pending)
+    def _build_continuation_prompt(pending: dict[str, Any], *, lang: str) -> str:
+        return telegram_messages.build_continuation_prompt(pending, lang=lang)
 
     @staticmethod
     def _truncate_summary_line(text: str, *, max_chars: int) -> str:
@@ -305,16 +298,27 @@ class TelegramHandler:
         text: str,
         *,
         max_points: int = 3,
+        lang: str = "ko",
     ) -> list[str]:
         return telegram_messages.extract_summary_points(
             cls,
             text,
             max_points=max_points,
+            lang=lang,
         )
 
     @classmethod
-    def _build_long_response_followup_message(cls, response_text: str) -> str:
-        return telegram_messages.build_long_response_followup_message(cls, response_text)
+    def _build_long_response_followup_message(
+        cls,
+        response_text: str,
+        *,
+        lang: str,
+    ) -> str:
+        return telegram_messages.build_long_response_followup_message(
+            cls,
+            response_text,
+            lang=lang,
+        )
 
     @staticmethod
     async def _keep_typing(chat: Any, stop_event) -> None:
@@ -407,7 +411,7 @@ class TelegramHandler:
         text: str,
         parse_mode: str | None = None,
     ) -> None:
-        """지정 채팅에 메시지를 전송한다. 긴 메시지는 자동 분할된다."""
+        """Send a message to a chat, automatically splitting long content."""
         if self._app is None:
             raise RuntimeError("TelegramHandler가 아직 초기화되지 않았습니다.")
         for part in self._split_message(text):
