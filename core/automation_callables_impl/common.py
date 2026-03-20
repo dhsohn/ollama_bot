@@ -132,6 +132,14 @@ FEEDBACK_ANALYSIS_SCHEMA: dict = {
 SQLITE_TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 
+def get_log_level(entry: dict[str, Any]) -> str:
+    """구조화 로그 엔트리에서 level 키를 정규화한다."""
+    level = entry.get("log_level", "")
+    if not level:
+        level = entry.get("level", "")
+    return str(level).strip().lower()
+
+
 def safe_timezone(name: str, logger: Any) -> tzinfo:
     """설정값에서 안전한 타임존 객체를 반환한다."""
     try:
@@ -216,7 +224,7 @@ def count_recent_errors(
             except (json.JSONDecodeError, ValueError):
                 continue
 
-            level = entry.get("log_level", "").lower()
+            level = get_log_level(entry)
             if level not in ("error", "warning"):
                 continue
 

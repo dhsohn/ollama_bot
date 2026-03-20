@@ -1,0 +1,20 @@
+name: "log_triage"
+description: "최근 error/warning 로그를 분석해 운영상 중요한 이슈를 요약합니다"
+description_en: "Triages recent error/warning logs into actionable summaries"
+version: "1.0"
+enabled: true
+schedule: "15 */6 * * *"
+action:
+  type: "callable"
+  target: "log_triage"
+  model_role: "low_cost"
+  parameters:
+    hours_back: 6
+    max_entries: 80
+    max_findings: 5
+output:
+  send_to_telegram: true
+retry:
+  max_attempts: 1
+  delay_seconds: 60
+timeout: 120

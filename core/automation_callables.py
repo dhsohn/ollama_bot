@@ -17,6 +17,9 @@ from core.automation_callables_impl.common import (
 from core.automation_callables_impl.common import (
     STALE_EVALUATION_SCHEMA as _STALE_EVALUATION_SCHEMA,
 )
+from core.automation_callables_impl.common import (
+    TRIAGE_SCHEMA as _TRIAGE_SCHEMA,
+)
 from core.automation_callables_impl.memory_consolidation import (
     build_memory_consolidation_callable,
 )
@@ -25,6 +28,7 @@ from core.automation_callables_impl.memory_hygiene import (
 )
 from core.automation_callables_impl.observability import (
     build_health_check_callable,
+    build_log_triage_callable,
 )
 from core.automation_callables_impl.rag import (
     build_rag_reindex_callable,
@@ -78,6 +82,14 @@ def register_builtin_callables(
         ),
     )
     scheduler.register_callable(
+        "log_triage",
+        build_log_triage_callable(
+            engine=engine,
+            data_dir=data_dir,
+            logger=logger,
+        ),
+    )
+    scheduler.register_callable(
         "memory_consolidation",
         build_memory_consolidation_callable(
             engine=engine,
@@ -110,5 +122,6 @@ __all__ = [
     "_MEMORY_HYGIENE_SCHEMA",
     "_PREFERENCES_SCHEMA",
     "_STALE_EVALUATION_SCHEMA",
+    "_TRIAGE_SCHEMA",
     "register_builtin_callables",
 ]

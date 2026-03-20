@@ -14,6 +14,7 @@ from core.auto_scheduler import AutoAction, AutoDefinition, AutoScheduler
 from core.automation_callables import (
     _DAILY_SUMMARY_SCHEMA,
     _PREFERENCES_SCHEMA,
+    _TRIAGE_SCHEMA,
     register_builtin_callables,
 )
 from core.config import (
@@ -582,6 +583,22 @@ def _health_check_auto(**overrides) -> AutoDefinition:
     )
 
 
+def _log_triage_auto(**overrides) -> AutoDefinition:
+    """log_triage AutoDefinition 생성 헬퍼."""
+    params = {"hours_back": 6, "max_entries": 80, "max_findings": 5}
+    params.update(overrides)
+    return AutoDefinition(
+        name="log_triage",
+        description="로그 triage",
+        schedule="15 */6 * * *",
+        action=AutoAction(
+            type="callable",
+            target="log_triage",
+            parameters=params,
+        ),
+    )
+
+
 def _ok_status() -> dict:
     """정상 상태 engine.get_status() 반환값."""
     return {
@@ -728,6 +745,33 @@ class TestHealthCheckCallable:
         assert "3건" in result
 
     @pytest.mark.asyncio
+    async def test_error_logs_found_with_level_key(
+        self,
+        scheduler: AutoScheduler,
+        app_settings: AppSettings,
+        memory_manager: MemoryManager,
+    ) -> None:
+        """실제 로그 포맷(level 키)도 동일하게 카운트한다."""
+        log_dir = Path(app_settings.data_dir) / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        now = datetime.now(UTC)
+        entry = json.dumps({
+            "event": "real_format_error",
+            "level": "error",
+            "timestamp": now.isoformat(),
+        })
+        (log_dir / "app.log").write_text(entry + "\n")
+
+        engine = AsyncMock()
+        engine.get_status = AsyncMock(return_value=_ok_status())
+        _setup_callables(scheduler, engine, memory_manager, app_settings)
+
+        result = await scheduler._run_action(_health_check_auto())
+
+        assert "오류 로그" in result
+        assert "1건" in result
+
+    @pytest.mark.asyncio
     async def test_multiple_issues(
         self,
         scheduler: AutoScheduler,
@@ -814,6 +858,129 @@ class TestHealthCheckCallable:
 
         assert "오류 로그" in result
         assert "1건" in result
+
+
+class TestLogTriageCallable:
+    @pytest.mark.asyncio
+    async def test_no_recent_error_logs_returns_empty(
+        self,
+        scheduler: AutoScheduler,
+        app_settings: AppSettings,
+        memory_manager: MemoryManager,
+    ) -> None:
+        engine = AsyncMock()
+        engine.process_prompt = AsyncMock(return_value="[]")
+        _setup_callables(scheduler, engine, memory_manager, app_settings)
+
+        result = await scheduler._run_action(_log_triage_auto())
+
+        assert result == ""
+        engine.process_prompt.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_formats_llm_triage_report(
+        self,
+        scheduler: AutoScheduler,
+        app_settings: AppSettings,
+        memory_manager: MemoryManager,
+    ) -> None:
+        log_dir = Path(app_settings.data_dir) / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        now = datetime.now(UTC)
+        entries = [
+            {
+                "event": "request_failed",
+                "level": "error",
+                "timestamp": now.isoformat(),
+                "error": "connection refused",
+            },
+            {
+                "event": "request_failed",
+                "level": "error",
+                "timestamp": now.isoformat(),
+                "error": "connection refused",
+            },
+            {
+                "event": "semantic_cache_degraded",
+                "level": "warning",
+                "timestamp": now.isoformat(),
+                "reason": "cache miss burst",
+            },
+        ]
+        (log_dir / "app.log").write_text(
+            "\n".join(json.dumps(item, ensure_ascii=False) for item in entries) + "\n",
+            encoding="utf-8",
+        )
+
+        llm_response = json.dumps([
+            {
+                "event": "request_failed",
+                "severity": "warning",
+                "cause": "백엔드 요청이 반복적으로 거절되었습니다.",
+                "action": "Ollama 서버 연결 상태와 포트를 확인하세요.",
+                "recurring": True,
+            },
+        ], ensure_ascii=False)
+        engine = AsyncMock()
+        engine.process_prompt = AsyncMock(return_value=llm_response)
+        _setup_callables(scheduler, engine, memory_manager, app_settings)
+
+        result = await scheduler._run_action(
+            _log_triage_auto(hours_back=1, max_entries=20, max_findings=3),
+        )
+
+        assert "로그 triage 결과" in result
+        assert "request_failed" in result
+        assert "반복" in result
+        assert "Ollama 서버 연결 상태와 포트를 확인하세요." in result
+        engine.process_prompt.assert_awaited_once()
+        call_kwargs = engine.process_prompt.await_args.kwargs
+        assert call_kwargs["response_format"] is _TRIAGE_SCHEMA
+        assert "request_failed" in call_kwargs["prompt"]
+        assert "semantic_cache_degraded" in call_kwargs["prompt"]
+
+    @pytest.mark.asyncio
+    async def test_falls_back_when_llm_json_is_invalid(
+        self,
+        scheduler: AutoScheduler,
+        app_settings: AppSettings,
+        memory_manager: MemoryManager,
+    ) -> None:
+        log_dir = Path(app_settings.data_dir) / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        now = datetime.now(UTC)
+        entries = [
+            {
+                "event": "automation_failed",
+                "log_level": "error",
+                "timestamp": now.isoformat(),
+                "name": "daily_summary",
+                "error": "timeout",
+            },
+            {
+                "event": "automation_failed",
+                "log_level": "error",
+                "timestamp": now.isoformat(),
+                "name": "daily_summary",
+                "error": "timeout",
+            },
+        ]
+        (log_dir / "app.log").write_text(
+            "\n".join(json.dumps(item, ensure_ascii=False) for item in entries) + "\n",
+            encoding="utf-8",
+        )
+
+        engine = AsyncMock()
+        engine.process_prompt = AsyncMock(return_value="not valid json")
+        _setup_callables(scheduler, engine, memory_manager, app_settings)
+
+        result = await scheduler._run_action(
+            _log_triage_auto(hours_back=1, max_entries=10, max_findings=3),
+        )
+
+        assert "구조화 분석에 실패해 이벤트 요약으로 대체했습니다." in result
+        assert "automation_failed" in result
+        assert "daily_summary" in result
 
 
 def _rag_reindex_auto(**overrides) -> AutoDefinition:
