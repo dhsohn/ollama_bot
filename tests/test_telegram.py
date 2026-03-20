@@ -1651,10 +1651,10 @@ class TestFeedbackButtons:
 
 class TestApplicationGuards:
     def test_application_before_initialize_raises(self, telegram_handler: TelegramHandler) -> None:
-        with pytest.raises(RuntimeError, match="초기화"):
+        with pytest.raises(RuntimeError, match="initialized"):
             _ = telegram_handler.application
 
     @pytest.mark.asyncio
     async def test_send_message_before_initialize_raises(self, telegram_handler: TelegramHandler) -> None:
-        with pytest.raises(RuntimeError, match="초기화"):
+        with pytest.raises(RuntimeError, match="initialized"):
             await telegram_handler.send_message(111, "hello")

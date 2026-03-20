@@ -1,4 +1,4 @@
-"""runtime_factory 런타임 락 테스트."""
+"""Runtime-lock tests for ``runtime_factory``."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ async def test_runtime_lock_blocks_second_instance(tmp_path) -> None:
     try:
         _acquire_runtime_lock(config, first_stack, MagicMock())
 
-        with pytest.raises(StartupError, match="이미 실행 중인 ollama_bot 인스턴스"):
+        with pytest.raises(StartupError, match="already running"):
             _acquire_runtime_lock(config, second_stack, MagicMock())
     finally:
         await second_stack.aclose()

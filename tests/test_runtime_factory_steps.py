@@ -371,7 +371,7 @@ async def test_initialize_chat_client_wraps_startup_failures(
     monkeypatch.setattr(runtime_factory_steps, "OllamaClient", lambda _config: llm)
     monkeypatch.setattr(runtime_factory_steps, "get_default_chat_model", lambda _config: "model-x")
 
-    with pytest.raises(StartupError, match="ollama 초기화 실패"):
+    with pytest.raises(StartupError, match="failed to initialize Ollama"):
         await runtime_factory_steps.initialize_chat_client(
             config,
             cleanup_stack,
@@ -963,7 +963,7 @@ async def test_initialize_scheduler_stack_wraps_load_failures(
         MagicMock(),
     )
 
-    with pytest.raises(StartupError, match="자동화 로드 실패"):
+    with pytest.raises(StartupError, match="failed to load automations"):
         await runtime_factory_steps.initialize_scheduler_stack(
             config,
             logger,
@@ -988,7 +988,10 @@ async def test_initialize_scheduler_stack_wraps_init_and_wiring_failures(
         raise RuntimeError("bad timezone")
 
     monkeypatch.setattr(runtime_factory_steps, "AutoScheduler", raise_scheduler_init)
-    with pytest.raises(StartupError, match="자동화 스케줄러 초기화 실패"):
+    with pytest.raises(
+        StartupError,
+        match="failed to initialize the automation scheduler",
+    ):
         await runtime_factory_steps.initialize_scheduler_stack(
             config,
             logger,

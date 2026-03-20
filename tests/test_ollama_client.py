@@ -382,14 +382,14 @@ class TestListModels:
 class TestInitializationGuards:
     @pytest.mark.asyncio
     async def test_chat_before_initialize_raises(self, ollama_client: OllamaClient) -> None:
-        with pytest.raises(RuntimeError, match="초기화"):
+        with pytest.raises(RuntimeError, match="initialized"):
             await ollama_client.chat(messages=[{"role": "user", "content": "hi"}])
 
     @pytest.mark.asyncio
     async def test_health_check_before_initialize_raises(
         self, ollama_client: OllamaClient
     ) -> None:
-        with pytest.raises(RuntimeError, match="초기화"):
+        with pytest.raises(RuntimeError, match="initialized"):
             await ollama_client.health_check()
 
 
