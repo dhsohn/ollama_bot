@@ -283,6 +283,7 @@ def build_log_triage_callable(
         model_role: str | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        timeout: int | None = None,
     ) -> str:
         """최근 error/warning 로그를 요약해 운영자가 바로 대응할 수 있게 정리한다."""
         if hours_back <= 0:
@@ -329,6 +330,7 @@ def build_log_triage_callable(
                 temperature=temperature if temperature is not None else 0.2,
                 model_override=model,
                 model_role=model_role,
+                timeout=timeout,
             )
             items = parse_json_array(raw)
             if items is None:

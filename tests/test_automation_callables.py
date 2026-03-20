@@ -938,6 +938,7 @@ class TestLogTriageCallable:
         assert call_kwargs["response_format"] is _TRIAGE_SCHEMA
         assert "request_failed" in call_kwargs["prompt"]
         assert "semantic_cache_degraded" in call_kwargs["prompt"]
+        assert call_kwargs["timeout"] == 120
 
     @pytest.mark.asyncio
     async def test_falls_back_when_llm_json_is_invalid(
