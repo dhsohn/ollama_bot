@@ -16,9 +16,9 @@ async def prepare_target_model(
     role: str | None,
     timeout: int,
 ) -> tuple[str | None, str | None]:
-    """LLM 요청 전에 모델 로드를 준비한다.
+    """Prepare model loading before sending an LLM request.
 
-    prepare_model을 구현한 클라이언트에서만 동작한다.
+    This only runs for clients that implement ``prepare_model``.
     """
     target_role = role.strip().lower() if isinstance(role, str) and role.strip() else None
     target_model = model.strip() if isinstance(model, str) and model.strip() else None
@@ -52,7 +52,7 @@ def _default_chat_model(engine: Engine) -> str:
 
 
 def resolve_model_for_role(engine: Engine, role: str | None) -> str | None:
-    """role 이름을 설정 모델명으로 해석한다."""
+    """Resolve a role name to the configured model identifier."""
     role_key = (role or "").strip().lower()
     if not role_key:
         return None

@@ -1,4 +1,4 @@
-"""TelegramHandler 피드백/사유 수집 구현."""
+"""Feedback and reason-collection helpers for ``TelegramHandler``."""
 
 from __future__ import annotations
 
@@ -64,7 +64,7 @@ async def attach_feedback_controls(
 
 
 def cleanup_preview_cache(self: TelegramHandler) -> None:
-    """프리뷰 캐시의 TTL 만료 항목을 정리하고 크기 제한을 유지한다."""
+    """Purge expired preview-cache entries and enforce the size limit."""
     self._cleanup_pending_reasons()
     self._cleanup_pending_continuations()
     max_size = self._config.feedback.preview_cache_max_size
@@ -92,7 +92,7 @@ def cleanup_preview_cache(self: TelegramHandler) -> None:
 
 
 def cleanup_pending_reasons(self: TelegramHandler) -> None:
-    """사유 입력 대기 상태의 만료 항목을 주기적으로 정리한다."""
+    """Remove expired pending-reason entries."""
     if not self._pending_reason:
         return
     now = time.monotonic()
@@ -112,7 +112,7 @@ def cache_preview(
     user_text: str,
     bot_text: str,
 ) -> None:
-    """프리뷰를 캐시에 저장한다. TTL 초과/크기 초과 시 정리."""
+    """Store a preview in the cache after pruning stale or excess entries."""
     max_chars = self._config.feedback.preview_max_chars
     max_size = self._config.feedback.preview_cache_max_size
     ttl_hours = self._config.feedback.preview_cache_ttl_hours

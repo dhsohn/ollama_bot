@@ -1,4 +1,4 @@
-"""비동기 유틸리티."""
+"""Async utilities."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ async def run_in_thread(
     *args: Any,
     **kwargs: Any,
 ) -> _T:
-    """Python 버전과 무관하게 동기 함수를 스레드에서 실행한다."""
+    """Run a synchronous function in a thread across Python versions."""
     to_thread = getattr(asyncio, "to_thread", None)
     if to_thread is not None:
         return await to_thread(func, *args, **kwargs)

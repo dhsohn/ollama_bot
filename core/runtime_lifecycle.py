@@ -1,4 +1,4 @@
-"""런타임 실행/종료 라이프사이클."""
+"""Runtime start and shutdown lifecycle."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ async def shutdown_runtime(
     app_started: bool,
     updater_started: bool,
 ) -> None:
-    """실행 중 자원을 역순으로 정리한다."""
+    """Release runtime resources in reverse order."""
     logger = runtime.logger
     app = runtime.app
     logger.info("shutting_down")
@@ -62,7 +62,7 @@ async def shutdown_runtime(
 
 
 async def run_runtime(runtime: RuntimeState) -> None:
-    """초기화된 런타임을 실행하고 종료 시 자원을 정리한다."""
+    """Run the initialized runtime and clean up on shutdown."""
     logger = runtime.logger
     app = runtime.app
     stop_event = asyncio.Event()

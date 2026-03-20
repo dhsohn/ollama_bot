@@ -1,7 +1,7 @@
 """Full-tier response planner helpers.
 
-로컬 LLM이 바로 최종 장문 답변을 생성할 때 품질이 흔들리는 문제를 줄이기 위해,
-최종 생성 전에 짧은 JSON 설계안을 만들고 시스템 프롬프트에 주입한다.
+To stabilize long-form final answers from the local LLM, the planner generates
+a short JSON outline and injects it into the system prompt before final output.
 """
 
 from __future__ import annotations
@@ -59,7 +59,7 @@ _PLANNER_SYSTEM_PROMPT = """
 
 @dataclass(frozen=True)
 class ResponsePlan:
-    """Planner가 반환한 응답 설계."""
+    """Response outline returned by the planner."""
 
     response_mode: str
     brevity: str
@@ -77,7 +77,7 @@ def should_plan_response(
     rag_used: bool,
     images: list[bytes] | None,
 ) -> bool:
-    """현재 요청에 planner를 적용할지 결정한다."""
+    """Decide whether the planner should run for the current request."""
     cfg = engine._config.response_planner
     if not cfg.enabled or images:
         return False
@@ -114,7 +114,7 @@ async def maybe_apply_response_plan(
     timeout: int,
     images: list[bytes] | None,
 ) -> tuple[list[dict[str, str]], bool]:
-    """필요 시 planner를 호출해 최종 응답 프롬프트를 보강한다."""
+    """Call the planner when needed and enrich the final response prompt."""
     rag_used = bool(getattr(rag_result, "contexts", None))
     if not should_plan_response(
         engine,
@@ -170,7 +170,7 @@ def inject_response_plan(
     messages: list[dict[str, str]],
     plan: ResponsePlan,
 ) -> list[dict[str, str]]:
-    """Planner 설계안을 시스템 프롬프트에 주입한다."""
+    """Inject the planner outline into the system prompt."""
     scaffold = render_response_plan(plan)
     result = list(messages)
     if result and result[0].get("role") == "system":
@@ -183,7 +183,7 @@ def inject_response_plan(
 
 
 def render_response_plan(plan: ResponsePlan) -> str:
-    """최종 프롬프트에 넣을 응답 설계 지시문을 렌더링한다."""
+    """Render planner guidance for inclusion in the final prompt."""
     lines = [
         "[응답 설계안]",
         "아래 설계는 내부 힌트입니다. 설계안이나 JSON을 그대로 노출하지 말고 자연스러운 최종 답변만 작성하세요.",

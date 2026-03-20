@@ -20,7 +20,7 @@ async def track_request(
     *,
     stream: bool,
 ) -> AsyncGenerator[None, None]:
-    """요청 수/로그 컨텍스트를 요청 단위로 일관되게 관리한다."""
+    """Manage request counters and log context consistently per request."""
     request_id = uuid.uuid4().hex[:8]
     structlog.contextvars.bind_contextvars(request_id=request_id, chat_id=chat_id)
     engine._logger.info("request_started", stream=stream)
@@ -44,7 +44,7 @@ def consume_last_stream_meta(
     *,
     monotonic_fn: Callable[[], float],
 ) -> dict[str, Any] | None:
-    """스트리밍 처리 후 메타데이터를 1회성으로 반환한다."""
+    """Return one-shot metadata captured during streaming."""
     cleanup_stream_meta(engine, now=None, monotonic_fn=monotonic_fn)
     meta = engine._last_stream_meta.pop(chat_id, None)
     if meta is None:
@@ -98,7 +98,7 @@ def cleanup_stream_meta(
     now: float | None,
     monotonic_fn: Callable[[], float],
 ) -> None:
-    """미소비 스트리밍 메타데이터를 TTL/최대 개수 기준으로 정리한다."""
+    """Prune unconsumed stream metadata by TTL and max-entry limits."""
     if not engine._last_stream_meta:
         return
     current = monotonic_fn() if now is None else now
@@ -167,7 +167,7 @@ async def persist_turn(
     assistant_text: str,
     skill: SkillDefinition | None = None,
 ) -> None:
-    """사용자/어시스턴트 턴을 메모리에 일관되게 저장한다."""
+    """Persist a user/assistant turn pair consistently in memory."""
     metadata = {"skill": skill.name} if skill else None
     await engine._memory.add_message(chat_id, "user", user_text, metadata=metadata)
     await engine._memory.add_message(chat_id, "assistant", assistant_text)
@@ -182,7 +182,7 @@ async def persist_failed_turn(
     tier: str | None,
     skill: SkillDefinition | None = None,
 ) -> None:
-    """스트리밍 실패 시 사용자 턴만 실패 메타데이터와 함께 저장한다."""
+    """Persist only the user turn with failure metadata after stream failure."""
     if not user_text.strip():
         return
     metadata: dict[str, Any] = {

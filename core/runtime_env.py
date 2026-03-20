@@ -1,4 +1,4 @@
-"""런타임 환경/WSL 네트워크 보조 유틸리티."""
+"""Runtime-environment and WSL networking helpers."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 
 def is_wsl_environment() -> bool:
-    """현재 런타임이 WSL인지 판별한다."""
+    """Return whether the current runtime is WSL."""
     if os.environ.get("WSL_DISTRO_NAME"):
         return True
     proc_version = Path("/proc/version")
@@ -117,7 +117,7 @@ def resolve_wsl_loopback_host(
     iter_wsl_bridge_candidates_fn: Callable[[], list[str]] = iter_wsl_bridge_candidates,
     can_connect_tcp_fn: Callable[[str, int], bool] | None = None,
 ) -> str:
-    """WSL에서 loopback이 막힌 경우 Windows bridge host로 대체한다."""
+    """Swap loopback URLs for a reachable Windows bridge host when needed on WSL."""
     tcp_probe = can_connect_tcp_fn or (lambda host, port: can_connect_tcp(host, port))
 
     parsed = urlsplit(url)

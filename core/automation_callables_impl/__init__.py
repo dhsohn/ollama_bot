@@ -1,2 +1,1 @@
-"""내장 자동화 callable 구현 모듈들."""
-
+"""Implementation modules for built-in automation callables."""

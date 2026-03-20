@@ -1,4 +1,4 @@
-"""RAG 검색기 — 벡터 검색 + 중복 제거."""
+"""RAG retriever with vector search and duplicate suppression."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ _MAX_CHUNKS_PER_DOC = 2
 
 
 class RAGRetriever:
-    """벡터 검색 + 인접 chunk 중복 제거."""
+    """Vector retrieval with adjacent-chunk deduplication."""
 
     def __init__(
         self,
@@ -37,11 +37,11 @@ class RAGRetriever:
         return self._indexer.chunk_count
 
     async def get_all_chunks(self) -> list[Chunk]:
-        """인덱스의 전체 청크를 반환한다 (full-scan 용도)."""
+        """Return every chunk in the index for full-scan workflows."""
         return await self._indexer.get_all_chunks()
 
     async def reindex(self, kb_paths: str | list[str]) -> dict[str, Any]:
-        """지정 경로를 대상으로 증분 재인덱싱을 수행한다."""
+        """Incrementally reindex the specified paths."""
         return await self._indexer.index_corpus(kb_paths)
 
     async def retrieve(
@@ -50,20 +50,20 @@ class RAGRetriever:
         k0: int = 40,
         score_floor: float = 0.0,
     ) -> list[RetrievedItem]:
-        """쿼리에 대한 top-k0 후보를 반환한다.
+        """Return top-k0 candidates for the query.
 
-        동일 문서 내 인접 chunk 중복 제거를 적용한다.
+        Adjacent chunks from the same document are treated as duplicates.
         """
         if self._indexer.chunk_count == 0:
             return []
 
-        # 1) 쿼리 임베딩
+        # 1) Embed the query.
         embeddings = await self._client.embed(
             [query], model=self._embedding_model,
         )
         query_emb = np.array(embeddings[0], dtype=np.float32)
 
-        # 2) 벡터 검색
+        # 2) Run vector search.
         search_results = await self._indexer.search(query_emb, k=k0 * 2)
         if score_floor > 0:
             search_results = [
@@ -74,11 +74,11 @@ class RAGRetriever:
         if not search_results:
             return []
 
-        # 3) 청크 일괄 조회 — dict로 정확한 rid→chunk 매핑
+        # 3) Fetch chunks in bulk for an exact rid -> chunk mapping.
         row_ids = [rid for rid, _ in search_results]
         chunk_by_rid: dict[int, Chunk] = await self._indexer.get_chunks_map_by_ids(row_ids)
 
-        # 4) 동일 문서 인접 chunk 중복 제거 (score 순으로 처리)
+        # 4) Remove adjacent same-document chunks in score order.
         doc_selected: defaultdict[str, list[int]] = defaultdict(list)
         items: list[RetrievedItem] = []
 
@@ -94,7 +94,7 @@ class RAGRetriever:
             if len(selected) >= _MAX_CHUNKS_PER_DOC:
                 continue
 
-            # 동일 문서 내 인접 chunk(±1)는 중복으로 간주해 스킵
+            # Treat adjacent chunks from the same document (±1) as duplicates.
             if selected and any(abs(chunk_id - sid) <= 1 for sid in selected):
                 continue
 

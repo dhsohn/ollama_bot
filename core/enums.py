@@ -1,4 +1,4 @@
-"""프로젝트 전역 Enum 정의."""
+"""Project-wide enum definitions."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from enum import StrEnum
 
 
 class RoutingTier(StrEnum):
-    """엔진 라우팅 계층."""
+    """Engine routing tiers."""
 
     SKILL = "skill"
     INSTANT = "instant"

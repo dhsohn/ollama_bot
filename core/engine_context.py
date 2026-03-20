@@ -33,20 +33,21 @@ async def build_context(
     skill: SkillDefinition | None = None,
     strategy: ContextStrategy | None = None,
 ) -> list[dict[str, str]]:
-    """LLM에 전달할 메시지 목록을 조립한다.
+    """Assemble the message list sent to the LLM.
 
-    시스템 프롬프트에 선호도·가이드라인·DICL 예시·인텐트 접미사·언어 정책을 주입하고,
-    대화 히스토리와 사용자 입력을 조합하여 최종 메시지 목록을 반환한다.
+    Injects preferences, guidelines, DICL examples, intent suffixes, and
+    language policy into the system prompt, then combines that prompt with
+    conversation history and the latest user input.
 
     Args:
-        engine: 엔진 인스턴스.
-        chat_id: 텔레그램 채팅 ID.
-        text: 사용자 입력 텍스트.
-        skill: 활성 스킬 (스킬 트리거 시).
-        strategy: 인텐트 라우팅 전략 (히스토리 길이·토큰 제한 등).
+        engine: Engine instance.
+        chat_id: Telegram chat ID.
+        text: User input text.
+        skill: Active skill, when a skill trigger matched.
+        strategy: Intent-routing strategy such as history or token limits.
 
     Returns:
-        role/content 딕셔너리 목록 (system, history, user 순서).
+        A list of `role`/`content` dictionaries in system-history-user order.
     """
     system, history = await build_base_context(
         engine,
@@ -111,7 +112,7 @@ def sanitize_history_for_prompt(
     engine: Engine,
     history: list[dict[str, str]],
 ) -> list[dict[str, str]]:
-    """프롬프트 오염을 유발하는 저품질 이력을 제거/축약한다."""
+    """Remove or shorten low-quality history that could pollute the prompt."""
     if not history:
         return []
 

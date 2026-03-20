@@ -1,7 +1,7 @@
-"""인텐트 기반 메시지 라우팅 엔진.
+"""Intent-based message routing engine.
 
-사용자 의도를 임베딩 유사도로 분류하고,
-의도별 최적화된 처리 경로를 결정한다.
+Classifies user intent by embedding similarity and chooses an optimized handling
+path for each detected intent.
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ _CODE_HINT_RE = re.compile(
 
 @dataclass
 class ContextStrategy:
-    """의도별 컨텍스트 빌드 전략."""
+    """Context-building strategy for a specific intent."""
 
     max_history: int = 50
     include_dicl: bool = True
@@ -45,7 +45,7 @@ class ContextStrategy:
 
 @dataclass
 class RouteResult:
-    """라우팅 결과."""
+    """Routing result."""
 
     intent: str
     confidence: float
@@ -54,7 +54,7 @@ class RouteResult:
 
 @dataclass
 class _RouteDefinition:
-    """내부 라우트 정의."""
+    """Internal route definition."""
 
     name: str
     utterances: list[str]
@@ -63,7 +63,7 @@ class _RouteDefinition:
 
 
 class IntentRouter:
-    """임베딩 기반 인텐트 분류기."""
+    """Embedding-based intent classifier."""
 
     def __init__(
         self,
@@ -91,7 +91,7 @@ class IntentRouter:
         return len(self._routes)
 
     def _initialize(self) -> None:
-        """인코더 로드 + 라우트 임베딩 사전 계산."""
+        """Load the encoder and precompute route embeddings."""
         if self._encoder is None:
             try:
                 self._encoder = TextEmbedding(
@@ -108,7 +108,7 @@ class IntentRouter:
             self._enabled = True
 
     def _load_routes(self) -> None:
-        """YAML에서 라우트를 로드하고 임베딩을 사전 계산한다."""
+        """Load routes from YAML and precompute their embeddings."""
         path = Path(self._routes_path)
         if not path.exists():
             self._logger.warning("intent_routes_not_found", path=self._routes_path)
@@ -140,7 +140,7 @@ class IntentRouter:
                     system_prompt_suffix=strategy_data.get("system_prompt_suffix"),
                 )
 
-                # 예시 발화 임베딩 사전 계산
+                # Precompute embeddings for example utterances.
                 embeddings = embed_texts(self._encoder, utterances, normalize=True)
 
                 loaded.append(
@@ -160,7 +160,7 @@ class IntentRouter:
             self._routes = []
 
     def classify(self, text: str) -> RouteResult | None:
-        """사용자 입력의 의도를 분류한다."""
+        """Classify the user's intent."""
         if not self._enabled or not self._routes:
             return None
 
@@ -169,7 +169,7 @@ class IntentRouter:
 
             scored_routes: list[tuple[_RouteDefinition, float]] = []
             for route in self._routes:
-                # 각 라우트의 모든 예시와 유사도 계산, 최대값 사용
+                # Compare against all examples for a route and keep the max score.
                 similarities = route.embeddings @ query_vec
                 max_sim = float(np.max(similarities))
                 scored_routes.append((route, max_sim))
@@ -179,7 +179,7 @@ class IntentRouter:
                 if score < self._min_confidence:
                     break
                 if route.name == "code" and not self._looks_like_code_query(text):
-                    # 코드 신호 없는 질의를 code intent로 보내는 오탐을 방지한다.
+                    # Prevent false positives that would route non-code queries to the code intent.
                     self._logger.info(
                         "intent_code_guard_rejected",
                         score=round(score, 4),

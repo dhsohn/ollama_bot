@@ -1,4 +1,4 @@
-"""임베딩 공용 유틸리티."""
+"""Shared embedding utilities."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import numpy as np
 
 
 def normalize_rows(vectors: np.ndarray) -> np.ndarray:
-    """행 벡터를 L2 정규화한다."""
+    """Apply L2 normalization to each row vector."""
     norms = np.linalg.norm(vectors, axis=1, keepdims=True)
     norms = np.where(norms == 0.0, 1.0, norms)
     return vectors / norms
@@ -21,7 +21,7 @@ def embed_texts(
     *,
     normalize: bool = True,
 ) -> np.ndarray:
-    """encoder(TextEmbedding 또는 호환 객체)로 텍스트 임베딩을 생성한다."""
+    """Generate text embeddings with a ``TextEmbedding``-compatible encoder."""
     if encoder is None:
         raise RuntimeError("encoder is not initialized")
 
@@ -37,4 +37,3 @@ def embed_texts(
     if normalize:
         vectors = normalize_rows(vectors)
     return vectors
-

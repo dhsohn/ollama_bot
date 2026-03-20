@@ -8,7 +8,7 @@ if TYPE_CHECKING:
 
 
 async def get_status(engine: Engine) -> dict[str, Any]:
-    """시스템 전체 상태를 반환한다."""
+    """Return overall system status."""
     llm_health = await engine._llm_client.health_check()
     uptime_seconds = time.monotonic() - engine._start_time
 
@@ -42,7 +42,7 @@ async def get_status(engine: Engine) -> dict[str, Any]:
 
 
 def build_optimization_tier_details(engine: Engine) -> dict[str, dict[str, Any]]:
-    """최적화 컴포넌트의 enabled/degraded 상태를 구성한다."""
+    """Build enabled/degraded status for optimization components."""
     return {
         "instant_responder": make_tier_detail(
             engine,
@@ -81,7 +81,7 @@ def build_optimization_tier_details(engine: Engine) -> dict[str, dict[str, Any]]
 
 
 def build_rag_tier_detail(engine: Engine) -> dict[str, Any]:
-    """RAG 파이프라인의 저하 상태를 계산한다."""
+    """Compute the degraded state for the RAG pipeline."""
     name = "rag_pipeline"
     if not engine._config.rag.enabled:
         return manual_tier_detail(
@@ -128,7 +128,7 @@ def manual_tier_detail(
     degraded: bool,
     reason: str | None = None,
 ) -> dict[str, Any]:
-    """동적 판단 컴포넌트용 tier detail 생성."""
+    """Build tier detail for components with dynamic status."""
     now = time.monotonic()
     if not configured:
         engine._degraded_since.pop(name, None)
@@ -168,7 +168,7 @@ def make_tier_detail(
     enabled_attr: str | None = None,
     disabled_reason: str = "disabled",
 ) -> dict[str, Any]:
-    """단일 컴포넌트 상태를 계산한다."""
+    """Compute status for a single component."""
     now = time.monotonic()
     if not configured:
         engine._degraded_since.pop(name, None)

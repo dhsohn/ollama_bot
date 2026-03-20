@@ -1,4 +1,4 @@
-"""내장 자동화 callable 등록."""
+"""Registration helpers for built-in automation callables."""
 
 from __future__ import annotations
 
@@ -51,7 +51,7 @@ def register_builtin_callables(
     data_dir: str = "data",
     feedback: FeedbackManager | None = None,
 ) -> None:
-    """내장 자동화 callable을 스케줄러에 등록한다."""
+    """Register built-in automation callables with the scheduler."""
     logger = get_logger("automation_callables")
 
     scheduler.register_callable(

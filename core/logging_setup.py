@@ -1,4 +1,4 @@
-"""structlog 기반 구조화된 로깅 설정."""
+"""Structured logging setup built on top of structlog."""
 
 from __future__ import annotations
 
@@ -11,11 +11,11 @@ import structlog
 
 
 def setup_logging(log_level: str = "INFO", log_dir: str | None = None) -> None:
-    """애플리케이션 전역 로깅을 설정한다.
+    """Configure application-wide logging.
 
     Args:
-        log_level: 로그 레벨 (DEBUG, INFO, WARNING, ERROR)
-        log_dir: 로그 파일 디렉토리. None이면 파일 로깅을 비활성화한다.
+        log_level: Log level such as DEBUG, INFO, WARNING, or ERROR.
+        log_dir: Log file directory. If None, file logging is disabled.
     """
     level = getattr(logging, log_level.upper(), logging.INFO)
 
@@ -23,13 +23,13 @@ def setup_logging(log_level: str = "INFO", log_dir: str | None = None) -> None:
     root_logger.setLevel(level)
     root_logger.handlers.clear()
 
-    # stdout 핸들러
+    # Stdout handler
     stdout_handler = logging.StreamHandler(sys.stdout)
     stdout_handler.setLevel(level)
     stdout_handler.setFormatter(logging.Formatter("%(message)s"))
     root_logger.addHandler(stdout_handler)
 
-    # 파일 핸들러 (일별 로테이션)
+    # File handler with daily rotation
     if log_dir:
         log_path = Path(log_dir)
         log_path.mkdir(parents=True, exist_ok=True)
@@ -84,5 +84,5 @@ def setup_logging(log_level: str = "INFO", log_dir: str | None = None) -> None:
 
 
 def get_logger(name: str) -> structlog.BoundLogger:
-    """모듈별 로거를 반환한다."""
+    """Return a logger scoped to a module."""
     return structlog.get_logger(name)

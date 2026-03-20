@@ -1,7 +1,7 @@
-"""대화 컨텍스트 압축 엔진.
+"""Conversation context compression.
 
-오래된 대화 히스토리를 요약하여 LLM에 전달하는 토큰 수를 줄인다.
-요약은 SQLite에 캐시하여 반복 생성을 방지한다.
+Summarizes older conversation history to reduce the token budget sent to the
+LLM. Summaries are cached in SQLite to avoid repeated regeneration.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ _SUMMARY_SYSTEM_PROMPT = (
 
 
 class ContextCompressor:
-    """대화 히스토리 요약 및 압축."""
+    """Summarize and compress conversation history."""
 
     def __init__(
         self,
@@ -48,20 +48,20 @@ class ContextCompressor:
         chat_id: int,
         max_history: int = 50,
     ) -> list[dict[str, str]]:
-        """압축된 대화 히스토리를 반환한다.
+        """Return compressed conversation history.
 
-        최근 N개는 원본, 나머지는 요약으로 대체한다.
-        요약이 없으면 최근 N개만 반환한다 (graceful fallback).
+        Keep the most recent N messages verbatim and replace older messages with
+        a summary. If no summary exists yet, fall back to recent messages only.
         """
         recent = await self._memory.get_conversation(
             chat_id, limit=self.recent_keep
         )
 
         if len(recent) < self.recent_keep:
-            # 히스토리가 충분하지 않으면 그대로 반환
+            # If history is already short, return it unchanged.
             return recent
 
-        # 캐시된 요약 조회
+        # Load a cached summary if one exists.
         summary_data = await self._memory.get_summary(chat_id)
         if summary_data is not None:
             summary_msg = {
@@ -70,14 +70,14 @@ class ContextCompressor:
             }
             return [summary_msg, *recent]
 
-        # 요약이 없으면 최근 N개만 반환 (블로킹 없음)
+        # If no summary exists yet, fall back to recent messages only without blocking.
         return recent
 
     async def maybe_refresh_summary(self, chat_id: int) -> bool:
-        """필요 시 백그라운드에서 요약을 갱신한다.
+        """Refresh the summary in the background when needed.
 
         Returns:
-            요약이 갱신되었으면 True.
+            True when the summary was refreshed.
         """
         summary_data = await self._memory.get_summary(chat_id)
         last_id = summary_data["last_archive_id"] if summary_data else 0
@@ -88,7 +88,7 @@ class ContextCompressor:
         if len(new_archived) < self._refresh_interval:
             return False
 
-        # 동시성 제한
+        # Limit concurrent summarization work.
         if self._summarize_sem.locked():
             self._logger.debug("summarize_skipped_busy", chat_id=chat_id)
             return False
@@ -98,7 +98,7 @@ class ContextCompressor:
             base_summary = summary_data["summary"] if summary_data else None
             last_id = summary_data["last_archive_id"] if summary_data else 0
 
-            # 신규 아카이브만 요약 대상에 반영한다.
+            # Only summarize archive entries that were not previously included.
             new_archived = await self._memory.get_archived_messages(
                 chat_id, after_id=last_id
             )
@@ -137,8 +137,8 @@ class ContextCompressor:
         *,
         previous_summary: str | None = None,
     ) -> str:
-        """LLM 호출로 대화를 요약한다."""
-        # 최대 50개 메시지만 사용
+        """Summarize the conversation with an LLM call."""
+        # Use at most the latest 50 messages.
         truncated = messages[-50:]
         conversation_text = "\n".join(
             f"{m['role']}: {m['content'][:200]}" for m in truncated

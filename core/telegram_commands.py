@@ -1,4 +1,4 @@
-"""TelegramHandler 명령어 조립 레이어."""
+"""Command wiring layer for ``TelegramHandler``."""
 
 from __future__ import annotations
 

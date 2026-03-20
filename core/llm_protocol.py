@@ -1,4 +1,4 @@
-"""LLM 클라이언트 공통 인터페이스 프로토콜."""
+"""Shared protocol definitions for LLM clients."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from core.llm_types import ChatResponse, ChatStreamState
 
 
 class LLMClientProtocol(Protocol):
-    """엔진/런타임에서 공통으로 사용하는 LLM 클라이언트 인터페이스."""
+    """Common LLM client interface used by the engine and runtime."""
 
     @property
     def default_model(self) -> str: ...
@@ -60,7 +60,7 @@ class LLMClientProtocol(Protocol):
 
 
 class RetrievalClientProtocol(LLMClientProtocol, Protocol):
-    """임베딩/리랭크를 지원하는 retrieval-capable LLM 인터페이스."""
+    """LLM interface that also supports embedding and reranking."""
 
     @property
     def host(self) -> str: ...

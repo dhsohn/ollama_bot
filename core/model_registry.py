@@ -1,4 +1,4 @@
-"""Ollama 모델 가용성 관리."""
+"""Ollama model availability tracking."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ _ROLE_TO_CONFIG_ATTR = {
 
 @dataclass
 class ModelInfo:
-    """단일 모델의 상태 정보."""
+    """Status information for a single model."""
 
     role: str
     name: str
@@ -30,7 +30,7 @@ class ModelInfo:
 
 
 class ModelRegistry:
-    """기본 채팅 모델과 retrieval 모델의 가용성을 관리한다."""
+    """Track availability for the default chat model and retrieval models."""
 
     def __init__(
         self,
@@ -47,7 +47,7 @@ class ModelRegistry:
             self._models[role] = ModelInfo(role=role, name=name)
 
     async def initialize(self) -> None:
-        """시작 시 retrieval 모델 가용성을 확인한다."""
+        """Check retrieval-model availability during startup."""
         retrieval_models = [
             info.name for role, info in self._models.items()
             if role in ("embedding", "reranker")
@@ -59,7 +59,7 @@ class ModelRegistry:
 
         for role, info in self._models.items():
             if role == "default":
-                # 기본 채팅 모델은 별도 체크 없이 항상 가용하다고 가정한다.
+                # Assume the default chat model is available without an extra check.
                 info.available = True
             else:
                 info.available = availability.get(info.name, False)
@@ -82,6 +82,6 @@ class ModelRegistry:
             )
 
     def is_available(self, role: str) -> bool:
-        """해당 역할의 모델이 가용한지 확인한다."""
+        """Return whether the model for the given role is available."""
         info = self._models.get(role)
         return info is not None and info.available

@@ -1,7 +1,7 @@
-"""LLM 공용 데이터 타입.
+"""Shared LLM data types.
 
-현재 Ollama 클라이언트가 공유하는
-응답 메타데이터 및 스트리밍 상태 타입을 정의한다.
+Defines response metadata and streaming-state types shared by the current
+Ollama client implementation.
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ from dataclasses import dataclass
 
 @dataclass
 class ChatUsage:
-    """LLM 호출 사용량 메타데이터."""
+    """Usage metadata for an LLM call."""
 
     prompt_eval_count: int = 0
     eval_count: int = 0
@@ -21,7 +21,7 @@ class ChatUsage:
 
 @dataclass
 class ChatResponse:
-    """LLM 응답 + 메타데이터."""
+    """LLM response plus metadata."""
 
     content: str
     usage: ChatUsage | None = None
@@ -32,6 +32,6 @@ class ChatResponse:
 
 @dataclass
 class ChatStreamState:
-    """요청 단위 스트리밍 메타데이터."""
+    """Per-request streaming metadata."""
 
     usage: ChatUsage | None = None

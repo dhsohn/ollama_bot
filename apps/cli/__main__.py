@@ -1,4 +1,4 @@
-"""`python -m apps.cli` 진입점."""
+"""Entrypoint for `python -m apps.cli`."""
 
 from apps.cli.main import main
 

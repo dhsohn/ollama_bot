@@ -1,7 +1,7 @@
-"""Ollama API 클라이언트.
+"""Ollama API client.
 
-ollama 라이브러리의 AsyncClient를 래핑하여
-타임아웃, 재시도, 모델 관리, 스트리밍 응답을 제공한다.
+Wraps the Ollama `AsyncClient` and adds timeouts, retries, model management,
+and streaming support.
 """
 
 from __future__ import annotations
@@ -30,15 +30,15 @@ __all__ = [
 
 
 class OllamaClientError(Exception):
-    """Ollama 통신 실패."""
+    """Raised on Ollama communication failures."""
 
 
 class ModelNotFoundError(OllamaClientError):
-    """요청한 모델이 존재하지 않음."""
+    """Raised when the requested model does not exist."""
 
 
 class OllamaClient:
-    """Ollama API 클라이언트. 재시도, 타임아웃, 스트리밍을 지원한다."""
+    """Ollama API client with retry, timeout, and streaming support."""
 
     def __init__(self, config: OllamaConfig) -> None:
         self._host = config.host
@@ -73,7 +73,7 @@ class OllamaClient:
         return self._host
 
     async def initialize(self) -> None:
-        """클라이언트를 생성하고 연결을 확인한다."""
+        """Create the client and verify connectivity."""
         client = AsyncClient(host=self._host)
         try:
             response = await client.list()
@@ -109,7 +109,7 @@ class OllamaClient:
             ) from exc
 
     async def close(self) -> None:
-        """클라이언트 리소스를 정리한다."""
+        """Release client resources."""
         client = self._client
         self._client = None
         self._auto_reconnect_enabled = False
@@ -128,10 +128,10 @@ class OllamaClient:
         self._next_reconnect_at = time.monotonic() + self._reconnect_cooldown_seconds
 
     async def recover_connection(self, *, force: bool = False) -> bool:
-        """연결 장애 시 재연결을 시도한다.
+        """Attempt reconnection after connectivity failures.
 
         Returns:
-            재연결 성공 여부.
+            Whether reconnection succeeded.
         """
         if not self._auto_reconnect_enabled:
             return False
@@ -183,7 +183,7 @@ class OllamaClient:
 
     def _require_client(self) -> AsyncClient:
         if self._client is None:
-            raise RuntimeError("OllamaClient가 아직 초기화되지 않았습니다.")
+            raise RuntimeError("OllamaClient has not been initialized yet.")
         return self._client
 
     async def chat(
@@ -195,7 +195,7 @@ class OllamaClient:
         timeout: int = 60,
         response_format: str | dict | None = None,
     ) -> ChatResponse:
-        """비스트리밍 채팅 요청. 재시도 포함."""
+        """Send a non-streaming chat request with retry handling."""
         model = model or self._default_model
         options = {
             "temperature": self._temperature if temperature is None else temperature,
@@ -235,7 +235,7 @@ class OllamaClient:
         timeout: int = 60,
         stream_state: ChatStreamState | None = None,
     ) -> AsyncGenerator[str, None]:
-        """스트리밍 채팅 요청. 청크를 순차적으로 반환한다."""
+        """Send a streaming chat request and yield chunks in order."""
         client = self._require_client()
         model = model or self._default_model
         options = {
@@ -288,7 +288,7 @@ class OllamaClient:
                         last_content_chunk = content
                         repeated_content_count = 0
                     yield content
-                # 마지막 청크(done=True)에서 usage 메타데이터 추출
+                # Extract usage metadata from the final chunk (`done=True`).
                 if getattr(chunk, "done", False):
                     state.usage = ChatUsage(
                         prompt_eval_count=getattr(chunk, "prompt_eval_count", 0) or 0,
@@ -305,7 +305,7 @@ class OllamaClient:
             ) from exc
 
     async def list_models(self) -> list[dict]:
-        """로컬에 설치된 모델 목록을 반환한다."""
+        """Return the list of locally installed models."""
         client = self._require_client()
         try:
             response = await client.list()
@@ -324,7 +324,7 @@ class OllamaClient:
         ]
 
     async def get_model_info(self, model: str) -> dict:
-        """특정 모델의 상세 정보를 반환한다."""
+        """Return detailed information for a specific model."""
         client = self._require_client()
         try:
             response = await client.show(model)
@@ -340,7 +340,7 @@ class OllamaClient:
             raise ModelNotFoundError(f"Model '{model}' not found: {exc}") from exc
 
     async def health_check(self, *, attempt_recovery: bool = False) -> dict:
-        """Ollama 서버 상태를 확인한다."""
+        """Check the health of the Ollama server."""
         client = self._require_client()
         try:
             response = await client.list()
@@ -374,11 +374,11 @@ class OllamaClient:
         role: str | None = None,
         timeout_seconds: int | None = None,
     ) -> None:
-        """Ollama는 별도 사전 로드 단계가 없어 no-op 처리한다."""
+        """No-op for Ollama, which does not require an explicit preload step."""
         _ = (model, role, timeout_seconds)
         return None
 
-    # ── RetrievalClientProtocol 구현 ──
+    # RetrievalClientProtocol implementation
 
     async def embed(
         self,
@@ -386,7 +386,7 @@ class OllamaClient:
         model: str | None = None,
         timeout: int | None = None,
     ) -> list[list[float]]:
-        """ollama embed API를 사용하여 텍스트 임베딩을 생성한다."""
+        """Generate text embeddings through the Ollama embed API."""
         client = self._require_client()
         target_model = model or self._default_model
         effective_timeout = timeout or 60
@@ -412,7 +412,7 @@ class OllamaClient:
         top_n: int | None = None,
         timeout: int | None = None,
     ) -> list[dict[str, Any]]:
-        """리랭커 모델의 임베딩 + 코사인 유사도로 문서를 재순위한다."""
+        """Rerank documents with reranker embeddings and cosine similarity."""
         if not documents:
             return []
 
@@ -444,7 +444,7 @@ class OllamaClient:
     async def check_model_availability(
         self, model_names: list[str],
     ) -> dict[str, bool]:
-        """ollama에 로드된 모델 가용성을 확인한다."""
+        """Check availability for models loaded in Ollama."""
         availability = {name: False for name in model_names}
         try:
             client = self._require_client()
@@ -464,7 +464,7 @@ class OllamaClient:
         coro_factory,
         max_retries: int = 2,
     ) -> ChatResponse:
-        """재시도 래퍼. 지수 백오프 적용 (1초, 3초)."""
+        """Retry wrapper with exponential backoff (1s, then 3s)."""
         backoff_delays = [1, 3]
         last_error: Exception | None = None
 

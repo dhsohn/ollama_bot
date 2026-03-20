@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# WSL에서 ollama_bot을 직접 실행/재시작하는 스크립트.
+# Run or restart ollama_bot directly from WSL.
 #
-# 사용법:
+# Usage:
 #   ./scripts/run_bot.sh
 #   ./scripts/run_bot.sh --restart
 #   ./scripts/run_bot.sh --restart --pull
@@ -23,33 +23,33 @@ usage() {
     cat <<'EOF'
 Usage: ./scripts/run_bot.sh [options]
 
-기본 동작:
-  - 옵션 없이 실행하면 봇을 포그라운드로 시작한다.
+Default behavior:
+  - Without options, start the bot in the foreground.
 
 Options:
-  --restart   기존 봇을 종료하고 새 봇을 백그라운드로 시작한다.
-  --pull      현재 브랜치 최신 커밋을 fast-forward pull 후 재시작한다.
-  -h, --help  도움말
+  --restart   stop the existing bot and start a new one in the background
+  --pull      fast-forward pull the latest commit for the current branch, then restart
+  -h, --help  show help
 EOF
 }
 
 ensure_prereqs() {
     if [[ ! -f "${CONFIG_FILE}" ]]; then
-        echo "[run_bot.sh] ERROR: ${CONFIG_FILE} 파일이 없습니다." >&2
-        echo "  config.yaml.example을 복사하여 설정하세요: cp config/config.yaml.example config/config.yaml" >&2
+        echo "[run_bot.sh] ERROR: ${CONFIG_FILE} does not exist." >&2
+        echo "  Copy config.yaml.example into place: cp config/config.yaml.example config/config.yaml" >&2
         exit 1
     fi
 
     if [[ ! -f "${VENV_DIR}/bin/python" ]]; then
-        echo "[run_bot.sh] ERROR: .venv이 없습니다." >&2
+        echo "[run_bot.sh] ERROR: .venv is missing." >&2
         echo "  python -m venv .venv && .venv/bin/pip install -r requirements.lock" >&2
         exit 1
     fi
 }
 
 load_env() {
-    # config.yaml에서 설정을 로드하므로 별도 env 소싱 불필요.
-    # 런타임 환경변수 설정이 필요한 경우 여기에 추가.
+    # The app loads settings from config.yaml, so no extra env sourcing is needed.
+    # Add runtime environment variables here if needed.
     :
 }
 
@@ -77,15 +77,15 @@ prepare_runtime_environment() {
 
 git_pull_latest() {
     if [[ -n "$(git -C "${PROJECT_ROOT}" status --porcelain)" ]]; then
-        echo "[run_bot.sh] ERROR: working tree가 비어 있지 않아 --pull을 진행할 수 없습니다." >&2
-        echo "  커밋/스태시 후 다시 실행하거나 --pull 없이 --restart만 사용하세요." >&2
+        echo "[run_bot.sh] ERROR: the working tree is not clean, so --pull cannot proceed." >&2
+        echo "  Commit or stash your changes, or use --restart without --pull." >&2
         exit 1
     fi
 
     local branch
     branch="$(git -C "${PROJECT_ROOT}" branch --show-current)"
     if [[ -z "${branch}" ]]; then
-        echo "[run_bot.sh] ERROR: 현재 git branch를 확인할 수 없습니다." >&2
+        echo "[run_bot.sh] ERROR: failed to determine the current git branch." >&2
         exit 1
     fi
 
@@ -97,7 +97,7 @@ is_systemd_service_active() {
     if ! command -v systemctl >/dev/null 2>&1; then
         return 1
     fi
-    # active뿐 아니라 activating(재시작 대기) 상태도 감지한다.
+    # Detect activating and reloading as well as active.
     local state
     state="$(systemctl --user show -P ActiveState ollama-bot 2>/dev/null || true)"
     [[ "${state}" == "active" || "${state}" == "activating" || "${state}" == "reloading" ]]
@@ -114,7 +114,7 @@ stop_systemd_service_if_running() {
     if ! is_systemd_service_active; then
         return
     fi
-    echo "[run_bot.sh] systemd ollama-bot 서비스가 실행 중이므로 먼저 중지합니다."
+    echo "[run_bot.sh] systemd service ollama-bot is running; stopping it first."
     systemctl --user stop ollama-bot
 }
 
@@ -148,19 +148,19 @@ collect_existing_bot_pids() {
 }
 
 stop_existing_bot() {
-    # systemd가 봇을 관리하고 있으면 먼저 systemd를 통해 중지한다.
-    # 직접 kill하면 Restart=on-failure로 systemd가 재시작을 시도하기 때문이다.
+    # Stop via systemd first if it owns the bot process.
+    # Killing it directly may trigger Restart=on-failure.
     stop_systemd_service_if_running
 
     collect_existing_bot_pids
     if [[ "${#COLLECTED_PIDS[@]}" -eq 0 ]]; then
-        echo "[run_bot.sh] 실행 중인 기존 봇이 없습니다."
+        echo "[run_bot.sh] No existing bot process is running."
         rm -f "${LOCK_FILE}"
         return
     fi
 
     local -a pids=("${!COLLECTED_PIDS[@]}")
-    echo "[run_bot.sh] 기존 봇 종료: ${pids[*]}"
+    echo "[run_bot.sh] Stopping existing bot processes: ${pids[*]}"
     kill "${pids[@]}" 2>/dev/null || true
 
     local remaining=("${pids[@]}")
@@ -178,26 +178,26 @@ stop_existing_bot() {
     done
 
     if [[ "${#remaining[@]}" -gt 0 ]]; then
-        echo "[run_bot.sh] 종료 지연으로 SIGKILL 전송: ${remaining[*]}"
+        echo "[run_bot.sh] Shutdown timed out; sending SIGKILL: ${remaining[*]}"
         kill -9 "${remaining[@]}" 2>/dev/null || true
         sleep 1
     fi
 
-    # 종료 후 잔여 프로세스 재확인
+    # Re-check for stragglers after shutdown.
     collect_existing_bot_pids
     if [[ "${#COLLECTED_PIDS[@]}" -gt 0 ]]; then
         local -a stragglers=("${!COLLECTED_PIDS[@]}")
-        echo "[run_bot.sh] 잔여 프로세스 강제 종료: ${stragglers[*]}"
+        echo "[run_bot.sh] Force-killing remaining processes: ${stragglers[*]}"
         kill -9 "${stragglers[@]}" 2>/dev/null || true
         sleep 1
     fi
 
-    # lock 파일 삭제하여 새 봇이 깨끗한 상태에서 시작하도록 보장
+    # Remove the lock file so the new bot starts from a clean state.
     rm -f "${LOCK_FILE}"
 }
 
 start_background_bot() {
-    echo "[run_bot.sh] 새 봇을 백그라운드로 시작합니다."
+    echo "[run_bot.sh] Starting a new bot in the background."
     local launch_cmd
     printf -v launch_cmd 'cd %q && exec ./scripts/run_bot.sh --child >> %q 2>&1' \
         "${PROJECT_ROOT}" \
@@ -217,20 +217,20 @@ start_background_bot() {
     done
 
     if [[ -z "${new_pid}" ]] || ! kill -0 "${new_pid}" 2>/dev/null; then
-        echo "[run_bot.sh] ERROR: 새 봇이 시작 직후 종료되었습니다." >&2
-        echo "[run_bot.sh] 최근 로그:" >&2
+        echo "[run_bot.sh] ERROR: the new bot exited immediately after startup." >&2
+        echo "[run_bot.sh] Recent logs:" >&2
         tail -n 40 "${RESTART_LOG}" >&2 || true
         exit 1
     fi
 
-    echo "[run_bot.sh] 새 봇 PID: ${new_pid}"
-    echo "[run_bot.sh] 로그: ${RESTART_LOG}"
+    echo "[run_bot.sh] New bot PID: ${new_pid}"
+    echo "[run_bot.sh] Log: ${RESTART_LOG}"
 }
 
 restart_via_systemd() {
-    echo "[run_bot.sh] systemd user service(ollama-bot) 활성 상태입니다. systemctl로 재시작합니다."
+    echo "[run_bot.sh] systemd user service (ollama-bot) is enabled; restarting via systemctl."
     systemctl --user restart ollama-bot
-    echo "[run_bot.sh] systemctl --user restart ollama-bot 완료"
+    echo "[run_bot.sh] systemctl --user restart ollama-bot completed"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -252,7 +252,7 @@ while [[ $# -gt 0 ]]; do
             exit 0
             ;;
         *)
-            echo "[run_bot.sh] 알 수 없는 옵션: $1" >&2
+            echo "[run_bot.sh] unknown option: $1" >&2
             usage
             exit 1
             ;;
@@ -260,7 +260,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ "${PULL_LATEST}" == "1" && "${MODE}" != "restart" ]]; then
-    echo "[run_bot.sh] ERROR: --pull은 --restart와 함께 사용해야 합니다." >&2
+    echo "[run_bot.sh] ERROR: --pull must be used together with --restart." >&2
     exit 1
 fi
 
@@ -276,9 +276,9 @@ fi
 
 if [[ "${MODE}" == "restart" ]]; then
     if is_systemd_service_enabled; then
-        # systemd 서비스가 enabled이면 항상 systemd를 통해 재시작한다.
-        # enabled 상태에서 수동 시작하면 systemd가 별도로 봇을 띄워 중복 실행된다.
-        # systemd가 active여도 수동 프로세스가 남아 있을 수 있으므로 항상 정리한다.
+        # If the service is enabled, always restart through systemd.
+        # Starting manually in that state can produce duplicate bot processes.
+        # Even when systemd is active, clean up any manual processes first.
         stop_existing_bot
         restart_via_systemd
         exit 0

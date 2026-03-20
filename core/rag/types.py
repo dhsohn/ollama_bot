@@ -1,4 +1,4 @@
-"""RAG 파이프라인 공유 데이터 타입."""
+"""Shared data types for the RAG pipeline."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from typing import Any
 
 @dataclass
 class ChunkMetadata:
-    """청크 메타데이터."""
+    """Chunk metadata."""
 
     doc_id: str
     source_path: str
@@ -22,7 +22,7 @@ class ChunkMetadata:
 
 @dataclass
 class Chunk:
-    """인덱싱된 텍스트 청크."""
+    """An indexed text chunk."""
 
     text: str
     metadata: ChunkMetadata
@@ -31,7 +31,7 @@ class Chunk:
 
 @dataclass
 class RetrievedItem:
-    """검색/리랭크 결과 항목."""
+    """An item produced by retrieval and optional reranking."""
 
     chunk: Chunk
     retrieval_score: float
@@ -40,7 +40,7 @@ class RetrievedItem:
 
 @dataclass
 class RAGTrace:
-    """RAG 실행 추적 정보."""
+    """Trace metadata for a RAG execution."""
 
     rag_used: bool = False
     rerank_used: bool = False
@@ -70,7 +70,7 @@ class RAGTrace:
 
 @dataclass
 class RAGResult:
-    """RAG 파이프라인 전체 결과."""
+    """Full RAG pipeline result."""
 
     contexts: list[str]
     candidates: list[RetrievedItem]

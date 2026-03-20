@@ -1,4 +1,4 @@
-"""런타임 유지보수 태스크."""
+"""Runtime maintenance tasks."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ async def memory_maintenance_loop(
     feedback_retention_days: int | None = None,
     semantic_cache: Any = None,
 ) -> None:
-    """주기적으로 오래된 대화/피드백/캐시 데이터를 정리한다."""
+    """Periodically prune old conversation, feedback, and cache data."""
     while True:
         try:
             deleted = await memory.prune_old_conversations()
@@ -53,7 +53,7 @@ async def llm_recovery_loop(
     logger: Any,
     interval_seconds: int,
 ) -> None:
-    """LLM 백엔드 상태를 주기 점검하고 장애 시 재연결을 시도한다."""
+    """Periodically check backend health and attempt recovery when needed."""
     while True:
         try:
             health = await llm.health_check(attempt_recovery=False)

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# systemd 서비스 설치 스크립트.
-# - update-wsl-hosts.service: system-level (sudo 필요, /etc/hosts 별칭 갱신)
-# - ollama-bot.service: user-level (sudo 불필요)
+# systemd service installation script.
+# - update-wsl-hosts.service: system-level (requires sudo, refreshes the /etc/hosts alias)
+# - ollama-bot.service: user-level (no sudo required)
 #
-# 사용법:
+# Usage:
 #   bash scripts/install_boot_service.sh
 set -euo pipefail
 
@@ -29,7 +29,7 @@ case "${1:-}" in
   "")
     ;;
   *)
-    echo "[install_boot_service.sh] 알 수 없는 옵션: $1" >&2
+    echo "[install_boot_service.sh] unknown option: $1" >&2
     usage
     exit 1
     ;;
@@ -37,9 +37,9 @@ esac
 
 mkdir -p "${UNIT_DIR}"
 
-# ── update-wsl-hosts.service (system-level, 부팅 시 별칭 IP 갱신) ──
+# update-wsl-hosts.service (system-level, refresh alias IP during boot)
 SYSTEM_UNIT="/etc/systemd/system/update-wsl-hosts.service"
-echo "[install] update-wsl-hosts.service 설치 (sudo 필요)"
+echo "[install] Installing update-wsl-hosts.service (sudo required)"
 sudo tee "${SYSTEM_UNIT}" > /dev/null <<EOF
 [Unit]
 Description=Update /etc/hosts with WSL gateway IP
@@ -56,9 +56,9 @@ EOF
 
 sudo systemctl daemon-reload
 sudo systemctl enable update-wsl-hosts.service
-echo "[install] update-wsl-hosts.service 생성 완료"
+echo "[install] Created update-wsl-hosts.service"
 
-# ── ollama-bot.service (user-level) ──
+# ollama-bot.service (user-level)
 cat > "${UNIT_DIR}/ollama-bot.service" <<EOF
 [Unit]
 Description=ollama_bot Telegram Bot
@@ -78,25 +78,25 @@ RestartSec=10
 WantedBy=default.target
 EOF
 
-echo "[install] ollama-bot.service 생성 완료"
+echo "[install] Created ollama-bot.service"
 
-# ── 활성화 ──
+# Enable services
 systemctl --user daemon-reload
 systemctl --user enable ollama-bot.service
 
-# 부팅 시 로그인 없이도 서비스 시작
+# Start services at boot even without an interactive login
 loginctl enable-linger "$(whoami)" 2>/dev/null || true
 
 echo ""
-echo "=== 설치 완료 ==="
+echo "=== Installation complete ==="
 echo ""
-echo "서비스 시작:"
-echo "  sudo systemctl start update-wsl-hosts   # 즉시 hosts 갱신"
+echo "Start services:"
+echo "  sudo systemctl start update-wsl-hosts   # refresh hosts immediately"
 echo "  systemctl --user start ollama-bot"
 echo ""
-echo "로그 확인:"
-echo "  journalctl -u update-wsl-hosts           # hosts 갱신 로그"
-echo "  journalctl --user -u ollama-bot -f        # 봇 로그"
+echo "Inspect logs:"
+echo "  journalctl -u update-wsl-hosts           # hosts refresh log"
+echo "  journalctl --user -u ollama-bot -f        # bot log"
 echo ""
-echo "상태 확인:"
+echo "Check status:"
 echo "  systemctl --user status ollama-bot"

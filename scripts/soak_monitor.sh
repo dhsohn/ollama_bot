@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 장시간 안정성 모니터링 (systemd user service 기반)
+# Long-running stability monitor for a systemd user service
 set -euo pipefail
 
 SERVICE="ollama-bot"
@@ -38,7 +38,7 @@ if ! systemctl --user is-active --quiet "${SERVICE}"; then
   exit 1
 fi
 
-# NRestarts at baseline
+# Baseline NRestarts
 baseline_restarts="$(systemctl --user show "${SERVICE}" -p NRestarts --value)"
 end_epoch=$(( "$(date +%s)" + MINUTES * 60 ))
 
@@ -46,13 +46,13 @@ echo "Soak monitor start: service=${SERVICE}, minutes=${MINUTES}, interval=${INT
 echo "Baseline restarts: ${baseline_restarts}"
 
 while [[ "$(date +%s)" -lt "${end_epoch}" ]]; do
-  # 서비스 활성 여부
+  # Service activity check
   if ! systemctl --user is-active --quiet "${SERVICE}"; then
     echo "FAIL: service '${SERVICE}' is not running"
     exit 1
   fi
 
-  # 재시작 횟수
+  # Restart count
   restarts="$(systemctl --user show "${SERVICE}" -p NRestarts --value)"
   restart_delta=$(( restarts - baseline_restarts ))
   if (( restart_delta > MAX_RESTARTS )); then
@@ -60,7 +60,7 @@ while [[ "$(date +%s)" -lt "${end_epoch}" ]]; do
     exit 1
   fi
 
-  # 최근 구간 에러 로그
+  # Recent interval error logs
   interval_logs="$(journalctl --user -u "${SERVICE}" --since "${INTERVAL_SECONDS}s ago" --no-pager 2>/dev/null || true)"
   error_lines="$(printf '%s\n' "${interval_logs}" | grep -Eic '"log_level": ?"error"|automation_failed|telegram_error|ollama_connection_failed' || true)"
   if (( error_lines > MAX_ERROR_LINES )); then

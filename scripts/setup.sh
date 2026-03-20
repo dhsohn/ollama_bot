@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ollama_bot 초기 설정 스크립트 (WSL 네이티브)
+# Initial setup script for ollama_bot (WSL native)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -12,16 +12,16 @@ usage() {
     cat <<'EOF'
 Usage: bash scripts/setup.sh [options]
 
-기본 동작:
-  - config/config.yaml 생성/확인
-  - .venv 확인
-  - data/, kb/ 디렉토리 준비
-  - Ollama 모델 상태 점검
+Default behavior:
+  - create or verify config/config.yaml
+  - verify .venv
+  - prepare the data/ and kb/ directories
+  - check Ollama model status
 
 Options:
-  --run                    setup 후 run_bot.sh 실행
-  --install-boot-service   systemd 부팅 서비스 설치/활성화
-  -h, --help               도움말
+  --run                    run run_bot.sh after setup
+  --install-boot-service   install and enable the systemd boot service
+  -h, --help               show help
 EOF
 }
 
@@ -50,7 +50,7 @@ while [[ $# -gt 0 ]]; do
             exit 0
             ;;
         *)
-            echo "[setup.sh] 알 수 없는 옵션: $1" >&2
+            echo "[setup.sh] unknown option: $1" >&2
             usage
             exit 1
             ;;
@@ -94,7 +94,7 @@ check_ollama_model() {
     if ollama list 2>/dev/null | awk 'NR>1 {print $1}' | grep -Fxq "${model_name}"; then
         echo "  - OK: ${model_name}"
     else
-        echo "  - 누락: ${model_name} (다운로드: ollama pull ${model_name})"
+        echo "  - Missing: ${model_name} (download with: ollama pull ${model_name})"
     fi
 }
 
@@ -102,21 +102,21 @@ cd "${PROJECT_ROOT}"
 
 echo "=== ollama_bot setup ==="
 
-# config.yaml 생성
+# Create config.yaml
 if [ ! -f config/config.yaml ]; then
     cp config/config.yaml.example config/config.yaml
-    echo "config/config.yaml 파일이 생성되었습니다. 환경에 맞게 편집하세요."
+    echo "Created config/config.yaml. Edit it for your environment."
 else
-    echo "config/config.yaml 파일이 이미 존재합니다."
+    echo "config/config.yaml already exists."
 fi
 
-# venv 확인
+# Verify the virtual environment
 if [ ! -f .venv/bin/python ]; then
-    echo "WARNING: .venv이 없습니다."
+    echo "WARNING: .venv is missing."
     echo "  python -m venv .venv && .venv/bin/pip install -r requirements.lock"
 fi
 
-# 데이터 디렉토리 생성
+# Create data directories
 mkdir -p data/conversations data/memory data/logs data/reports data/hf_cache/fastembed
 mkdir -p kb
 
@@ -125,7 +125,7 @@ chat_model="$(extract_yaml_value "ollama" "chat_model")"
 embedding_model="$(extract_yaml_value "ollama" "embedding_model")"
 reranker_model="$(extract_yaml_value "ollama" "reranker_model")"
 
-echo "아키텍처: Ollama 단일 스택 (chat + embedding + reranking)"
+echo "Architecture: Ollama single-stack (chat + embedding + reranking)"
 if [ -n "${ollama_host}" ]; then
     echo "- Ollama host: ${ollama_host}"
 fi
@@ -139,31 +139,31 @@ if [ -n "${reranker_model}" ]; then
     echo "- Reranker model: ${reranker_model}"
 fi
 
-# Ollama 모델 확인
+# Check Ollama models
 if command -v ollama >/dev/null 2>&1 && is_local_ollama_host "${ollama_host}"; then
-    echo "Ollama CLI가 설치되어 있습니다. 로컬 모델 상태를 확인합니다."
+    echo "Ollama CLI is installed. Checking local model status."
     check_ollama_model "${chat_model}"
     check_ollama_model "${embedding_model}"
     check_ollama_model "${reranker_model}"
 elif command -v ollama >/dev/null 2>&1; then
-    echo "참고: Ollama host가 로컬이 아니므로 CLI 모델 검사를 건너뜁니다."
-    echo "      원격 Ollama 서버(${ollama_host})에서 모델 상태를 확인하세요."
+    echo "Note: the Ollama host is not local, so CLI model checks are skipped."
+    echo "      Check model status on the remote Ollama server (${ollama_host})."
 else
-    echo "참고: Ollama CLI가 없습니다."
+    echo "Note: Ollama CLI is not installed."
     if [ -n "${ollama_host}" ]; then
-        echo "      Ollama 서버(${ollama_host})가 원격이면 정상입니다."
+        echo "      This is fine if the Ollama server (${ollama_host}) is remote."
     fi
 fi
 
 echo ""
-echo "=== setup 완료 ==="
-echo "1. config/config.yaml 파일을 환경에 맞게 편집하세요."
-echo "2. config/config.yaml의 ollama host 및 모델값을 확인하세요."
-echo "3. 실행: bash scripts/run_bot.sh"
-echo "4. (선택) 부팅 자동 실행: bash scripts/install_boot_service.sh"
+echo "=== Setup complete ==="
+echo "1. Edit config/config.yaml for your environment."
+echo "2. Verify the ollama host and model values in config/config.yaml."
+echo "3. Run: bash scripts/run_bot.sh"
+echo "4. Optional boot auto-start: bash scripts/install_boot_service.sh"
 
 if [[ "${INSTALL_BOOT_SERVICE}" == "1" ]]; then
-    echo "[setup.sh] boot service 설치"
+    echo "[setup.sh] installing boot service"
     bash "${PROJECT_ROOT}/scripts/install_boot_service.sh"
 fi
 

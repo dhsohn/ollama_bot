@@ -1,4 +1,4 @@
-"""공통 SQLite 스키마 마이그레이션 프레임워크."""
+"""Shared SQLite schema migration framework."""
 
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ MigrationCallable = Callable[[aiosqlite.Connection], Awaitable[None]]
 
 @dataclass(frozen=True)
 class MigrationStep:
-    """단일 스키마 마이그레이션 단계."""
+    """A single schema migration step."""
 
     version: int
     apply: MigrationCallable
@@ -32,7 +32,7 @@ class MigrationStep:
 
 
 class MigrationRunner:
-    """DB별 스키마 마이그레이션을 실행한다."""
+    """Run schema migrations for a database."""
 
     def __init__(
         self,
@@ -51,7 +51,7 @@ class MigrationRunner:
         *,
         backup_tables: set[str] | None = None,
     ) -> set[int]:
-        """마이그레이션을 순서대로 적용한다."""
+        """Apply migrations in version order."""
         ordered = sorted(steps, key=lambda item: item.version)
         if not ordered:
             return set()

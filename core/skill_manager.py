@@ -1,8 +1,8 @@
-"""스킬 시스템 — YAML 기반 스킬 로더 및 실행기.
+"""Skill system with a YAML-based loader and matcher.
 
-skills/_builtin/ 및 skills/custom/ 디렉토리의 YAML 파일을 로드하고,
-사용자 입력에 대한 트리거 매칭 및 LLM 컨텍스트 생성을 담당한다.
-스킬은 순수 선언적이며, 코드 실행 없이 시스템 프롬프트만 변경한다.
+Loads YAML files from `skills/_builtin/` and `skills/custom/`, matches user
+input against skill triggers, and builds LLM context. Skills are declarative and
+modify prompts without executing code.
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ class SkillParameter(BaseModel):
 
 
 class SkillDefinition(BaseModel):
-    """스킬 YAML 정의를 검증하는 모델."""
+    """Validation model for skill YAML definitions."""
 
     name: str
     description: str
@@ -91,15 +91,15 @@ class SkillDefinition(BaseModel):
 
 
 class DuplicateSkillNameError(ValueError):
-    """스킬 이름 충돌."""
+    """Raised when two skills share the same name."""
 
 
 class DuplicateSkillTriggerError(ValueError):
-    """스킬 트리거 충돌."""
+    """Raised when two skills share the same trigger."""
 
 
 class SkillManager:
-    """스킬을 로드, 매칭, 관리한다."""
+    """Load, match, and manage skills."""
 
     def __init__(
         self,
@@ -119,7 +119,7 @@ class SkillManager:
         self._logger = get_logger("skill_manager")
 
     async def load_skills(self, *, strict: bool = False) -> int:
-        """_builtin/ 및 custom/ 디렉토리에서 스킬 YAML을 로드한다."""
+        """Load skill YAML files from `_builtin/` and `custom/`."""
         new_skills: dict[str, SkillDefinition] = {}
         new_trigger_map: dict[str, str] = {}
         name_sources: dict[str, Path] = {}
@@ -159,7 +159,7 @@ class SkillManager:
                         for trigger in skill.triggers:
                             trigger_key = trigger.lower()
                             if trigger_key in new_trigger_map:
-                                # 동일 스킬 내 중복 트리거는 첫 항목을 유지한다.
+                                # Within a skill, keep the first duplicate trigger only.
                                 continue
                             new_trigger_map[trigger_key] = skill.name
                             trigger_sources[trigger_key] = yaml_file
@@ -183,7 +183,7 @@ class SkillManager:
         if strict and self._last_load_errors:
             raise ValueError(self._format_load_error_summary(self._last_load_errors))
 
-        # 전체 로드가 성공했을 때만 활성 스킬 상태를 교체한다.
+        # Swap active skill state only after the full load succeeds.
         self._skills = new_skills
         self._trigger_map = new_trigger_map
         self._rebuild_matcher_index()
@@ -197,7 +197,7 @@ class SkillManager:
         return loaded
 
     def _load_skill_file(self, path: Path) -> SkillDefinition | None:
-        """단일 YAML 파일에서 스킬을 로드하고 보안을 검증한다."""
+        """Load one skill YAML file and validate its security settings."""
         with open(path, encoding="utf-8") as f:
             data = yaml.safe_load(f)
 
@@ -206,7 +206,7 @@ class SkillManager:
 
         skill = SkillDefinition(**data)
 
-        # 보안 등급과 도구 호환성 검증
+        # Validate the security level against requested tools.
         try:
             self._security.check_skill_security(
                 skill.security_level.value, skill.allowed_tools
@@ -223,24 +223,24 @@ class SkillManager:
         return skill
 
     def get_skill(self, name: str) -> SkillDefinition | None:
-        """이름으로 스킬을 조회한다."""
+        """Look up a skill by name."""
         return self._skills.get(name)
 
     def match_trigger(self, text: str) -> SkillDefinition | None:
-        """사용자 입력에서 스킬 트리거를 매칭한다.
+        """Match a skill trigger from user input.
 
-        우선순위: 명령어(/command) > 키워드
+        Priority: command (`/command`) before keyword.
         """
         text_lower = text.lower().strip()
 
-        # 1. /command 트리거 (정확한 접두사 매칭)
+        # 1. `/command` triggers (exact prefix match)
         first_word = text_lower.split()[0] if text_lower else ""
         if first_word.startswith("/"):
             skill_name = self._command_trigger_map.get(first_word)
             if skill_name:
                 return self._skills.get(skill_name)
 
-        # 2. 키워드 트리거 (Aho-Corasick 매칭)
+        # 2. Keyword triggers (Aho-Corasick matching)
         skill_name = self._match_keyword_trigger(text_lower)
         if skill_name:
             return self._skills.get(skill_name)
@@ -248,7 +248,7 @@ class SkillManager:
         return None
 
     def _rebuild_matcher_index(self) -> None:
-        """트리거 인덱스를 재생성한다."""
+        """Rebuild the trigger index."""
         self._command_trigger_map = {}
         self._keyword_trigger_order = []
 
@@ -261,7 +261,7 @@ class SkillManager:
         self._build_keyword_automaton()
 
     def _build_keyword_automaton(self) -> None:
-        """키워드 트리거용 Aho-Corasick 오토마톤을 생성한다."""
+        """Build the Aho-Corasick automaton for keyword triggers."""
         self._ac_goto = [{}]
         self._ac_fail = [0]
         self._ac_output = [[]]
@@ -297,10 +297,10 @@ class SkillManager:
                 )
 
     def _match_keyword_trigger(self, text_lower: str) -> str | None:
-        """본문 키워드 트리거를 검색한다.
+        """Search for keyword triggers in the message body.
 
-        기존 동작(로드 순서상 먼저 등록된 트리거 우선)을 유지하기 위해
-        매칭 위치와 무관하게 최소 order 인덱스를 선택한다.
+        To preserve existing behavior, the earliest trigger in load order wins
+        regardless of where the match appears in the text.
         """
         if not self._keyword_trigger_order:
             return None
@@ -343,7 +343,7 @@ class SkillManager:
         ]
 
     def get_last_load_errors(self) -> list[str]:
-        """가장 최근 load_skills에서 수집된 오류를 반환한다."""
+        """Return errors collected during the most recent `load_skills` call."""
         return list(self._last_load_errors)
 
     @staticmethod
@@ -358,7 +358,7 @@ class SkillManager:
         return message
 
     async def reload_skills(self, *, strict: bool = False) -> int:
-        """스킬을 다시 로드한다."""
+        """Reload all skills."""
         return await self.load_skills(strict=strict)
 
     def get_skill_context(
@@ -366,8 +366,8 @@ class SkillManager:
         skill: SkillDefinition,
         user_input: str,
     ) -> list[dict[str, str]]:
-        """스킬의 시스템 프롬프트와 사용자 입력으로 LLM 메시지를 생성한다."""
-        # 트리거 명령어를 입력에서 제거
+        """Build LLM messages from a skill system prompt and user input."""
+        # Remove the trigger command from the input.
         clean_input = user_input
         for trigger in skill.triggers:
             if user_input.lower().startswith(trigger.lower()):

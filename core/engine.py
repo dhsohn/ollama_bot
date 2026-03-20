@@ -1,14 +1,14 @@
-"""메인 엔진 — 대화 오케스트레이션, 컨텍스트 관리, 계층형 라우팅.
+"""Main engine for conversation orchestration, context management, and routing.
 
-모든 사용자 메시지 처리의 중앙 허브.
-텔레그램 핸들러로부터 입력을 받아 적절한 처리 후 응답을 반환한다.
+This is the central hub for user-message handling. It receives input from the
+Telegram handler and returns a response after the appropriate processing path.
 
-계층형 처리 경로:
-  [선행] 스킬 트리거 매칭
-  [Tier 1] 규칙 기반 즉시 응답 (InstantResponder)
-  [Tier 2] 인텐트 라우팅 (IntentRouter)
-  [Tier 3] 시맨틱 캐시 (SemanticCache)
-  [Tier 4] Full LLM (최적화된 컨텍스트)
+Routing order:
+  [pre-step] skill trigger matching
+  [Tier 1] rule-based instant response (`InstantResponder`)
+  [Tier 2] intent routing (`IntentRouter`)
+  [Tier 3] semantic cache (`SemanticCache`)
+  [Tier 4] full LLM with optimized context
 """
 
 from __future__ import annotations
@@ -53,7 +53,7 @@ _STREAM_REPEATED_CHUNK_ABORT_THRESHOLD = 30
 
 
 class Engine:
-    """대화 처리 엔진. 계층형 라우팅과 컨텍스트 관리를 오케스트레이션한다."""
+    """Conversation engine that orchestrates routing and context management."""
 
     def __init__(
         self,
@@ -89,7 +89,7 @@ class Engine:
         self._stream_meta_max_entries = _STREAM_META_MAX_ENTRIES
         self._active_request_count = 0
         summary_concurrency = max(1, int(config.context_compressor.summarize_concurrency))
-        # 요약 태스크가 무제한 생성되지 않도록 생성량 상한을 둔다.
+        # Cap summary-task creation to avoid unbounded background growth.
         self._summary_task_limit = max(2, summary_concurrency * 3)
         self._summary_tasks: set[asyncio.Task[Any]] = set()
         self._degraded_since: dict[str, float] = {}
@@ -177,7 +177,7 @@ class Engine:
 
     @staticmethod
     def _finalize_stream_response(full_response: str) -> str:
-        """스트리밍/폴백 응답의 공백·이상치를 정리하고 유효성을 보장한다."""
+        """Normalize a stream or fallback response and ensure it is usable."""
         if not full_response.strip():
             raise RuntimeError("empty_response_from_llm")
         normalized = sanitize_model_output(full_response).strip()
@@ -185,7 +185,7 @@ class Engine:
             raise RuntimeError("empty_response_from_llm")
         return normalized
 
-    # ── 메시지 처리 (계층형 라우팅) ──
+    # Message handling (hierarchical routing)
 
     async def process_message(
         self,
@@ -196,9 +196,10 @@ class Engine:
         images: list[bytes] | None = None,
         metadata: dict | None = None,
     ) -> str:
-        """사용자 메시지를 처리하고 응답을 반환한다.
+        """Process a user message and return the response.
 
-        계층형 처리: 스킬 → Tier 1 (즉시) → Tier 2 (인텐트) → Tier 3 (캐시) → Tier 4 (LLM)
+        Routing order: Skill -> Tier 1 (instant) -> Tier 2 (intent) -> Tier 3
+        (cache) -> Tier 4 (LLM)
         """
         t0 = time.monotonic()
         async with self._track_request(chat_id, stream=False):
@@ -302,7 +303,7 @@ class Engine:
                     rag_trace=prepared_full.rag_result.trace if prepared_full.rag_result else None,
                 )
 
-                # 백그라운드 요약 갱신
+                # Trigger background summary refresh.
                 self._trigger_background_summary(chat_id)
 
                 return content
@@ -319,7 +320,7 @@ class Engine:
         images: list[bytes] | None = None,
         metadata: dict | None = None,
     ) -> AsyncGenerator[str, None]:
-        """스트리밍 방식으로 메시지를 처리한다. 청크를 순차 반환한다."""
+        """Process a message in streaming mode and yield chunks in order."""
         async for chunk in self._stream_orchestrator.process_message_stream(
             chat_id=chat_id,
             text=text,

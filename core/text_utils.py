@@ -1,4 +1,4 @@
-"""텍스트 유틸리티 — 키워드 추출/응답 정제."""
+"""Text utilities for keyword extraction and response cleanup."""
 
 from __future__ import annotations
 
@@ -79,7 +79,7 @@ _QUALITY_TOKEN_RE = re.compile(r"[a-zA-Z가-힣_]{2,}")
 
 
 def _extract_after_loose_final_marker(text: str) -> str | None:
-    """엄격한 채널 토큰이 없을 때 final 마커 뒤 텍스트를 보수적으로 추출한다."""
+    """Conservatively extract text after a loose final marker."""
     matches = list(_LOOSE_FINAL_MARKER_RE.finditer(text))
     if not matches:
         return None
@@ -88,7 +88,7 @@ def _extract_after_loose_final_marker(text: str) -> str | None:
     if not candidate:
         return None
 
-    # final 마커 직후에 붙는 잔여 토큰(code/analysis/markdown 장식 등)을 제거한다.
+    # Remove leading artifacts after the final marker, such as `code` or markdown noise.
     for _ in range(3):
         updated = _LEADING_FINAL_ARTIFACT_RE.sub("", candidate, count=1).lstrip()
         if updated == candidate:
@@ -100,7 +100,7 @@ def _extract_after_loose_final_marker(text: str) -> str | None:
 
 
 def extract_keywords(text: str, max_keywords: int = 5) -> list[str]:
-    """텍스트에서 한/영 키워드를 빈도순으로 추출한다."""
+    """Extract Korean and English keywords by frequency."""
     tokens = _TOKEN_RE.findall(text)
     filtered = [
         t.lower()
@@ -114,7 +114,7 @@ def extract_keywords(text: str, max_keywords: int = 5) -> list[str]:
 
 
 def sanitize_model_output(text: str) -> str:
-    """모델 출력에서 내부 사고/채널 토큰을 제거해 사용자 노출 텍스트로 정제한다."""
+    """Strip internal reasoning and channel tokens from model output."""
     raw = text.strip()
     if not raw:
         return ""
@@ -137,8 +137,8 @@ def sanitize_model_output(text: str) -> str:
         elif non_analysis_blocks:
             cleaned = non_analysis_blocks[-1]
         else:
-            # analysis/commentary-only 출력은 내부 사고 가능성이 높아 노출하지 않는다.
-            # 다만 to=final/final 같은 느슨한 마커가 있으면 마지막 후보를 복구한다.
+            # If only analysis/commentary output exists, treat it as internal reasoning.
+            # Recover the last candidate only when a loose final marker is present.
             cleaned = _extract_after_loose_final_marker(cleaned) or ""
     else:
         markers = list(_ASSISTANT_MARKER_RE.finditer(cleaned))
@@ -158,7 +158,7 @@ def sanitize_model_output(text: str) -> str:
 
 
 def detect_output_anomalies(text: str, cleaned: str | None = None) -> list[str]:
-    """사용자 노출 관점에서 비정상 출력 패턴을 감지한다."""
+    """Detect anomalous output patterns from a user-visible perspective."""
     raw = text or ""
     visible = sanitize_model_output(raw) if cleaned is None else (cleaned or "")
     reasons: list[str] = []
@@ -204,7 +204,7 @@ def detect_output_anomalies(text: str, cleaned: str | None = None) -> list[str]:
 
 
 def should_defer_stream_display(text: str, cleaned: str | None = None) -> bool:
-    """스트리밍 중간 렌더에서 내부 사고가 보일 가능성이 있으면 표시를 미룬다."""
+    """Delay partial stream rendering when internal reasoning may leak through."""
     raw = (text or "").strip()
     visible = sanitize_model_output(raw) if cleaned is None else (cleaned or "").strip()
     if not visible:

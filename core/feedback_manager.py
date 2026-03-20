@@ -1,6 +1,6 @@
-"""사용자 피드백 관리 모듈.
+"""User feedback management.
 
-봇 응답에 대한 thumbs-up/down 피드백을 저장·조회·통계한다.
+Stores, queries, and summarizes thumbs-up/down feedback on bot responses.
 """
 
 from __future__ import annotations
@@ -62,14 +62,14 @@ _TABLE_INFO_WHITELIST = frozenset({"message_feedback"})
 
 
 def _sanitize_preview(text: str | None) -> str | None:
-    """미리보기 텍스트 길이를 제한한다."""
+    """Cap preview text length."""
     if text is None:
         return None
     return text[:_PREVIEW_MAX_CHARS]
 
 
 def _normalize_review_issues(issues: Iterable[str] | None) -> list[str]:
-    """review issue 라벨을 정규화하고 중복을 제거한다."""
+    """Normalize review-issue labels and remove duplicates."""
     if issues is None:
         return []
     normalized: list[str] = []
@@ -87,7 +87,7 @@ def _normalize_review_issues(issues: Iterable[str] | None) -> list[str]:
 
 
 async def _has_column(db: aiosqlite.Connection, table: str, column: str) -> bool:
-    """PRAGMA table_info로 특정 컬럼 존재 여부를 확인한다."""
+    """Check whether a given column exists via `PRAGMA table_info`."""
     if table not in _TABLE_INFO_WHITELIST:
         raise ValueError(f"unsupported table for pragma table_info: {table}")
     async with db.execute(f"PRAGMA table_info({table})") as cursor:
@@ -107,7 +107,7 @@ async def _apply_feedback_v2(db: aiosqlite.Connection) -> None:
 
 
 async def _apply_feedback_v3(db: aiosqlite.Connection) -> None:
-    pass  # auto_evaluation 테이블 제거됨 (기존 DB 호환 위해 마이그레이션 스텝 유지)
+    pass  # auto_evaluation was removed; keep the migration step for DB compatibility.
 
 
 async def _apply_feedback_v4(db: aiosqlite.Connection) -> None:
@@ -115,19 +115,19 @@ async def _apply_feedback_v4(db: aiosqlite.Connection) -> None:
 
 
 class FeedbackManager:
-    """메시지 피드백 저장/조회/통계를 관리한다."""
+    """Manage message feedback storage, lookup, and statistics."""
 
     def __init__(self, db: aiosqlite.Connection) -> None:
         self._db = db
         self._logger = get_logger("feedback_manager")
 
     async def initialize_schema(self) -> None:
-        """피드백 테이블을 생성하고 마이그레이션을 적용한다."""
+        """Create feedback tables and apply migrations."""
         runner = MigrationRunner(self._db, self._logger, db_label="feedback")
         await runner.run(
             [
-                # memory/semantic_cache와 같은 DB를 공유할 수 있으므로
-                # 버전 번호는 컴포넌트별로 충돌하지 않게 분리한다.
+                # These tables may share a DB with memory/semantic_cache, so
+                # migration versions stay namespaced by component.
                 MigrationStep(101, _apply_feedback_v1, "create_message_feedback"),
                 MigrationStep(102, _apply_feedback_v2, "add_feedback_reason_column"),
                 MigrationStep(103, _apply_feedback_v3, "create_auto_evaluation"),
@@ -148,7 +148,7 @@ class FeedbackManager:
         user_preview: str | None = None,
         bot_preview: str | None = None,
     ) -> bool:
-        """피드백을 저장(upsert)한다. 재평가이면 True를 반환한다."""
+        """Upsert feedback and return True when this is a re-rating."""
         safe_user_preview = _sanitize_preview(user_preview)
         safe_bot_preview = _sanitize_preview(bot_preview)
 
@@ -192,7 +192,7 @@ class FeedbackManager:
                         ),
                     )
                 except aiosqlite.IntegrityError:
-                    # 동시 요청으로 UNIQUE 충돌 시 update 경로로 전환한다.
+                    # If a concurrent request hits the UNIQUE constraint, fall back to update.
                     exists = True
                     await self._db.execute(
                         "UPDATE message_feedback "
@@ -222,7 +222,7 @@ class FeedbackManager:
         bot_message_id: int,
         reason: str,
     ) -> bool:
-        """피드백에 사유를 추가한다. 해당 피드백이 없으면 False를 반환한다."""
+        """Attach a reason to feedback. Return False if no feedback exists."""
         cursor = await self._db.execute(
             "UPDATE message_feedback "
             "SET reason = ?, updated_at = CURRENT_TIMESTAMP "
@@ -242,7 +242,7 @@ class FeedbackManager:
         planner_applied: bool = False,
         rag_used: bool = False,
     ) -> None:
-        """reviewer 결과를 저장한다."""
+        """Store reviewer output."""
         normalized_issues = _normalize_review_issues(issues)
 
         await self._db.execute("BEGIN IMMEDIATE")
@@ -279,7 +279,7 @@ class FeedbackManager:
         limit: int = 5,
         rewritten_only: bool = True,
     ) -> dict:
-        """reviewer issue 누적 통계를 반환한다."""
+        """Return aggregate reviewer-issue statistics."""
         if chat_id is None:
             stats_query = (
                 "SELECT COUNT(*) AS total_reviews, "
@@ -332,15 +332,15 @@ class FeedbackManager:
         }
 
     async def get_user_stats(self, chat_id: int) -> dict:
-        """사용자별 피드백 통계를 반환한다."""
+        """Return feedback statistics for a specific user."""
         return await self._fetch_stats(chat_id=chat_id)
 
     async def get_global_stats(self) -> dict:
-        """전체 피드백 통계를 반환한다."""
+        """Return global feedback statistics."""
         return await self._fetch_stats(chat_id=None)
 
     async def _fetch_stats(self, chat_id: int | None) -> dict:
-        """피드백 통계를 조회한다."""
+        """Query feedback statistics."""
         if chat_id is None:
             query = (
                 "SELECT "
@@ -370,7 +370,7 @@ class FeedbackManager:
 
     @staticmethod
     def _row_to_stats(row) -> dict:
-        """집계 row를 통계 dict로 변환한다."""
+        """Convert an aggregate row into a statistics dictionary."""
         total = row[0] if row else 0
         positive = row[1] if row and row[1] else 0
         negative = row[2] if row and row[2] else 0
@@ -388,7 +388,7 @@ class FeedbackManager:
         rating: int,
         limit: int = 10,
     ) -> list[dict]:
-        """최근 피드백을 조회한다."""
+        """Fetch recent feedback entries."""
         async with self._db.execute(
             "SELECT bot_message_id, rating, user_message_preview, "
             "bot_response_preview, reason, created_at "
@@ -419,11 +419,11 @@ class FeedbackManager:
         min_preview_length: int = 20,
         recent_days: int = 180,
     ) -> list[dict]:
-        """긍정 피드백 중 키워드 매칭이 높은 예시를 반환한다."""
+        """Return positively rated examples with strong keyword matches."""
         if not keywords:
             return []
 
-        # LIKE 기반 매칭: 각 키워드가 user 또는 bot preview에 포함된 횟수를 점수로 사용
+        # LIKE-based scoring: count keyword hits in the user/bot previews.
         score_clauses = []
         kw_params: list[str] = []
         for keyword in keywords:
@@ -463,7 +463,7 @@ class FeedbackManager:
         async with self._db.execute(query, final_params) as cursor:
             rows = await cursor.fetchall()
 
-        # 중복 preview 제거
+        # Deduplicate previews.
         seen: set[str] = set()
         results: list[dict] = []
         for row in rows:
@@ -481,7 +481,7 @@ class FeedbackManager:
         return results
 
     async def count_feedback(self, chat_id: int) -> int:
-        """사용자의 피드백 총 건수를 반환한다."""
+        """Return the total number of feedback entries for a user."""
         async with self._db.execute(
             "SELECT COUNT(*) FROM message_feedback WHERE chat_id = ?",
             (chat_id,),
@@ -490,7 +490,7 @@ class FeedbackManager:
         return row[0] if row else 0
 
     async def prune_old_feedback(self, retention_days: int) -> int:
-        """retention_days보다 오래된 피드백을 삭제한다."""
+        """Delete feedback older than `retention_days`."""
         deleted = 0
         cutoff = f"-{retention_days} days"
         issues_cursor = await self._db.execute(

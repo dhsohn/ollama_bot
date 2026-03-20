@@ -1,7 +1,7 @@
-"""RAG 인덱서 — SQLite + numpy 기반 벡터 인덱스.
+"""RAG indexer backed by SQLite and a NumPy vector index.
 
-코퍼스 파일을 청킹/임베딩하여 SQLite에 저장하고,
-인메모리 numpy 행렬로 빠른 코사인 유사도 검색을 제공한다.
+Chunks and embeds corpus files into SQLite, then mirrors embeddings into an
+in-memory NumPy matrix for fast cosine-similarity search.
 """
 
 from __future__ import annotations
@@ -46,7 +46,7 @@ _EMBED_BATCH_SIZE = 32
 
 
 class RAGIndexer:
-    """코퍼스 인덱싱 및 벡터 검색."""
+    """Corpus indexing and vector retrieval."""
 
     def __init__(
         self,
@@ -61,13 +61,13 @@ class RAGIndexer:
         self._db: aiosqlite.Connection | None = None
         self._logger = get_logger("rag_indexer")
 
-        # 인메모리 벡터 인덱스
+        # In-memory vector index
         self._row_ids: list[int] = []
         self._embeddings: np.ndarray | None = None  # shape: (n, dim)
         self._chunk_meta: list[dict[str, Any]] = []
 
     async def initialize(self, db_path: str) -> None:
-        """DB 스키마 생성 + 인메모리 인덱스 로드."""
+        """Create the DB schema and load the in-memory index."""
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self._db = await aiosqlite.connect(db_path)
         self._db.row_factory = aiosqlite.Row
@@ -101,15 +101,15 @@ class RAGIndexer:
         return False
 
     async def index_corpus(self, kb_paths: str | list[str]) -> dict[str, Any]:
-        """코퍼스를 인덱싱한다. 증분 지원.
+        """Index the corpus with incremental-update support.
 
         Args:
             kb_paths:
-                단일 경로(str) 또는 다중 경로(list[str]).
-                다중 경로일 경우 합집합 기준으로 인덱싱/정리를 수행한다.
+                A single path (`str`) or multiple paths (`list[str]`).
+                Multiple paths are indexed and cleaned up as a union set.
         """
         if self._db is None:
-            raise RuntimeError("RAGIndexer가 아직 초기화되지 않았습니다.")
+            raise RuntimeError("RAGIndexer has not been initialized yet.")
         t0 = time.monotonic()
 
         requested_dirs = [kb_paths] if isinstance(kb_paths, str) else list(kb_paths)
@@ -129,7 +129,7 @@ class RAGIndexer:
             self._logger.warning("kb_path_not_found", path=kb_paths)
             return {"indexed": 0, "skipped": 0, "removed": 0, "total_chunks": self.chunk_count}
 
-        # 1) 지원 확장자 파일 목록
+        # 1) Collect files with supported extensions.
         active_roots: list[str] = []
         files_set: set[str] = set()
         skipped_large = 0
@@ -161,7 +161,7 @@ class RAGIndexer:
         if not active_roots:
             return {"indexed": 0, "skipped": 0, "removed": 0, "total_chunks": self.chunk_count}
 
-        # 2) 기존 인덱스의 source_path → content_hash 매핑
+        # 2) Build the existing source_path -> content_hash mapping.
         existing_hash_by_norm: dict[str, str] = {}
         existing_raw_by_norm: dict[str, str] = {}
         async with self._db.execute(
@@ -173,7 +173,7 @@ class RAGIndexer:
                 existing_hash_by_norm[normalized_path] = row["content_hash"]
                 existing_raw_by_norm[normalized_path] = source_path
 
-        # 3) 변경분 검출
+        # 3) Detect changes.
         to_index: list[str] = []
         to_remove: set[str] = {
             path for path in existing_hash_by_norm
@@ -187,7 +187,7 @@ class RAGIndexer:
                 continue
             to_index.append(fpath)
 
-        # 4) 삭제된 파일의 청크 제거
+        # 4) Remove chunks for deleted files.
         removed = 0
         for path in to_remove:
             raw_path = existing_raw_by_norm.get(path, path)
@@ -198,18 +198,18 @@ class RAGIndexer:
         if removed:
             await self._db.commit()
 
-        # 5) 변경/신규 파일 재인덱싱
+        # 5) Reindex changed and newly added files.
         indexed = 0
         failed = 0
         for fpath in to_index:
             try:
-                # 기존 청크 삭제
+                # Delete previous chunks.
                 await self._db.execute(
                     "DELETE FROM rag_chunks WHERE source_path = ?", (fpath,),
                 )
                 chunks = self._chunker.chunk_file(fpath)
                 if chunks:
-                    # 배치 임베딩
+                    # Embed in batches.
                     texts = [c.text for c in chunks]
                     embeddings = await self._batch_embed(texts)
 
@@ -271,10 +271,10 @@ class RAGIndexer:
     async def search(
         self, query_embedding: np.ndarray, k: int = 40,
     ) -> list[tuple[int, float]]:
-        """코사인 유사도 기반 top-k 검색.
+        """Return top-k results by cosine similarity.
 
         Returns:
-            [(row_id, score), ...] 내림차순.
+            `[(row_id, score), ...]` in descending order.
         """
         if self._embeddings is None or len(self._row_ids) == 0:
             return []
@@ -297,9 +297,9 @@ class RAGIndexer:
         ]
 
     async def get_chunk_by_id(self, row_id: int) -> Chunk | None:
-        """row_id로 청크를 조회한다."""
+        """Fetch a chunk by row_id."""
         if self._db is None:
-            raise RuntimeError("RAGIndexer가 아직 초기화되지 않았습니다.")
+            raise RuntimeError("RAGIndexer has not been initialized yet.")
         async with self._db.execute(
             "SELECT * FROM rag_chunks WHERE id = ?", (row_id,),
         ) as cursor:
@@ -309,11 +309,11 @@ class RAGIndexer:
         return self._row_to_chunk(row)
 
     async def get_chunks_by_ids(self, row_ids: list[int]) -> list[Chunk]:
-        """여러 row_id로 청크를 조회한다."""
+        """Fetch chunks for multiple row_ids."""
         if not row_ids:
             return []
         if self._db is None:
-            raise RuntimeError("RAGIndexer가 아직 초기화되지 않았습니다.")
+            raise RuntimeError("RAGIndexer has not been initialized yet.")
         placeholders = ",".join("?" for _ in row_ids)
         async with self._db.execute(
             f"SELECT * FROM rag_chunks WHERE id IN ({placeholders})",
@@ -325,11 +325,11 @@ class RAGIndexer:
         return [chunk_map[rid] for rid in row_ids if rid in chunk_map]
 
     async def get_chunks_map_by_ids(self, row_ids: list[int]) -> dict[int, Chunk]:
-        """여러 row_id로 청크를 조회하여 {row_id: Chunk} dict를 반환한다."""
+        """Fetch multiple row_ids and return a `{row_id: Chunk}` mapping."""
         if not row_ids:
             return {}
         if self._db is None:
-            raise RuntimeError("RAGIndexer가 아직 초기화되지 않았습니다.")
+            raise RuntimeError("RAGIndexer has not been initialized yet.")
         placeholders = ",".join("?" for _ in row_ids)
         async with self._db.execute(
             f"SELECT * FROM rag_chunks WHERE id IN ({placeholders})",
@@ -339,9 +339,9 @@ class RAGIndexer:
         return {row["id"]: self._row_to_chunk(row) for row in rows}
 
     async def get_all_chunks(self) -> list[Chunk]:
-        """현재 인덱스의 모든 청크를 source/chunk 순으로 반환한다."""
+        """Return all indexed chunks ordered by source path and chunk id."""
         if self._db is None:
-            raise RuntimeError("RAGIndexer가 아직 초기화되지 않았습니다.")
+            raise RuntimeError("RAGIndexer has not been initialized yet.")
         chunks: list[Chunk] = []
         async with self._db.execute(
             "SELECT * FROM rag_chunks ORDER BY source_path, chunk_id, id"
@@ -351,13 +351,13 @@ class RAGIndexer:
         return chunks
 
     async def _load_index_to_memory(self) -> None:
-        """DB에서 인메모리 벡터 인덱스를 로드한다.
+        """Load the in-memory vector index from the database.
 
-        로컬 변수에 먼저 빌드한 뒤 atomic swap하여,
-        리로드 중 search()가 불완전 인덱스를 참조하는 것을 방지한다.
+        Build into local variables first and then perform an atomic swap so
+        `search()` never sees a partially loaded index during reloads.
         """
         if self._db is None:
-            raise RuntimeError("RAGIndexer가 아직 초기화되지 않았습니다.")
+            raise RuntimeError("RAGIndexer has not been initialized yet.")
         new_row_ids: list[int] = []
         embeddings_list: list[np.ndarray] = []
         new_chunk_meta: list[dict[str, Any]] = []
@@ -379,7 +379,7 @@ class RAGIndexer:
 
         new_embeddings = np.stack(embeddings_list) if embeddings_list else None
 
-        # Atomic swap — 기존 search()가 일관된 스냅샷을 참조하도록 보장
+        # Atomic swap so existing searches keep using a consistent snapshot.
         self._row_ids = new_row_ids
         self._chunk_meta = new_chunk_meta
         self._embeddings = new_embeddings
@@ -389,7 +389,7 @@ class RAGIndexer:
         )
 
     async def _batch_embed(self, texts: list[str]) -> list[list[float]]:
-        """배치 단위로 임베딩을 생성한다."""
+        """Generate embeddings in batches."""
         all_embeddings: list[list[float]] = []
         for i in range(0, len(texts), _EMBED_BATCH_SIZE):
             batch = texts[i : i + _EMBED_BATCH_SIZE]

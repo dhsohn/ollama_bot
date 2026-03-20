@@ -1,6 +1,6 @@
-"""대화 기록 및 장기 메모리 관리 모듈.
+"""Conversation-history and long-term-memory management.
 
-SQLite(aiosqlite) 백엔드로 대화 히스토리와 장기 메모리를 관리한다.
+Uses SQLite (`aiosqlite`) to manage conversation history and long-term memory.
 """
 
 from __future__ import annotations
@@ -84,7 +84,7 @@ _SQLITE_TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 
 def _utc_now_sql() -> str:
-    """SQLite CURRENT_TIMESTAMP와 동일한 UTC 문자열 포맷."""
+    """UTC timestamp format matching SQLite `CURRENT_TIMESTAMP`."""
     return datetime.now(UTC).strftime(_SQLITE_TIMESTAMP_FORMAT)
 
 
@@ -97,7 +97,7 @@ async def _apply_memory_v2(db: aiosqlite.Connection) -> None:
 
 
 class MemoryManager:
-    """대화 히스토리와 장기 메모리를 관리한다."""
+    """Manage conversation history and long-term memory."""
 
     def __init__(
         self,
@@ -116,7 +116,7 @@ class MemoryManager:
         self._logger = get_logger("memory")
 
     async def initialize(self) -> None:
-        """데이터베이스를 열고 테이블을 생성한다."""
+        """Open the database and create its tables."""
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._db = await aiosqlite.connect(str(self._db_path))
         self._db.row_factory = aiosqlite.Row
@@ -133,20 +133,20 @@ class MemoryManager:
 
     @property
     def db(self) -> aiosqlite.Connection:
-        """내부 DB 커넥션을 반환한다 (외부 모듈 공유용)."""
+        """Return the internal DB connection for shared external use."""
         if self._db is None:
-            raise RuntimeError("MemoryManager가 아직 초기화되지 않았습니다.")
+            raise RuntimeError("MemoryManager has not been initialized yet.")
         return self._db
 
     def _require_db(self) -> aiosqlite.Connection:
-        """초기화된 DB 커넥션을 반환한다."""
+        """Return the initialized DB connection."""
         if self._db is None:
-            raise RuntimeError("MemoryManager가 아직 초기화되지 않았습니다.")
+            raise RuntimeError("MemoryManager has not been initialized yet.")
         return self._db
 
     @asynccontextmanager
     async def _write_transaction(self) -> AsyncGenerator[aiosqlite.Connection, None]:
-        """단일 커넥션 쓰기를 직렬화하고 원자적으로 커밋/롤백한다."""
+        """Serialize writes on one connection and commit or roll back atomically."""
         db = self._require_db()
         async with self._write_lock:
             try:
@@ -163,13 +163,13 @@ class MemoryManager:
                 raise
 
     async def close(self) -> None:
-        """데이터베이스 연결을 닫는다."""
+        """Close the database connection."""
         if self._db:
             await self._db.close()
             self._db = None
             self._logger.info("memory_closed")
 
-    # ── 대화 기록 ──
+    # Conversation history
 
     async def add_message(
         self,
@@ -178,9 +178,9 @@ class MemoryManager:
         content: str,
         metadata: dict | None = None,
     ) -> None:
-        """대화 턴을 저장한다. 오래된 항목은 자동 정리된다.
+        """Store a conversation turn and automatically prune old entries.
 
-        INSERT와 정리를 같은 트랜잭션으로 묶어 디스크 I/O를 줄인다.
+        INSERT and cleanup are grouped into one transaction to reduce disk I/O.
         """
         meta_json = json.dumps(metadata, ensure_ascii=False) if metadata else None
         async with self._write_transaction() as db:
@@ -192,7 +192,7 @@ class MemoryManager:
 
             limit = self._max_conversation_messages
             if limit > 0:
-                # 트림 전 아카이브에 복사 (삭제 대상만)
+                # Copy to archive before trimming, but only for rows being deleted.
                 if self._archive_enabled:
                     await db.execute(
                         "INSERT INTO conversations_archive (chat_id, role, content, message_id, timestamp) "
@@ -210,14 +210,14 @@ class MemoryManager:
                     ")",
                     (chat_id, chat_id, limit),
                 )
-            # limit <= 0 이면 무제한 — 트리밍하지 않는다.
+            # If `limit <= 0`, keep the conversation unbounded.
 
     async def get_conversation(
         self,
         chat_id: int,
         limit: int | None = None,
     ) -> list[dict[str, str]]:
-        """최근 대화 메시지를 시간순으로 반환한다."""
+        """Return recent conversation messages in chronological order."""
         db = self._require_db()
         if limit is None:
             limit = self._max_conversation_messages
@@ -241,10 +241,10 @@ class MemoryManager:
         end_at: datetime,
         limit: int | None = None,
     ) -> list[dict[str, str]]:
-        """주어진 시간 구간의 대화 메시지를 조회한다.
+        """Fetch conversation messages within a time range.
 
-        start_at/end_at은 timezone-aware datetime이어야 하며,
-        [start_at, end_at) 범위로 조회한다.
+        `start_at` and `end_at` must be timezone-aware datetimes and the query
+        uses the half-open interval `[start_at, end_at)`.
         """
         db = self._require_db()
         if start_at.tzinfo is None or end_at.tzinfo is None:
@@ -280,7 +280,7 @@ class MemoryManager:
         ]
 
     async def clear_conversation(self, chat_id: int) -> int:
-        """특정 채팅의 대화 기록을 삭제한다 (archive/summary 포함)."""
+        """Delete a chat's conversation history, including archive and summary rows."""
         deleted = 0
         async with self._write_transaction() as db:
             cursor = await db.execute(
@@ -297,13 +297,13 @@ class MemoryManager:
         return deleted
 
     async def delete_last_turn(self, chat_id: int) -> int:
-        """가장 최근 사용자+어시스턴트 턴 쌍을 삭제한다.
+        """Delete the most recent user/assistant turn pair.
 
-        스트리밍 응답이 비정상이어서 재시도해야 할 때 사용한다.
-        최근 2개(user + assistant) 메시지를 ID 역순으로 삭제한다.
+        This is used when a broken streaming response must be retried. The most
+        recent two messages (`user` + `assistant`) are deleted in descending ID order.
 
         Returns:
-            삭제된 행 수.
+            Number of deleted rows.
         """
         deleted = 0
         async with self._write_transaction() as db:
@@ -323,7 +323,7 @@ class MemoryManager:
             )
         return deleted
 
-    # ── 장기 메모리 ──
+    # Long-term memory
 
     async def store_memory(
         self,
@@ -332,7 +332,7 @@ class MemoryManager:
         value: str,
         category: str = "general",
     ) -> None:
-        """장기 메모리에 항목을 저장한다 (upsert)."""
+        """Upsert an item into long-term memory."""
         now = _utc_now_sql()
         async with self._write_transaction() as db:
             async with db.execute(
@@ -342,7 +342,7 @@ class MemoryManager:
                 exists = await cursor.fetchone() is not None
 
             if not exists and self._max_long_term > 0:
-                # 신규 키 삽입 전에 사용자별 최대 항목 수를 유지한다.
+                # Enforce the per-user limit before inserting a new key.
                 async with db.execute(
                     "SELECT COUNT(*) FROM long_term_memory WHERE chat_id = ?",
                     (chat_id,),
@@ -376,7 +376,7 @@ class MemoryManager:
         key: str | None = None,
         category: str | None = None,
     ) -> list[dict]:
-        """장기 메모리를 검색한다."""
+        """Search long-term memory."""
         db = self._require_db()
         query = "SELECT key, value, category, updated_at FROM long_term_memory WHERE chat_id = ?"
         params: list = [chat_id]
@@ -404,7 +404,7 @@ class MemoryManager:
         ]
 
     async def delete_memory(self, chat_id: int, key: str) -> bool:
-        """특정 메모리 항목을 삭제한다."""
+        """Delete a specific memory item."""
         deleted = False
         async with self._write_transaction() as db:
             cursor = await db.execute(
@@ -415,7 +415,7 @@ class MemoryManager:
         return deleted
 
     async def delete_memories_by_category(self, chat_id: int, category: str) -> int:
-        """지정된 chat_id/category에 해당하는 장기 메모리를 모두 삭제한다."""
+        """Delete all long-term memory entries for the given chat/category."""
         deleted = 0
         async with self._write_transaction() as db:
             cursor = await db.execute(
@@ -426,7 +426,7 @@ class MemoryManager:
         return deleted
 
     async def get_memory_stats(self, chat_id: int) -> dict:
-        """메모리 통계를 반환한다."""
+        """Return memory statistics."""
         db = self._require_db()
         stats: dict = {"chat_id": chat_id}
 
@@ -454,16 +454,16 @@ class MemoryManager:
         return stats
 
     async def ping(self) -> bool:
-        """DB 연결이 유효한지 확인한다."""
+        """Check whether the DB connection is valid."""
         db = self._require_db()
         async with db.execute("SELECT 1") as cursor:
             row = await cursor.fetchone()
         return row is not None and row[0] == 1
 
-    # ── 유지보수 ──
+    # Maintenance
 
     async def prune_old_conversations(self) -> int:
-        """보관 기간이 지난 대화를 삭제한다 (archive/summary 포함)."""
+        """Delete expired conversations, including archive and summary rows."""
         cutoff = (
             datetime.now(UTC) - timedelta(days=self._retention_days)
         ).strftime(_SQLITE_TIMESTAMP_FORMAT)
@@ -480,7 +480,7 @@ class MemoryManager:
             summary_cursor = await db.execute(
                 "DELETE FROM context_summaries WHERE created_at < ?", (cutoff,)
             )
-            # 대화/아카이브가 모두 없는 채팅의 요약은 orphan으로 정리한다.
+            # Remove orphan summaries for chats that no longer have conversation or archive rows.
             orphan_cursor = await db.execute(
                 "DELETE FROM context_summaries "
                 "WHERE chat_id NOT IN (SELECT DISTINCT chat_id FROM conversations) "
@@ -498,7 +498,7 @@ class MemoryManager:
             )
         return deleted
 
-    # ── 아카이브 / 요약 (Phase 5: 컨텍스트 압축) ──
+    # Archive / summary (Phase 5: context compression)
 
     async def get_archived_messages(
         self,
@@ -506,7 +506,7 @@ class MemoryManager:
         after_id: int = 0,
         limit: int = 200,
     ) -> list[dict]:
-        """아카이브에서 메시지를 조회한다."""
+        """Fetch messages from the archive."""
         db = self._require_db()
         async with db.execute(
             "SELECT id, role, content, timestamp FROM conversations_archive "
@@ -520,7 +520,7 @@ class MemoryManager:
         ]
 
     async def get_summary(self, chat_id: int) -> dict | None:
-        """캐시된 요약을 조회한다."""
+        """Fetch a cached summary."""
         db = self._require_db()
         async with db.execute(
             "SELECT summary, last_archive_id, message_count, created_at "
@@ -544,7 +544,7 @@ class MemoryManager:
         last_archive_id: int,
         message_count: int,
     ) -> None:
-        """요약을 저장/갱신한다."""
+        """Store or update a summary."""
         async with self._write_transaction() as db:
             await db.execute(
                 "INSERT INTO context_summaries (chat_id, summary, last_archive_id, message_count) "
@@ -560,7 +560,7 @@ class MemoryManager:
     async def export_conversation_markdown(
         self, chat_id: int, output_dir: Path
     ) -> Path:
-        """대화를 마크다운 파일로 내보낸다."""
+        """Export a conversation to a markdown file."""
         db = self._require_db()
         output_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")

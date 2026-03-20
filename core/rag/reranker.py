@@ -1,4 +1,4 @@
-"""RAG 리랭커 — bge-reranker-v2-m3 기반 크로스인코더 리랭크."""
+"""RAG reranker built on the bge-reranker-v2-m3 cross-encoder."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 
 
 class RAGReranker:
-    """bge-reranker-v2-m3 기반 리랭크."""
+    """Rerank candidates with bge-reranker-v2-m3."""
 
     def __init__(
         self,
@@ -32,7 +32,7 @@ class RAGReranker:
         candidates: list[RetrievedItem],
         k: int = 8,
     ) -> list[RetrievedItem]:
-        """후보를 리랭크하여 top-k를 반환한다."""
+        """Rerank candidates and return the top-k results."""
         if not candidates:
             return []
 
@@ -49,7 +49,7 @@ class RAGReranker:
             timeout=timeout_s,
         )
 
-        # 결과를 원래 candidates에 매핑
+        # Map reranker output back to the original candidates.
         reranked: list[RetrievedItem] = []
         for item in scored:
             idx = item.get("index")
@@ -67,7 +67,7 @@ class RAGReranker:
                     )
                 )
 
-        # rerank_score 내림차순 정렬 후 top-k
+        # Sort by descending rerank score, then keep top-k.
         reranked.sort(key=lambda x: x.rerank_score or 0.0, reverse=True)
         result = reranked[:k]
 

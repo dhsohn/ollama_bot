@@ -1,4 +1,4 @@
-"""문서 청킹 — 텍스트/코드 파일을 적절한 크기의 청크로 분할한다."""
+"""Document chunking utilities for text and code files."""
 
 from __future__ import annotations
 
@@ -17,11 +17,11 @@ from core.config import RAGConfig
 from core.logging_setup import get_logger
 from core.rag.types import Chunk, ChunkMetadata
 
-# 대략적 토큰 추정: 한국어 1글자 ≈ 1~2 tokens, 영어 1단어 ≈ 1.3 tokens
-# 보수적으로 char 수 / 3 을 토큰 수로 추정
+# Rough token estimate: Korean characters are dense, English averages more bytes.
+# Conservatively estimate tokens as chars / 3.
 _CHARS_PER_TOKEN = 3
 
-# 코드 함수/클래스 경계 패턴
+# Function/class boundary patterns for code files
 _PY_FUNC_RE = re.compile(r"^(?:async\s+)?def\s+\w+|^class\s+\w+", re.MULTILINE)
 _JS_FUNC_RE = re.compile(
     r"^(?:export\s+)?(?:async\s+)?function\s+\w+|"
@@ -29,10 +29,10 @@ _JS_FUNC_RE = re.compile(
     re.MULTILINE,
 )
 
-# 마크다운 헤더 패턴
+# Markdown header pattern
 _MD_HEADER_RE = re.compile(r"^(#{1,6})\s+(.+)$", re.MULTILINE)
 
-# 구조화된 로그/출력 파일(.out, .log) 섹션 헤더 패턴
+# Section-header patterns for structured output files (.out, .log)
 _STRUCTURED_OUTPUT_HEADERS: list[tuple[re.Pattern, str]] = [
     (re.compile(r"^={3,}\s*.+\s*={3,}$", re.MULTILINE), "SECTION SEPARATOR"),
     (re.compile(r"^-{3,}\s*.+\s*-{3,}$", re.MULTILINE), "SUBSECTION SEPARATOR"),
@@ -40,7 +40,7 @@ _STRUCTURED_OUTPUT_HEADERS: list[tuple[re.Pattern, str]] = [
 
 
 class _HTMLTextExtractor(HTMLParser):
-    """HTML에서 텍스트 노드만 추출한다."""
+    """Extract only text nodes from HTML."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -56,7 +56,7 @@ class _HTMLTextExtractor(HTMLParser):
 
 
 class DocumentChunker:
-    """문서를 청크로 분할한다."""
+    """Split documents into chunks."""
 
     def __init__(self, config: RAGConfig) -> None:
         self._min_chars = config.chunk_min_tokens * _CHARS_PER_TOKEN
@@ -65,7 +65,7 @@ class DocumentChunker:
         self._logger = get_logger("rag_chunker")
 
     def chunk_file(self, file_path: str) -> list[Chunk]:
-        """파일을 읽어 청크 목록을 반환한다."""
+        """Read a file and return its chunk list."""
         path = Path(file_path)
         ext = path.suffix.lower()
         try:
@@ -116,7 +116,7 @@ class DocumentChunker:
 
     @staticmethod
     def _load_file(path: Path, ext: str) -> str:
-        """파일 확장자에 따라 텍스트를 추출한다."""
+        """Extract text based on file extension."""
         if ext in (".md", ".txt", ".py", ".js", ".ts"):
             return path.read_text(encoding="utf-8", errors="replace")
         if ext in (".html", ".htm"):
@@ -131,7 +131,7 @@ class DocumentChunker:
             reader = csv.reader(io.StringIO(text))
             rows = list(reader)
             return "\n".join(" | ".join(row) for row in rows)
-        # 기타 텍스트 파일
+        # Other text files
         return path.read_text(encoding="utf-8", errors="replace")
 
     @staticmethod
@@ -154,16 +154,16 @@ class DocumentChunker:
         return "\n".join(paragraphs)
 
     def _chunk_text(self, text: str) -> list[tuple[str, str | None]]:
-        """토큰 수 기반 슬라이딩 윈도우 청킹."""
+        """Chunk plain text with a token-estimate sliding window."""
         overlap_chars = int(self._max_chars * self._overlap_ratio)
-        # overlap이 max_chars 이상이면 전진 불가 → 상한 보정
+        # Clamp overlap so the cursor always advances.
         overlap_chars = min(overlap_chars, self._max_chars - 1)
         chunks: list[tuple[str, str | None]] = []
         start = 0
         while start < len(text):
             end = start + self._max_chars
             if end < len(text):
-                # 문장 경계에서 자르기
+                # Prefer sentence-like boundaries.
                 boundary = text.rfind("\n", start + self._min_chars, end)
                 if boundary == -1:
                     boundary = text.rfind(". ", start + self._min_chars, end)
@@ -174,12 +174,12 @@ class DocumentChunker:
                 chunks.append((chunk, None))
             next_start = end - overlap_chars
             if next_start <= start:
-                next_start = start + 1  # 전진 보장
+                next_start = start + 1  # Guarantee forward progress.
             start = next_start
         return chunks
 
     def _chunk_markdown(self, text: str) -> list[tuple[str, str | None]]:
-        """마크다운 헤더를 기준으로 섹션 단위 청킹."""
+        """Chunk markdown by section headers."""
         headers = list(_MD_HEADER_RE.finditer(text))
         if not headers:
             return self._chunk_text(text)
@@ -195,12 +195,12 @@ class DocumentChunker:
                 if section_text:
                     sections.append((section_text, section_title))
             else:
-                # 큰 섹션은 추가 분할
+                # Split oversized sections further.
                 sub_chunks = self._chunk_text(section_text)
                 for chunk_text, _ in sub_chunks:
                     sections.append((chunk_text, section_title))
 
-        # 첫 번째 헤더 이전 텍스트
+        # Text before the first header
         if headers and headers[0].start() > 0:
             preamble = text[: headers[0].start()].strip()
             if preamble:
@@ -211,14 +211,14 @@ class DocumentChunker:
     def _chunk_code(
         self, text: str, func_pattern: re.Pattern,
     ) -> list[tuple[str, str | None]]:
-        """코드 파일: 함수/클래스 단위 우선 분할."""
+        """Chunk code files by preferring function and class boundaries."""
         boundaries = list(func_pattern.finditer(text))
         if not boundaries:
             return self._chunk_text(text)
 
         chunks: list[tuple[str, str | None]] = []
 
-        # 첫 함수/클래스 이전의 import/상수 영역
+        # Imports/constants before the first function or class
         if boundaries[0].start() > 0:
             preamble = text[: boundaries[0].start()].strip()
             if preamble:
@@ -234,7 +234,7 @@ class DocumentChunker:
                 if block:
                     chunks.append((block, func_name))
             else:
-                # 큰 함수/클래스는 라인 기반 분할
+                # Split oversized functions/classes by line ranges.
                 sub_chunks = self._chunk_text(block)
                 for j, (chunk_text, _) in enumerate(sub_chunks):
                     label = f"{func_name} (part {j + 1})" if j > 0 else func_name
@@ -243,12 +243,12 @@ class DocumentChunker:
         return chunks
 
     def _chunk_structured_output(self, text: str) -> list[tuple[str, str | None]]:
-        """구조화된 출력 파일(.out, .log)을 섹션 단위로 청킹한다.
+        """Chunk structured output files (`.out`, `.log`) by sections.
 
-        구분선 패턴을 인식하여 의미 단위로 분리한다.
-        대형 섹션은 추가 분할한다.
+        Detect separator patterns to preserve semantic boundaries and split
+        oversized sections further when needed.
         """
-        # 모든 섹션 시작점 수집
+        # Collect all section start positions.
         boundaries: list[tuple[int, str]] = []
         for pattern, label in _STRUCTURED_OUTPUT_HEADERS:
             for m in pattern.finditer(text):
@@ -257,12 +257,12 @@ class DocumentChunker:
         if not boundaries:
             return self._chunk_text(text)
 
-        # 위치 순 정렬
+        # Sort by position.
         boundaries.sort(key=lambda x: x[0])
 
         chunks: list[tuple[str, str | None]] = []
 
-        # 첫 섹션 이전 (입력 파일 정보 등)
+        # Content before the first section (for example input metadata)
         if boundaries[0][0] > 0:
             preamble = text[: boundaries[0][0]].strip()
             if preamble:
@@ -272,7 +272,7 @@ class DocumentChunker:
                     for ct, _ in self._chunk_text(preamble):
                         chunks.append((ct, "HEADER"))
 
-        # 각 섹션
+        # Each section
         for i, (start, label) in enumerate(boundaries):
             end = boundaries[i + 1][0] if i + 1 < len(boundaries) else len(text)
             section = text[start:end].strip()
@@ -291,6 +291,6 @@ class DocumentChunker:
 
     @staticmethod
     def content_hash(file_path: str) -> str:
-        """파일의 content hash를 계산한다."""
+        """Compute a stable content hash for a file."""
         data = Path(file_path).read_bytes()
         return hashlib.sha256(data).hexdigest()[:16]

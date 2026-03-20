@@ -1,7 +1,7 @@
-"""공통 앱 런타임 부트스트랩.
+"""Shared application runtime bootstrap.
 
-`apps/ollama_bot` 엔트리포인트가
-코어 초기화/실행 로직을 공유하도록 제공한다.
+Provides reusable initialization and execution flow for entrypoints such as
+`apps/ollama_bot`.
 """
 
 from __future__ import annotations
@@ -51,7 +51,7 @@ def _resolve_wsl_loopback_host(
     service_name: str,
     logger: Any,
 ) -> str:
-    """테스트 호환성을 위해 app_runtime namespace에서 WSL host 해석을 제공한다."""
+    """Expose WSL host resolution from the app_runtime namespace for tests."""
     return _resolve_wsl_loopback_host_impl(
         url=url,
         service_name=service_name,
@@ -66,12 +66,12 @@ async def async_main(
     *,
     app_name: str,
 ) -> None:
-    """비동기 메인 루프."""
+    """Async main loop."""
     try:
         config = load_config()
     except ValueError as exc:
         print(
-            f"오류: 설정값이 잘못되었습니다. {exc}",
+            f"Error: invalid configuration. {exc}",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -94,6 +94,6 @@ def run_app(
     *,
     app_name: str,
 ) -> None:
-    """동기 진입점 래퍼."""
+    """Synchronous entrypoint wrapper."""
     with suppress(KeyboardInterrupt):
         asyncio.run(async_main(app_name=app_name))

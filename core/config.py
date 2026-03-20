@@ -1,7 +1,7 @@
-"""Pydantic 기반 중앙 설정 로더.
+"""Central Pydantic-based settings loader.
 
-config.yaml 단일 파일로부터 검증된 AppSettings를 반환한다.
-모든 모듈은 이 설정 객체를 생성자 주입으로 받는다.
+Loads validated `AppSettings` from a single `config.yaml` file. All modules
+receive this settings object through constructor injection.
 """
 
 from __future__ import annotations
@@ -108,7 +108,7 @@ class FeedbackConfig(BaseModel):
 
 
 class RuntimeMaintenanceConfig(BaseModel):
-    """런타임 유지보수 루프 주기 설정."""
+    """Intervals for runtime maintenance loops."""
 
     memory_maintenance_interval_seconds: int = 6 * 60 * 60
     llm_recovery_interval_seconds: int = 60
@@ -185,7 +185,7 @@ class ContextCompressorConfig(BaseModel):
 
 
 class ResponsePlannerConfig(BaseModel):
-    """Full-tier 내부 planner 설정."""
+    """Settings for the internal Full-tier response planner."""
 
     enabled: bool = True
     min_input_chars: int = 80
@@ -216,7 +216,7 @@ class ResponsePlannerConfig(BaseModel):
 
 
 class ResponseReviewerConfig(BaseModel):
-    """Full-tier draft answer 검수/rewrite 설정."""
+    """Settings for Full-tier draft-answer review and rewrite."""
 
     enabled: bool = True
     only_when_planner_used: bool = True
@@ -233,7 +233,7 @@ class ResponseReviewerConfig(BaseModel):
 
 
 class RetrievalProviderConfig(BaseModel):
-    """Ollama 기반 chat + retrieval 설정."""
+    """Settings for Ollama-backed chat and retrieval."""
 
     host: str = "http://localhost:11434"
     embedding_model: str = "Qwen3-Embedding-0.6B-GGUF"
@@ -250,7 +250,7 @@ class RetrievalProviderConfig(BaseModel):
 
 
 class ModelRegistryConfig(BaseModel):
-    """모델 레지스트리 설정 (단일 기본 모델 + retrieval 모델)."""
+    """Model-registry settings for the default model and retrieval models."""
 
     default_model: str = "gpt-oss:20b"
     embedding_model: str = "Qwen3-Embedding-0.6B-GGUF"
@@ -258,7 +258,7 @@ class ModelRegistryConfig(BaseModel):
 
 
 class RAGConfig(BaseModel):
-    """RAG 파이프라인 설정."""
+    """RAG pipeline settings."""
 
     enabled: bool = True
     kb_dirs: list[str] = Field(default_factory=lambda: ["./kb"])
@@ -303,7 +303,7 @@ class RAGConfig(BaseModel):
 
 
 class AppSettings(BaseModel):
-    """루트 설정. config.yaml 단일 파일에서 로드한다."""
+    """Root settings loaded from a single `config.yaml` file."""
 
     strict_startup: bool = False
     log_level: str = "INFO"
@@ -344,7 +344,7 @@ def get_prompt_version(settings: AppSettings) -> str:
 def load_config(
     config_path: str = "config/config.yaml",
 ) -> AppSettings:
-    """config.yaml 단일 파일에서 AppSettings를 로드한다."""
+    """Load `AppSettings` from a single `config.yaml` file."""
     yaml_data: dict = {}
     config_file = Path(config_path)
     if config_file.exists():
@@ -356,7 +356,7 @@ def load_config(
 
     settings = AppSettings.model_validate(yaml_data)
 
-    # telegram.allowed_users CSV → security.allowed_users 리스트
+    # Convert `telegram.allowed_users` CSV into `security.allowed_users`.
     if settings.telegram.allowed_users:
         raw_ids = [
             uid.strip()

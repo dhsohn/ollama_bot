@@ -1,7 +1,7 @@
-"""보안 모듈 — 인증, 레이트리밋, 입력 검증, 경로 격리.
+"""Security module for auth, rate limiting, input validation, and path isolation.
 
-모든 보안 검사를 한 곳에서 관리한다.
-다른 모듈은 직접 보안 로직을 구현하지 않고 SecurityManager를 호출한다.
+Centralizes security checks so other modules call `SecurityManager` instead of
+implementing security logic themselves.
 """
 
 from __future__ import annotations
@@ -21,25 +21,25 @@ from core.logging_setup import get_logger
 
 
 class AuthenticationError(Exception):
-    """미인증 사용자 접근 시 발생."""
+    """Raised when an unauthenticated user attempts access."""
 
 
 class RateLimitError(Exception):
-    """레이트리밋 초과 시 발생."""
+    """Raised when the rate limit is exceeded."""
 
 
 class SecurityViolationError(Exception):
-    """경로 탐색, 차단 입력 등 보안 위반 시 발생."""
+    """Raised on security violations such as path traversal or blocked input."""
 
 
 class GlobalConcurrencyError(Exception):
-    """전역 동시 처리 한도 초과 시 발생."""
+    """Raised when the global concurrency limit is exceeded."""
 
 
-# ANSI 이스케이프 시퀀스 패턴
+# ANSI escape-sequence pattern
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
 
-# 보안 등급별 허용 도구
+# Allowed tools per security level
 _TOOLS_BY_LEVEL: dict[str, set[str]] = {
     "safe": {"file_read"},
     "cautious": {"file_read", "file_write"},
@@ -48,7 +48,7 @@ _TOOLS_BY_LEVEL: dict[str, set[str]] = {
 
 
 class SecurityManager:
-    """보안 관리자. 인증, 레이트리밋, 입력 검증, 경로 격리를 담당한다."""
+    """Security manager for auth, rate limiting, input validation, and path isolation."""
 
     def __init__(self, config: SecurityConfig) -> None:
         self._allowed_users: set[int] = set(config.allowed_users)
@@ -66,16 +66,16 @@ class SecurityManager:
         self._global_in_flight = 0
         self._logger = get_logger("security")
 
-    # ── 인증 ──
+    # Authentication
 
     def authenticate(self, chat_id: int) -> bool:
-        """Chat ID가 화이트리스트에 있는지 확인한다.
+        """Check whether the chat ID is present in the whitelist.
 
         Returns:
             True if authenticated.
 
         Raises:
-            AuthenticationError: 미인증 사용자인 경우.
+            AuthenticationError: Raised for unauthenticated users.
         """
         if chat_id in self._allowed_users:
             self._logger.debug("auth_success", chat_id=chat_id)
@@ -83,15 +83,15 @@ class SecurityManager:
         self._logger.warning("auth_failure", chat_id=chat_id)
         raise AuthenticationError(f"Unauthorized chat_id: {chat_id}")
 
-    # ── 레이트리밋 ──
+    # Rate limiting
 
     def check_rate_limit(self, chat_id: int) -> bool:
-        """슬라이딩 윈도우 레이트리밋을 검사한다.
+        """Check the sliding-window rate limit.
 
-        60초 내 요청 수가 rate_limit 이상이면 차단한다.
+        Requests are blocked when they reach `rate_limit` within 60 seconds.
 
         Raises:
-            RateLimitError: 초과 시.
+            RateLimitError: Raised when the limit is exceeded.
         """
         now = time.monotonic()
         self._rate_limit_checks_since_cleanup += 1
@@ -99,12 +99,12 @@ class SecurityManager:
             self._cleanup_request_log(now)
             self._rate_limit_checks_since_cleanup = 0
 
-        # defaultdict의 암시적 키 생성을 피해서, 불필요한 chat_id 항목 잔류를 줄인다.
+        # Avoid implicit defaultdict key creation to prevent stale chat_id entries.
         window = self._request_log.get(chat_id)
         if window is None:
             window = deque()
 
-        # 60초 이전 항목 제거
+        # Drop entries older than 60 seconds.
         while window and now - window[0] >= self._rate_limit_window_seconds:
             window.popleft()
         if not window:
@@ -124,7 +124,7 @@ class SecurityManager:
         return True
 
     def _cleanup_request_log(self, now: float) -> None:
-        """오랫동안 요청이 없던 레이트리밋 윈도우를 제거한다."""
+        """Remove stale rate-limit windows for inactive chats."""
         stale_chat_ids = [
             chat_id
             for chat_id, window in self._request_log.items()
@@ -134,10 +134,10 @@ class SecurityManager:
             self._request_log.pop(chat_id, None)
 
     async def acquire_global_slot(self, chat_id: int) -> None:
-        """전역 동시 요청 슬롯을 획득한다.
+        """Acquire a global concurrency slot.
 
         Raises:
-            GlobalConcurrencyError: 현재 전역 동시 처리량이 한도에 도달한 경우.
+            GlobalConcurrencyError: Raised when the global limit has been reached.
         """
         try:
             await asyncio.wait_for(self._global_semaphore.acquire(), timeout=0.001)
@@ -152,14 +152,14 @@ class SecurityManager:
                 "Too many concurrent requests globally"
             ) from exc
         except asyncio.CancelledError:
-            # 세마포어 acquire 후 취소되면 슬롯이 영구 소실되므로 즉시 반환
+            # If cancelled after acquire, release immediately to avoid leaking the slot.
             self._global_semaphore.release()
             raise
 
         self._global_in_flight += 1
 
     def release_global_slot(self) -> None:
-        """전역 동시 요청 슬롯을 반환한다."""
+        """Release a global concurrency slot."""
         if self._global_in_flight <= 0:
             return
         self._global_in_flight -= 1
@@ -167,51 +167,51 @@ class SecurityManager:
 
     @asynccontextmanager
     async def global_slot(self, chat_id: int) -> AsyncGenerator[None, None]:
-        """전역 동시 요청 슬롯을 요청 범위에 묶어 안전하게 관리한다."""
+        """Safely bind a global slot to a request scope."""
         await self.acquire_global_slot(chat_id)
         try:
             yield
         finally:
             self.release_global_slot()
 
-    # ── 입력 검증 ──
+    # Input validation
 
     def sanitize_input(self, text: str) -> str:
-        """사용자 입력을 정제한다.
+        """Sanitize user input.
 
-        - Null 바이트 제거
-        - ANSI 이스케이프 제거
-        - 길이 제한 (security.max_input_length)
-        - Unicode NFC 정규화
+        - Remove null bytes
+        - Remove ANSI escapes
+        - Enforce the `security.max_input_length` limit
+        - Normalize to Unicode NFC
         """
-        # Null 바이트 제거
+        # Remove null bytes.
         text = text.replace("\x00", "")
 
-        # ANSI 이스케이프 제거
+        # Remove ANSI escapes.
         text = _ANSI_RE.sub("", text)
 
-        # Unicode 정규화
+        # Normalize Unicode.
         text = unicodedata.normalize("NFC", text)
 
-        # 길이 제한
+        # Enforce the maximum length.
         if len(text) > self._max_input_length:
             self._logger.warning("input_truncated", original_length=len(text))
             text = text[:self._max_input_length]
 
         return text
 
-    # ── 경로 격리 ──
+    # Path isolation
 
     def validate_path(self, path: str, base_dir: str = "data") -> Path:
-        """파일 경로가 허용된 디렉토리 내에 있는지 검증한다.
+        """Validate that a file path stays within the allowed base directory.
 
         Raises:
-            SecurityViolationError: 경로 탐색 또는 차단 경로 접근 시.
+            SecurityViolationError: Raised on path traversal or blocked paths.
         """
         resolved = Path(base_dir).joinpath(path).resolve()
         base_resolved = Path(base_dir).resolve()
 
-        # base_dir 바깥으로 나가는지 확인
+        # Ensure the resolved path does not escape base_dir.
         try:
             resolved.relative_to(base_resolved)
         except ValueError as exc:
@@ -224,7 +224,7 @@ class SecurityManager:
                 f"Path traversal detected: {path}"
             ) from exc
 
-        # 차단 경로 패턴 체크
+        # Check blocked-path patterns.
         for pattern in self._blocked_paths:
             if fnmatch.fnmatch(str(resolved), pattern):
                 self._logger.warning(
@@ -238,18 +238,18 @@ class SecurityManager:
 
         return resolved
 
-    # ── 스킬 보안 ──
+    # Skill security
 
     def check_skill_security(
         self, security_level: str, allowed_tools: list[str]
     ) -> bool:
-        """스킬의 보안 등급과 요청 도구가 호환되는지 검증한다.
+        """Validate that a skill's security level matches its requested tools.
 
         Returns:
             True if valid.
 
         Raises:
-            SecurityViolationError: 보안 등급에 맞지 않는 도구를 요청한 경우.
+            SecurityViolationError: Raised for tools not allowed at that security level.
         """
         permitted = _TOOLS_BY_LEVEL.get(security_level, set())
         requested = set(allowed_tools)
@@ -267,13 +267,13 @@ class SecurityManager:
             )
         return True
 
-    # ── 파일 크기 검증 ──
+    # File-size validation
 
     def validate_file_size(self, size_bytes: int) -> bool:
-        """파일 크기가 허용 범위 내인지 확인한다.
+        """Validate that the file size is within the allowed limit.
 
         Raises:
-            SecurityViolationError: 초과 시.
+            SecurityViolationError: Raised when the limit is exceeded.
         """
         if size_bytes > self._max_file_size:
             raise SecurityViolationError(

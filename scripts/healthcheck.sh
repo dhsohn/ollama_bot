@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 헬스체크 스크립트
+# Health-check script
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -11,9 +11,9 @@ usage() {
 Usage: bash scripts/healthcheck.sh
 
 Checks:
-  - config/config.yaml 로드 가능 여부
-  - Ollama 서버 연결 가능 여부
-  - chat / embedding / reranker 모델 가용 여부
+  - whether config/config.yaml can be loaded
+  - whether the Ollama server is reachable
+  - whether the chat / embedding / reranker models are available
 EOF
 }
 
@@ -25,14 +25,14 @@ case "${1:-}" in
   "")
     ;;
   *)
-    echo "[healthcheck.sh] 알 수 없는 옵션: $1" >&2
+    echo "[healthcheck.sh] unknown option: $1" >&2
     usage
     exit 1
     ;;
 esac
 
 if [[ ! -x "${PYTHON_BIN}" ]]; then
-  echo "[healthcheck.sh] ERROR: ${PYTHON_BIN} 가 없습니다." >&2
+  echo "[healthcheck.sh] ERROR: ${PYTHON_BIN} does not exist." >&2
   echo "  python -m venv .venv && .venv/bin/pip install -r requirements.lock" >&2
   exit 1
 fi

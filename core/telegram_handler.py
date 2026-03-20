@@ -413,7 +413,7 @@ class TelegramHandler:
     ) -> None:
         """Send a message to a chat, automatically splitting long content."""
         if self._app is None:
-            raise RuntimeError("TelegramHandler가 아직 초기화되지 않았습니다.")
+            raise RuntimeError("TelegramHandler is not initialized yet.")
         for part in self._split_message(text):
             await self._app.bot.send_message(
                 chat_id=chat_id,
@@ -452,5 +452,5 @@ class TelegramHandler:
     @property
     def application(self) -> Application:
         if self._app is None:
-            raise RuntimeError("TelegramHandler가 아직 초기화되지 않았습니다.")
+            raise RuntimeError("TelegramHandler is not initialized yet.")
         return self._app

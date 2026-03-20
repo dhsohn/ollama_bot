@@ -1,2 +1,1 @@
-"""Ollama 기반 봇 앱."""
-
+"""Ollama-based bot application."""

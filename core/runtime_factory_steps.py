@@ -116,13 +116,13 @@ async def initialize_chat_client(
     except Exception as exc:
         logger.error("llm_init_failed", error=str(exc))
         hint = (
-            f"\n힌트: Ollama 서버가 {config.ollama.host} 에서 실행 중인지 확인하세요."
-            f"\n      채팅 모델({default_model})이 pull 되었는지 확인하세요."
+            f"\nHint: verify that the Ollama server is running at {config.ollama.host}."
+            f"\n      Also confirm that the chat model ({default_model}) has been pulled."
         )
         raise StartupError(
-            f"오류: ollama 초기화 실패 ({llm_host})\n"
+            f"Error: failed to initialize Ollama ({llm_host})\n"
             f"{exc}{hint}\n"
-            "백엔드 실행 상태와 기본 모델 준비 상태를 확인하세요. 봇 시작을 중단합니다."
+            "Check backend availability and model readiness. Bot startup is being aborted."
         ) from exc
     cleanup_stack.push_async_callback(llm.close)
     return llm, default_model
@@ -137,8 +137,8 @@ async def initialize_skills(security, logger: Any):
     except Exception as exc:
         logger.error("skills_init_failed", error=str(exc))
         raise StartupError(
-            f"오류: 스킬 로드 실패\n{exc}\n"
-            "중복 이름/트리거 또는 YAML 형식을 확인하세요."
+            f"Error: failed to load skills\n{exc}\n"
+            "Check for duplicate names or triggers, or invalid YAML."
         ) from exc
     logger.info("skills_loaded", count=skill_count)
     skill_load_errors = skills.get_last_load_errors()
@@ -522,8 +522,8 @@ async def initialize_scheduler_stack(
     except Exception as exc:
         logger.error("scheduler_init_failed", error=str(exc))
         raise StartupError(
-            f"오류: 자동화 스케줄러 초기화 실패\n{exc}\n"
-            "config/config.yaml의 scheduler.timezone 설정을 확인하세요."
+            f"Error: failed to initialize the automation scheduler\n{exc}\n"
+            "Check `scheduler.timezone` in config/config.yaml."
         ) from exc
 
     scheduler.set_dependencies(engine=engine, telegram=telegram)
@@ -550,8 +550,8 @@ async def initialize_scheduler_stack(
     except Exception as exc:
         logger.error("automations_init_failed", error=str(exc))
         raise StartupError(
-            f"오류: 자동화 로드 실패\n{exc}\n"
-            "중복 이름 또는 YAML 형식을 확인하세요."
+            f"Error: failed to load automations\n{exc}\n"
+            "Check for duplicate names or invalid YAML."
         ) from exc
     logger.info("automations_loaded", count=auto_count)
     auto_load_errors = scheduler.get_last_load_errors()

@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 
 
 async def classify_route(engine: Engine, text: str) -> Any | None:
-    """인텐트 분류를 이벤트 루프 밖 스레드에서 수행한다."""
+    """Run intent classification in a worker thread outside the event loop."""
     if engine._intent_router is None:
         return None
     return await run_in_thread(engine._intent_router.classify, text)
@@ -34,22 +34,22 @@ async def decide_routing(
     metadata: dict[str, Any] | None = None,
     decision_factory: Callable[..., Any],
 ) -> Any:
-    """계층형 라우팅 판정을 수행한다.
+    """Execute hierarchical routing decisions.
 
-    순서: Skill → Instant → SemanticCache → Full LLM.
-    각 계층에서 매칭되면 즉시 decision_factory로 결과를 생성하여 반환한다.
+    Order: Skill -> Instant -> SemanticCache -> Full LLM.
+    As soon as a tier matches, return a result created by `decision_factory`.
 
     Args:
-        engine: 엔진 인스턴스.
-        chat_id: 텔레그램 채팅 ID.
-        text: 사용자 입력 텍스트.
-        model_override: 모델 오버라이드 (캐시 컨텍스트에 사용).
-        images: 첨부 이미지 (있으면 캐시 우회).
-        metadata: 요청 단위 제어 메타데이터.
-        decision_factory: RoutingDecision 생성 팩토리.
+        engine: Engine instance.
+        chat_id: Telegram chat ID.
+        text: User input text.
+        model_override: Optional model override used for cache context.
+        images: Attached images; bypasses cache when present.
+        metadata: Per-request control metadata.
+        decision_factory: Factory that produces a routing decision object.
 
     Returns:
-        라우팅 판정 결과 (decision_factory가 생성한 객체).
+        The routing result created by `decision_factory`.
     """
     skill = engine._skills.match_trigger(text)
     if skill is not None:
@@ -132,7 +132,11 @@ def resolve_inference_timeout(
     model_role: str | None,
     has_images: bool = False,
 ) -> int:
-    """추론 타임아웃을 결정한다. 이미지·추론 모델·복잡 인텐트 시 확장된 타임아웃을 반환한다."""
+    """Resolve the inference timeout.
+
+    Returns an extended timeout for image requests, reasoning models, and
+    complex intents.
+    """
     timeout = max(1, int(base_timeout))
     if has_images:
         return max(timeout, REASONING_TIMEOUT_SECONDS)

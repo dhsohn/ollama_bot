@@ -45,7 +45,7 @@ _LOW_QUALITY_FALLBACK = (
 
 @dataclass(frozen=True)
 class ResponseReview:
-    """Reviewer가 반환한 품질 판정."""
+    """Quality verdict returned by the reviewer."""
 
     passed: bool
     rewrite_needed: bool
@@ -61,7 +61,7 @@ def should_review_response(
     planner_applied: bool,
     anomaly_reasons: list[str] | None = None,
 ) -> bool:
-    """현재 full-tier 응답에 reviewer를 붙일지 결정한다."""
+    """Decide whether the current Full-tier response should be reviewed."""
     cfg = engine._config.response_reviewer
     if not cfg.enabled or images:
         return False
@@ -87,7 +87,7 @@ async def maybe_review_response(
     images: list[bytes] | None,
     anomaly_reasons: list[str] | None = None,
 ) -> str:
-    """필요 시 draft answer를 검수하고 rewrite를 적용한다."""
+    """Review a draft answer and apply a rewrite when needed."""
     blocking_anomaly = has_blocking_anomaly(anomaly_reasons)
     if not should_review_response(
         engine,
@@ -200,7 +200,7 @@ async def maybe_review_response(
 
 
 def has_blocking_anomaly(anomaly_reasons: list[str] | tuple[str, ...] | None) -> bool:
-    """사용자에게 그대로 노출하면 안 되는 붕괴성 응답인지 판단한다."""
+    """Return whether the response is too broken to show to the user."""
     if not anomaly_reasons:
         return False
     return any(reason in _BLOCKING_ANOMALY_REASONS for reason in anomaly_reasons)

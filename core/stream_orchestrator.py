@@ -1,4 +1,4 @@
-"""Engine 스트리밍 실행 경로 오케스트레이터."""
+"""Streaming execution-path orchestrator for ``Engine``."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
 
 class EngineStreamOrchestrator:
-    """Engine.process_message_stream의 제어 흐름을 담당한다."""
+    """Coordinate control flow for ``Engine.process_message_stream``."""
 
     def __init__(self, engine: Engine, *, repeated_chunk_abort_threshold: int) -> None:
         self._engine = engine

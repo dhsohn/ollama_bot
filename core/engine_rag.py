@@ -47,7 +47,7 @@ def build_full_scan_segments(
     max_chars: int,
     segment_factory: Callable[..., Any],
 ) -> list[Any]:
-    """source_path/chunk_id 순으로 전체 청크를 세그먼트로 패킹한다."""
+    """Pack all chunks into segments ordered by `source_path` and `chunk_id`."""
     if not chunks:
         return []
 
@@ -121,7 +121,7 @@ def pack_blocks_for_reduction(
     *,
     max_chars: int,
 ) -> list[str]:
-    """여러 텍스트 블록을 reduce 단계 입력 크기에 맞춰 그룹화한다."""
+    """Group text blocks to fit the reduce-stage input budget."""
     if not blocks:
         return []
 
@@ -176,10 +176,11 @@ async def prepare_full_request(
     strategy: ContextStrategy | None,
     stream: bool,
 ) -> dict[str, Any]:
-    """Tier 4(full LLM) 요청 준비를 공통 처리한다.
+    """Prepare a Tier-4 (full LLM) request.
 
-    컨텍스트 빌드, RAG 실행, ContextProvider 주입, 모델 선택, 타임아웃 계산을
-    통합 처리하여 LLM 호출에 필요한 messages/timeout/max_tokens/target_model을 반환한다.
+    This combines context building, optional RAG execution, context-provider
+    injection, model selection, and timeout calculation, then returns the
+    `messages`, `timeout`, `max_tokens`, and `target_model` needed for the LLM call.
     """
     target_model = (
         model_override
@@ -261,7 +262,7 @@ def inject_rag_context(
     messages: list[dict[str, str]],
     rag_result: Any,
 ) -> list[dict[str, str]]:
-    """RAG 컨텍스트를 시스템 프롬프트에 주입한다."""
+    """Inject RAG context into the system prompt."""
     from core.rag.context_builder import RAGContextBuilder
 
     if not rag_result or not rag_result.contexts:
@@ -285,7 +286,7 @@ def inject_extra_context(
     messages: list[dict[str, str]],
     context: str,
 ) -> list[dict[str, str]]:
-    """추가 컨텍스트를 시스템 프롬프트에 주입한다."""
+    """Inject additional context into the system prompt."""
     if not context:
         return messages
 
@@ -328,7 +329,7 @@ async def analyze_all_corpus(
     *,
     progress_callback: Callable[[dict[str, Any]], Awaitable[None] | None] | None = None,
 ) -> dict[str, Any]:
-    """RAG 인덱스 전체를 읽어 map-reduce 방식으로 분석한다."""
+    """Read the entire RAG index and analyze it with a map-reduce flow."""
     t0 = time.monotonic()
     question = query.strip()
     if not question:
@@ -607,7 +608,7 @@ async def analyze_all_corpus(
 
 
 async def reindex_rag_corpus(engine: Engine, kb_dirs: list[str] | None = None) -> dict[str, Any]:
-    """RAG 코퍼스를 증분 재인덱싱하고 통계를 반환한다."""
+    """Incrementally reindex the RAG corpus and return summary stats."""
     if not engine._config.rag.enabled or engine._rag_pipeline is None:
         raise RuntimeError("rag_pipeline_disabled")
 

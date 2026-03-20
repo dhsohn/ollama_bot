@@ -1,4 +1,4 @@
-"""런타임 의존성 초기화 팩토리."""
+"""Runtime dependency initialization factory."""
 
 from __future__ import annotations
 
@@ -37,7 +37,7 @@ from core.telegram_handler import TelegramHandler
 
 @dataclass
 class RuntimeState:
-    """초기화된 런타임 의존성을 묶어 관리한다."""
+    """Bundle initialized runtime dependencies."""
 
     config: AppSettings
     logger: Any
@@ -58,7 +58,7 @@ async def build_runtime(
     config: AppSettings,
     logger: Any,
 ) -> RuntimeState:
-    """의존성 순서대로 모듈을 초기화하고 런타임 상태를 반환한다."""
+    """Initialize modules in dependency order and return the runtime state."""
     cleanup_stack = AsyncExitStack()
     degraded_components: list[dict[str, str]] = []
     try:

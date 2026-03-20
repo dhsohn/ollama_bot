@@ -1,7 +1,7 @@
-"""텔레그램 핸들러 데코레이터 — 인증, 레이트리밋, 동시성 제어.
+"""Telegram handler decorators for auth, rate limiting, and concurrency.
 
-요청 전처리 관심사를 데코레이터로 분리하여
-TelegramHandler 클래스의 책임을 줄인다.
+These decorators isolate request pre-processing concerns so `TelegramHandler`
+can stay focused on handler logic.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 
 
 def auth_required(func: Callable) -> Callable:
-    """private chat + 인증 + 레이트리밋을 적용하는 데코레이터."""
+    """Apply private-chat, authentication, and rate-limit checks."""
 
     async def wrapper(self: TelegramHandler, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not update.effective_chat or not update.effective_message:
@@ -63,7 +63,7 @@ def auth_required(func: Callable) -> Callable:
 
 
 def global_slot_required(func: Callable) -> Callable:
-    """전역 동시성 슬롯을 적용하는 데코레이터."""
+    """Apply the global concurrency slot guard."""
 
     async def wrapper(self: TelegramHandler, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not update.effective_chat:

@@ -1,7 +1,7 @@
-"""시맨틱 캐싱 엔진.
+"""Semantic caching engine.
 
-사용자 질문의 임베딩 유사도를 기반으로 캐시 히트를 판정한다.
-캐시는 SQLite에 영구 저장하고, 인메모리 인덱스로 빠른 검색을 제공한다.
+Determines cache hits by embedding similarity on user queries. Cache entries are
+persisted in SQLite and mirrored into an in-memory index for fast lookup.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class CacheContext:
-    """캐시 키 구성 정보."""
+    """Fields that make up a cache key."""
 
     model: str
     prompt_ver: str
@@ -35,7 +35,7 @@ class CacheContext:
 
 @dataclass(frozen=True)
 class CacheResult:
-    """캐시 히트 결과."""
+    """Cache-hit result."""
 
     response: str
     similarity: float
@@ -89,7 +89,7 @@ async def _apply_semantic_cache_v2(db: aiosqlite.Connection) -> None:
 
 
 class SemanticCache:
-    """임베딩 기반 시맨틱 캐시."""
+    """Embedding-based semantic cache."""
 
     def __init__(
         self,
@@ -115,7 +115,7 @@ class SemanticCache:
         self._encoder: Any = None
         self._enabled = False
 
-        # 인메모리 인덱스
+        # In-memory index
         self._ids: list[int] = []
         self._embeddings_by_id: dict[int, Any] = {}
         self._meta_by_id: dict[int, dict[str, Any]] = {}
@@ -123,7 +123,7 @@ class SemanticCache:
         self._cache_ids_by_context: dict[tuple[str, int | None, str, str, str | None], list[int]] = {}
         self._eviction_batch_size = max(1, min(64, max(1, self._max_entries // 20)))
 
-        # 통계
+        # Statistics
         self._hits = 0
         self._misses = 0
 
@@ -136,7 +136,7 @@ class SemanticCache:
         return self._encoder
 
     async def initialize(self) -> None:
-        """테이블 생성 + 인코더 로드 + 인메모리 인덱스 빌드."""
+        """Create tables, load the encoder, and build the in-memory index."""
         runner = MigrationRunner(self._db, self._logger, db_label="semantic_cache")
         await runner.run(
             [
@@ -160,7 +160,7 @@ class SemanticCache:
         await self._rebuild_index()
 
     async def _rebuild_index(self) -> None:
-        """DB에서 전체 임베딩을 메모리로 로드한다."""
+        """Load all embeddings from the database into memory."""
         cursor = await self._db.execute(
             "SELECT id, scope, chat_id, embedding, model, prompt_ver, intent "
             "FROM semantic_cache ORDER BY id"
@@ -280,7 +280,7 @@ class SemanticCache:
         self._cache_ids_by_context.clear()
 
     def is_cacheable(self, query: str) -> bool:
-        """캐시 대상 여부를 판단한다."""
+        """Return whether the query is eligible for caching."""
         if not self._enabled:
             return False
         if len(query.strip()) < self._min_query_chars:
@@ -288,7 +288,7 @@ class SemanticCache:
         return all(not pattern.search(query) for pattern in self._exclude_res)
 
     async def get(self, query: str, context: CacheContext) -> CacheResult | None:
-        """유사한 캐시 항목을 검색한다."""
+        """Look up a similar cached entry."""
         if not self._enabled or len(self._ids) == 0:
             self._misses += 1
             return None
@@ -306,7 +306,7 @@ class SemanticCache:
             await run_in_thread(embed_texts, self._encoder, [query], normalize=True)
         )[0]
 
-        # 코사인 유사도 (정규화된 벡터 → 내적), 컨텍스트 후보군만 탐색
+        # Cosine similarity on normalized vectors (dot product), limited to context candidates.
         candidate_embeddings = np.stack(
             [self._embeddings_by_id[cache_id] for cache_id in candidate_cache_ids]
         )
@@ -320,7 +320,7 @@ class SemanticCache:
 
         cache_id = candidate_cache_ids[best_local_idx]
 
-        # DB에서 응답 조회 + last_hit_at 갱신
+        # Fetch the response from the DB and update `last_hit_at`.
         cursor = await self._db.execute(
             "SELECT query, response FROM semantic_cache WHERE id = ?", (cache_id,)
         )
@@ -344,7 +344,7 @@ class SemanticCache:
         )
 
     async def put(self, query: str, response: str, context: CacheContext) -> int:
-        """질문-응답 쌍을 캐시에 저장하고 cache_id를 반환한다."""
+        """Store a query/response pair and return its `cache_id`."""
         if not self._enabled:
             return -1
 
@@ -373,7 +373,7 @@ class SemanticCache:
             raise RuntimeError("semantic_cache_insert_failed: missing lastrowid")
         cache_id = int(cache_id_raw)
 
-        # 인메모리 인덱스 갱신
+        # Update the in-memory index.
         self._append_index_entry(
             cache_id=cache_id,
             embedding=query_emb,
@@ -384,7 +384,7 @@ class SemanticCache:
             intent=context.intent,
         )
 
-        # 최대 항목 수 초과 시 배치 단위 제거(저수위까지)로 O(n) 재배열 빈도를 줄인다.
+        # Evict in batches when over capacity to reduce repeated O(n) reshuffling.
         if len(self._ids) > self._max_entries:
             low_watermark = max(self._max_entries - self._eviction_batch_size + 1, 0)
             evict_count = max(1, len(self._ids) - low_watermark)
@@ -393,7 +393,7 @@ class SemanticCache:
         return cache_id
 
     async def _evict_oldest(self, count: int = 1) -> None:
-        """가장 오래된 항목을 count개 제거한다."""
+        """Remove the `count` oldest entries."""
         if not self._ids:
             return
         evict_count = min(max(1, count), len(self._ids))
@@ -415,7 +415,7 @@ class SemanticCache:
             self._drop_index_entry(cache_id, remove_from_order=False)
 
     async def invalidate(self, chat_id: int | None = None) -> int:
-        """캐시를 무효화한다."""
+        """Invalidate cache entries."""
         if chat_id is not None:
             cursor = await self._db.execute(
                 "DELETE FROM semantic_cache WHERE chat_id = ?", (chat_id,)
@@ -446,7 +446,7 @@ class SemanticCache:
         return deleted
 
     async def invalidate_by_id(self, cache_id: int) -> bool:
-        """단일 캐시 항목을 삭제한다."""
+        """Delete a single cache entry."""
         cursor = await self._db.execute(
             "DELETE FROM semantic_cache WHERE id = ?", (cache_id,)
         )
@@ -460,13 +460,13 @@ class SemanticCache:
         return False
 
     def _remove_from_index(self, cache_id: int) -> bool:
-        """인메모리 인덱스에서 단일 cache_id를 제거한다."""
+        """Remove one cache ID from the in-memory index."""
         return self._drop_index_entry(cache_id, remove_from_order=True)
 
     async def link_feedback_target(
         self, chat_id: int, bot_message_id: int, cache_id: int
     ) -> None:
-        """텔레그램 메시지와 캐시 항목을 연결한다."""
+        """Link a Telegram message to a cache entry."""
         await self._db.execute(
             "INSERT INTO semantic_cache_feedback_links "
             "(chat_id, bot_message_id, cache_id) VALUES (?, ?, ?) "
@@ -478,7 +478,7 @@ class SemanticCache:
         await self._db.commit()
 
     async def get_feedback_cache_id(self, chat_id: int, bot_message_id: int) -> int | None:
-        """피드백에 연결된 cache_id를 조회한다."""
+        """Look up the cache ID linked to a feedback target."""
         cursor = await self._db.execute(
             "SELECT cache_id FROM semantic_cache_feedback_links "
             "WHERE chat_id = ? AND bot_message_id = ? "
@@ -489,7 +489,7 @@ class SemanticCache:
         return row[0] if row else None
 
     async def prune_expired(self) -> int:
-        """TTL 만료 항목을 삭제한다."""
+        """Delete TTL-expired entries."""
         expired_cursor = await self._db.execute(
             "SELECT id FROM semantic_cache WHERE created_at < datetime('now', ?)",
             (f"-{self._ttl_hours} hours",),
@@ -517,7 +517,7 @@ class SemanticCache:
         return deleted if deleted > 0 else len(expired_ids)
 
     async def get_stats(self) -> dict:
-        """캐시 통계."""
+        """Return cache statistics."""
         total = self._hits + self._misses
         hit_rate = self._hits / total if total > 0 else 0.0
         return {
@@ -530,6 +530,6 @@ class SemanticCache:
         }
 
     async def close(self) -> None:
-        """리소스 정리."""
+        """Release resources."""
         self._encoder = None
         self._clear_index()

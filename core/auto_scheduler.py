@@ -1,7 +1,7 @@
-"""자동화 스케줄러 — YAML 기반 cron 작업 관리.
+"""Automation scheduler with YAML-defined cron jobs.
 
-auto/_builtin/ 및 auto/custom/ 디렉토리의 YAML 파일을 로드하여
-APScheduler cron 작업으로 등록하고 실행한다.
+Loads YAML files from `auto/_builtin/` and `auto/custom/`, registers them as
+APScheduler cron jobs, and executes them.
 """
 
 from __future__ import annotations
@@ -94,7 +94,7 @@ class AutoRetry(BaseModel):
 
 
 class AutoDefinition(BaseModel):
-    """자동화 YAML 정의를 검증하는 모델."""
+    """Validation model for automation YAML definitions."""
 
     name: str
     description: str
@@ -112,7 +112,7 @@ class AutoDefinition(BaseModel):
     def validate_cron(cls, v: str) -> str:
         normalized = v.strip()
         try:
-            # 필드 개수뿐 아니라 값 범위/문법까지 검증한다.
+            # Validate not just field count, but also value range and syntax.
             CronTrigger.from_crontab(normalized, timezone=UTC)
         except ValueError as exc:
             raise ValueError(f"Invalid cron expression: {v}") from exc
@@ -127,7 +127,7 @@ class AutoDefinition(BaseModel):
 
 
 class DuplicateAutomationError(ValueError):
-    """자동화 이름 충돌."""
+    """Raised when two automations share the same name."""
 
 
 class EngineInterface(Protocol):
@@ -163,7 +163,7 @@ class TelegramInterface(Protocol):
 
 
 class AutoScheduler:
-    """자동화 작업을 스케줄링하고 실행한다."""
+    """Schedule and execute automation jobs."""
 
     def __init__(
         self,
@@ -178,7 +178,7 @@ class AutoScheduler:
         self._scheduler = AsyncIOScheduler(timezone=self._timezone)
         self._automations: dict[str, AutoDefinition] = {}
         self._logger = get_logger("auto_scheduler")
-        # engine과 telegram은 순환 의존 방지를 위해 나중에 주입
+        # Inject engine and telegram later to avoid circular dependencies.
         self._engine: EngineInterface | None = None
         self._telegram: TelegramInterface | None = None
         self._callables: dict[str, Callable[..., Any]] = {}
@@ -192,7 +192,7 @@ class AutoScheduler:
 
     @staticmethod
     def _resolve_timezone(name: str):
-        """실행 환경에서 사용 가능한 tzinfo를 반환한다."""
+        """Return a tzinfo object available in the current runtime environment."""
         try:
             return ZoneInfo(name)
         except ZoneInfoNotFoundError as exc:
@@ -203,23 +203,23 @@ class AutoScheduler:
         engine: EngineInterface,
         telegram: TelegramInterface,
     ) -> None:
-        """engine과 telegram 참조를 주입한다."""
+        """Inject engine and telegram references."""
         self._engine = engine
         self._telegram = telegram
 
     def dependencies_ready(self) -> bool:
-        """런타임 의존성(engine/telegram) 주입 완료 여부."""
+        """Return whether runtime dependencies are fully injected."""
         return self._engine is not None and self._telegram is not None
 
     def register_callable(self, name: str, func: Callable[..., Any]) -> None:
-        """외부 callable을 이름으로 등록한다. YAML의 callable 액션에서 참조."""
+        """Register an external callable by name for YAML callable actions."""
         if not callable(func):
             raise TypeError(f"register_callable expects a callable, got {type(func)}")
         self._callables[name] = func
         self._logger.info("callable_registered", name=name)
 
     async def load_automations(self, *, strict: bool = False) -> int:
-        """_builtin/ 및 custom/ 디렉토리에서 자동화 YAML을 로드한다."""
+        """Load automation YAML files from `_builtin/` and `custom/`."""
         old_automations = self._automations
         new_automations: dict[str, AutoDefinition] = {}
         new_triggers: dict[str, CronTrigger] = {}
@@ -282,7 +282,7 @@ class AutoScheduler:
         return loaded
 
     def _load_auto_file(self, path: Path) -> AutoDefinition | None:
-        """단일 YAML 파일에서 자동화를 로드한다."""
+        """Load a single automation from YAML."""
         with open(path, encoding="utf-8") as f:
             data = yaml.safe_load(f)
 
@@ -292,7 +292,7 @@ class AutoScheduler:
         return AutoDefinition(**data)
 
     def _build_cron_trigger(self, schedule: str) -> CronTrigger:
-        """설정된 타임존 기준으로 cron 트리거를 생성/검증한다."""
+        """Build and validate a cron trigger in the configured timezone."""
         try:
             return CronTrigger.from_crontab(schedule.strip(), timezone=self._timezone)
         except ValueError as exc:
@@ -309,7 +309,7 @@ class AutoScheduler:
         new_automations: dict[str, AutoDefinition],
         new_triggers: dict[str, CronTrigger],
     ) -> None:
-        """자동화 상태를 원자적으로 교체한다. 실패 시 기존 상태로 롤백한다."""
+        """Atomically swap automation state and roll back on failure."""
         old_enabled = [auto for auto in old_automations.values() if auto.enabled]
         added_job_ids: list[str] = []
         try:
@@ -346,7 +346,7 @@ class AutoScheduler:
         auto: AutoDefinition,
         trigger: CronTrigger | None = None,
     ) -> None:
-        """자동화를 APScheduler cron 작업으로 등록한다."""
+        """Register an automation as an APScheduler cron job."""
         if trigger is None:
             trigger = self._build_cron_trigger(auto.schedule)
 
@@ -360,7 +360,7 @@ class AutoScheduler:
         )
 
     async def _execute_automation(self, auto_name: str) -> bool:
-        """자동화 작업을 실행한다. 재시도 로직 포함."""
+        """Execute an automation job, including retry logic."""
         auto = self._automations.get(auto_name)
         if not auto or not auto.enabled:
             return False
@@ -407,7 +407,7 @@ class AutoScheduler:
             return False
 
     async def _run_action(self, auto: AutoDefinition) -> str:
-        """액션 타입에 따라 적절한 처리를 수행한다."""
+        """Dispatch to the appropriate handler for the action type."""
         action = auto.action
         handler = self._action_handlers.get(action.type)
         if handler is None:
@@ -489,9 +489,9 @@ class AutoScheduler:
         return "" if output is None else str(output)
 
     def _resolve_action_model(self, action: AutoAction) -> tuple[str | None, str | None]:
-        """자동화 액션에서 사용할 모델/역할을 결정한다.
+        """Resolve the model and role to use for an automation action.
 
-        기본값은 global default model + default role이다.
+        The default is the global default model with the default role.
         """
         model_override = action.model
         model_role = action.model_role
@@ -506,7 +506,7 @@ class AutoScheduler:
         call_kwargs: dict[str, Any],
         optional_kwargs: dict[str, Any],
     ) -> None:
-        """callable 시그니처를 확인해 지원되는 선택 kwargs만 주입한다."""
+        """Inject only supported optional kwargs based on the callable signature."""
         if not optional_kwargs:
             return
         try:
@@ -533,7 +533,7 @@ class AutoScheduler:
                 call_kwargs[key] = value
 
     def _run_command_action(self, auto: AutoDefinition) -> str:
-        # v0.1에서는 보안상 시스템 명령 실행 비활성화
+        # In v0.1, system-command execution is disabled for security reasons.
         self._logger.warning(
             "command_action_disabled",
             name=auto.name,
@@ -542,12 +542,12 @@ class AutoScheduler:
         return "[보안 제한] 'command' 타입은 v0.1에서 비활성화되어 있습니다."
 
     async def _deliver_output(self, auto: AutoDefinition, result: str) -> None:
-        """실행 결과를 텔레그램 전송 및/또는 파일 저장한다."""
+        """Deliver automation output to Telegram and/or save it to a file."""
         output = auto.output
 
-        # 텔레그램 전송
+        # Telegram delivery
         if output.send_to_telegram and self._telegram:
-            # HTML 태그가 포함된 결과는 HTML parse_mode로 전송
+            # Send HTML-tagged results with HTML parse mode.
             use_html = "<b>" in result or "<pre>" in result
             parse_mode = "HTML" if use_html else None
             header = (
@@ -567,16 +567,16 @@ class AutoScheduler:
                         error=str(exc),
                     )
 
-        # 파일 저장
+        # File output
         if output.save_to_file:
             try:
-                # 날짜 플레이스홀더 치환
+                # Replace date placeholders.
                 now = datetime.now(self._timezone)
                 file_path = output.save_to_file.replace(
                     "{date}", now.strftime("%Y%m%d")
                 )
 
-                # 경로 검증
+                # Validate the output path.
                 validated_path = self._security.validate_path(
                     file_path, base_dir=self._config.data_dir
                 )
@@ -601,7 +601,7 @@ class AutoScheduler:
         auto: AutoDefinition,
         error: Exception | None,
     ) -> None:
-        """자동화 실패 알림을 텔레그램으로 전송한다."""
+        """Send an automation failure notice to Telegram."""
         if self._telegram is None:
             return
 
@@ -629,7 +629,7 @@ class AutoScheduler:
 
     @staticmethod
     def _format_exception(exc: Exception | None) -> str:
-        """예외를 클래스명 포함 문자열로 정규화한다."""
+        """Normalize an exception into a string that includes its class name."""
         if exc is None:
             return "unknown"
         message = str(exc).strip()
@@ -638,7 +638,7 @@ class AutoScheduler:
         return exc.__class__.__name__
 
     def start(self) -> None:
-        """스케줄러를 시작한다."""
+        """Start the scheduler."""
         if not self.dependencies_ready():
             raise RuntimeError(
                 "AutoScheduler dependencies are not set. "
@@ -649,7 +649,7 @@ class AutoScheduler:
             self._logger.info("scheduler_started")
 
     def stop(self) -> None:
-        """스케줄러를 종료한다."""
+        """Stop the scheduler."""
         if self._scheduler.running:
             self._scheduler.shutdown(wait=False)
             self._logger.info("scheduler_stopped")
@@ -679,7 +679,7 @@ class AutoScheduler:
         return result
 
     def get_last_load_errors(self) -> list[str]:
-        """가장 최근 load_automations에서 수집된 오류를 반환한다."""
+        """Return errors collected during the most recent `load_automations` call."""
         return list(self._last_load_errors)
 
     @staticmethod
@@ -694,7 +694,7 @@ class AutoScheduler:
         return message
 
     async def disable_automation(self, name: str) -> bool:
-        """자동화를 비활성화하고 작업을 제거한다."""
+        """Disable an automation and remove its scheduled job."""
         auto = self._automations.get(name)
         if not auto:
             return False
@@ -707,11 +707,11 @@ class AutoScheduler:
         return True
 
     async def reload_automations(self, *, strict: bool = False) -> int:
-        """모든 작업을 제거하고 다시 로드한다."""
+        """Remove all jobs and reload automations."""
         return await self.load_automations(strict=strict)
 
     async def run_automation_once(self, name: str) -> bool:
-        """지정한 자동화를 즉시 한 번 실행한다."""
+        """Run the specified automation immediately once."""
         auto = self._automations.get(name)
         if auto is None or not auto.enabled:
             return False

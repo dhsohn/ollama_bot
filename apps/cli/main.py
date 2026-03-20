@@ -1,11 +1,12 @@
-"""CLI 인터페이스 — chat, dry-run, test.
+"""CLI interface for chat, dry-run, and test commands.
 
-단일 모델 응답 경로와 RAG 파이프라인을 텔레그램 없이 직접 테스트할 수 있다.
+This lets you exercise the single-model response path and the RAG pipeline
+without going through Telegram.
 
-사용법:
-  python -m apps.cli chat              대화형 채팅
-  python -m apps.cli dry-run "쿼리"    모델+RAG 결과만 출력
-  python -m apps.cli test              테스트 케이스 실행
+Usage:
+  python -m apps.cli chat              interactive chat
+  python -m apps.cli dry-run "query"   print model + RAG metadata only
+  python -m apps.cli test              run built-in test cases
 """
 
 from __future__ import annotations
@@ -28,14 +29,14 @@ _ensure_project_root_on_path()
 
 
 async def _init_components():
-    """설정 기반 LLM 클라이언트와 선택적 RAGPipeline을 초기화한다."""
+    """Initialize the configured LLM client and optional RAG pipeline."""
     from core.config import OllamaConfig, load_config
     from core.ollama_client import OllamaClient
 
     config = load_config()
     if not config.ollama.chat_model.strip():
         raise ValueError(
-            "ollama.chat_model을 설정해야 합니다."
+            "ollama.chat_model must be configured."
         )
     llm: Any = OllamaClient(
         OllamaConfig(
@@ -102,7 +103,7 @@ async def _close_components(llm: Any, retrieval_client: Any) -> None:
 
 
 async def cmd_chat(args: argparse.Namespace) -> None:
-    """대화형 채팅."""
+    """Run an interactive chat session."""
     llm, retrieval_client, rag_pipeline, config = await _init_components()
     from core.config import get_system_prompt
     from core.text_utils import sanitize_model_output
@@ -110,7 +111,7 @@ async def cmd_chat(args: argparse.Namespace) -> None:
     system_prompt = get_system_prompt(config)
 
     print("=== ollama_bot CLI Chat ===")
-    print("종료: Ctrl+C 또는 'exit'\n")
+    print("Exit with Ctrl+C or 'exit'\n")
 
     try:
         while True:
@@ -132,7 +133,7 @@ async def cmd_chat(args: argparse.Namespace) -> None:
                     print(f"  [rag] {len(result.candidates)} sources, "
                           f"{result.trace.context_tokens_estimate} tokens")
 
-            # 생성
+            # Generation
             messages = [{"role": "system", "content": system_prompt}]
             if rag_context:
                 from core.rag.context_builder import RAGContextBuilder
@@ -142,13 +143,13 @@ async def cmd_chat(args: argparse.Namespace) -> None:
             response = await llm.chat(messages=messages, model=model_name)
             print(f"\nBot> {sanitize_model_output(response.content)}\n")
     except KeyboardInterrupt:
-        print("\n종료.")
+        print("\nExiting.")
     finally:
         await _close_components(llm, retrieval_client)
 
 
 async def cmd_dry_run(args: argparse.Namespace) -> None:
-    """모델 + RAG 결과만 JSON 출력."""
+    """Print model and RAG metadata as JSON."""
     llm, retrieval_client, rag_pipeline, _config = await _init_components()
 
     query = args.query
@@ -189,7 +190,7 @@ _RAG_TEST_CASES: list[dict[str, Any]] = [
 
 
 async def cmd_test(args: argparse.Namespace) -> None:
-    """테스트 케이스 실행."""
+    """Run built-in CLI test cases."""
     llm, retrieval_client, rag_pipeline, _config = await _init_components()
 
     print("=== Single Model Check ===\n")
@@ -218,16 +219,16 @@ async def cmd_test(args: argparse.Namespace) -> None:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="ollama_bot CLI — 단일 모델/RAG 테스트",
+        description="ollama_bot CLI - single-model and RAG checks",
     )
     sub = parser.add_subparsers(dest="command")
 
-    sub.add_parser("chat", help="대화형 채팅")
+    sub.add_parser("chat", help="interactive chat")
 
-    dry_p = sub.add_parser("dry-run", help="모델+RAG 결과만 출력")
-    dry_p.add_argument("query", type=str, help="테스트 쿼리")
+    dry_p = sub.add_parser("dry-run", help="print model and RAG metadata only")
+    dry_p.add_argument("query", type=str, help="test query")
 
-    sub.add_parser("test", help="테스트 케이스 실행")
+    sub.add_parser("test", help="run built-in test cases")
     return parser
 
 

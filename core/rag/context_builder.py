@@ -1,4 +1,4 @@
-"""RAG 컨텍스트 빌더 — citation 포맷팅 + 시스템 프롬프트 주입."""
+"""RAG context builder for citation formatting and prompt injection."""
 
 from __future__ import annotations
 
@@ -6,14 +6,14 @@ from core.rag.types import ChunkMetadata, RetrievedItem
 
 
 class RAGContextBuilder:
-    """리랭크된 결과를 citation 포함 컨텍스트로 포맷팅한다."""
+    """Format reranked results into citation-aware context."""
 
     def build_context(
         self,
         items: list[RetrievedItem],
         max_tokens: int = 4000,
     ) -> tuple[str, dict[str, ChunkMetadata]]:
-        """citation 키가 포함된 컨텍스트 문자열과 citation 맵을 반환한다.
+        """Return the context string and citation map.
 
         Returns:
             (context_text, citation_map)
@@ -25,7 +25,7 @@ class RAGContextBuilder:
         citation_map: dict[str, ChunkMetadata] = {}
         sections: list[str] = []
         total_chars = 0
-        chars_limit = max_tokens * 3  # 대략적 토큰→문자 변환
+        chars_limit = max_tokens * 3  # Approximate token-to-character conversion.
 
         for i, item in enumerate(items):
             key = f"#{i + 1}"
@@ -52,7 +52,7 @@ class RAGContextBuilder:
 
     @staticmethod
     def build_rag_system_suffix(context_text: str) -> str:
-        """시스템 프롬프트에 추가할 RAG 지시문을 반환한다."""
+        """Return the RAG instruction suffix appended to the system prompt."""
         return (
             "\n\n[참고 문서]\n"
             "아래 문서를 근거로 답변하세요. "

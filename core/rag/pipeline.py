@@ -1,4 +1,4 @@
-"""RAG 파이프라인 — 검색/리랭크/컨텍스트 빌드 통합 오케스트레이션."""
+"""Integrated RAG orchestration for retrieval, reranking, and context building."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
 
 class RAGPipeline:
-    """RAG 검색/리랭크/컨텍스트 빌드 통합 파이프라인."""
+    """Integrated pipeline for retrieval, reranking, and context building."""
 
     def __init__(
         self,
@@ -41,11 +41,11 @@ class RAGPipeline:
         return self._retriever.chunk_count
 
     async def get_all_chunks(self) -> list[Chunk]:
-        """인덱스의 전체 청크를 반환한다 (full-scan 용도)."""
+        """Return every chunk in the index for full-scan workflows."""
         return await self._retriever.get_all_chunks()
 
     async def reindex_corpus(self, kb_paths: str | list[str]) -> dict[str, Any]:
-        """지정 경로를 대상으로 증분 재인덱싱을 수행한다."""
+        """Incrementally reindex the specified paths."""
         return await self._retriever.reindex(kb_paths)
 
     def should_trigger_rag(
@@ -53,7 +53,7 @@ class RAGPipeline:
         text: str,
         metadata: dict | None = None,
     ) -> bool:
-        """RAG 트리거 조건을 검사한다."""
+        """Check whether the request should trigger RAG."""
         if metadata and metadata.get("use_rag"):
             return True
         text_lower = text.lower()
@@ -64,7 +64,7 @@ class RAGPipeline:
         query: str,
         metadata: dict | None = None,
     ) -> RAGResult:
-        """RAG 파이프라인 전체를 실행한다."""
+        """Run the full RAG pipeline."""
         t0 = time.monotonic()
         trace = RAGTrace(rag_used=True, retrieve_k0=self._config.retrieve_k0)
 

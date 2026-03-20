@@ -1,22 +1,22 @@
-"""엔진 모듈 간 공유 상수 — 중복 제거를 위한 단일 소스."""
+"""Shared constants for engine modules."""
 
-# 추론 타임아웃
+# Reasoning timeouts
 REASONING_TIMEOUT_SECONDS = 3600
 REASONING_INTENTS: frozenset[str] = frozenset({"complex", "code"})
 REASONING_MODEL_ROLES: frozenset[str] = frozenset({"reasoning", "coding", "vision"})
 
-# 요약 청킹
+# Summary chunking
 SUMMARY_CHUNK_TRIGGER_CHARS = 6000
 SUMMARY_CHUNK_MAX_CHARS = 3200
 SUMMARY_CHUNK_OVERLAP_CHARS = 320
 
-# 요약 LLM 호출
+# Summary LLM calls
 SUMMARY_MAP_TIMEOUT_SECONDS = 180
 SUMMARY_REDUCE_TIMEOUT_SECONDS = 600
 SUMMARY_MAP_MAX_TOKENS = 384
 SUMMARY_REDUCE_MAX_TOKENS = 1024
 
-# Full-scan 분석
+# Full-scan analysis
 FULL_SCAN_SEGMENT_MAX_CHARS = 12_000
 FULL_SCAN_MAP_MAX_TOKENS = 384
 FULL_SCAN_REDUCE_MAX_TOKENS = 768
@@ -25,5 +25,5 @@ FULL_SCAN_PROGRESS_EVERY_SEGMENTS = 10
 FULL_SCAN_REDUCE_GROUP_MAX_CHARS = 12_000
 FULL_SCAN_REDUCE_MAX_PASSES = 6
 
-# 컨텍스트 히스토리
+# Context history
 CONTEXT_HISTORY_MESSAGE_MAX_CHARS = 32000

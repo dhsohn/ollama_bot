@@ -18,7 +18,7 @@ from core.ollama_client import OllamaClient
 
 
 class StartupError(RuntimeError):
-    """초기화 실패 시 사용자 노출용 메시지를 전달한다."""
+    """Carry a startup-failure message that can be shown to the operator."""
 
     def __init__(self, message: str) -> None:
         super().__init__(message)
@@ -26,7 +26,7 @@ class StartupError(RuntimeError):
 
 
 def _create_retrieval_client(config: AppSettings) -> OllamaClient:
-    """Ollama 기반 retrieval 전용 클라이언트를 생성한다."""
+    """Create an Ollama client dedicated to retrieval tasks."""
     retrieval_config = OllamaConfig(
         host=config.ollama.host,
         model=config.ollama.embedding_model,
@@ -35,7 +35,7 @@ def _create_retrieval_client(config: AppSettings) -> OllamaClient:
 
 
 async def _open_sqlite_db(path: Path) -> aiosqlite.Connection:
-    """WAL 모드 SQLite 연결을 생성한다."""
+    """Open a SQLite connection configured for WAL mode."""
     path.parent.mkdir(parents=True, exist_ok=True)
     db = await aiosqlite.connect(str(path))
     db.row_factory = aiosqlite.Row
@@ -45,12 +45,12 @@ async def _open_sqlite_db(path: Path) -> aiosqlite.Connection:
 
 
 def validate_required_settings(config: AppSettings, logger: Any) -> None:
-    """필수 런타임 설정을 검사한다."""
+    """Validate required runtime settings."""
     if not config.ollama.chat_model.strip():
         logger.error("ollama_chat_model_not_set")
         raise StartupError(
-            "오류: ollama.chat_model이 비어 있습니다.\n"
-            "config/config.yaml의 ollama.chat_model에 채팅 모델을 설정하세요."
+            "Error: ollama.chat_model is empty.\n"
+            "Set a chat model in config/config.yaml under ollama.chat_model."
         )
 
     if (
@@ -59,15 +59,15 @@ def validate_required_settings(config: AppSettings, logger: Any) -> None:
     ):
         logger.error("telegram_bot_token_not_set")
         raise StartupError(
-            "오류: telegram.bot_token이 설정되지 않았습니다.\n"
-            "config/config.yaml의 telegram.bot_token에 유효한 봇 토큰을 입력하세요."
+            "Error: telegram.bot_token is not configured.\n"
+            "Set a valid bot token in config/config.yaml under telegram.bot_token."
         )
 
     if not config.security.allowed_users:
         logger.error("allowed_users_not_set")
         raise StartupError(
-            "오류: telegram.allowed_users가 비어 있습니다.\n"
-            "config/config.yaml의 telegram.allowed_users에 허용할 사용자 ID를 설정하세요."
+            "Error: telegram.allowed_users is empty.\n"
+            "Set the allowed user IDs in config/config.yaml under telegram.allowed_users."
         )
 
 
@@ -82,7 +82,7 @@ def _acquire_runtime_lock(
     cleanup_stack: AsyncExitStack,
     logger: Any,
 ) -> None:
-    """동일 data_dir에서 봇이 중복 실행되지 않도록 프로세스 락을 건다."""
+    """Acquire a process lock so only one bot uses the same data_dir."""
     lock_dir = Path(config.data_dir)
     lock_dir.mkdir(parents=True, exist_ok=True)
     lock_path = lock_dir / f"{config.bot.name}.runtime.lock"
@@ -95,9 +95,9 @@ def _acquire_runtime_lock(
         lock_file.close()
         owner_hint = f" (pid={owner_pid})" if owner_pid else ""
         raise StartupError(
-            "오류: 이미 실행 중인 ollama_bot 인스턴스가 있습니다.\n"
+            "Error: an ollama_bot instance is already running.\n"
             f"- lock: {lock_path}{owner_hint}\n"
-            "기존 프로세스를 종료하거나 systemd 서비스 상태를 확인한 뒤 다시 시작하세요."
+            "Stop the existing process or inspect the systemd service before retrying."
         ) from exc
 
     cleanup_stack.callback(_release_runtime_lock, lock_file)
@@ -141,7 +141,7 @@ def handle_optional_component_failure(
     )
     if config.strict_startup:
         raise StartupError(
-            "오류: strict_startup=true로 설정되어 선택 컴포넌트 초기화 실패 시 시작을 중단합니다.\n"
+            "Error: strict_startup=true stops startup when an optional component fails to initialize.\n"
             f"- component: {component}\n"
             f"- reason: {error_text}"
         )

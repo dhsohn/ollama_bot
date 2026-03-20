@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# update_wsl_hosts.sh — WSL 부팅 시 Windows 게이트웨이 IP로 /etc/hosts의 별칭 엔트리 갱신
+# update_wsl_hosts.sh - refresh the /etc/hosts alias entry with the Windows gateway IP on WSL boot
 set -euo pipefail
 
 usage() {
@@ -7,8 +7,8 @@ usage() {
 Usage: bash scripts/update_wsl_hosts.sh
 
 Environment:
-  HOSTNAME_ALIAS  hosts에 갱신할 별칭 (default: homelab)
-  HOSTS_FILE      대상 hosts 파일 경로 (default: /etc/hosts)
+  HOSTNAME_ALIAS  alias name to refresh in hosts (default: homelab)
+  HOSTS_FILE      target hosts file path (default: /etc/hosts)
 EOF
 }
 
@@ -20,7 +20,7 @@ case "${1:-}" in
     "")
         ;;
     *)
-        echo "[update_wsl_hosts] ERROR: 알 수 없는 옵션: $1" >&2
+        echo "[update_wsl_hosts] ERROR: unknown option: $1" >&2
         usage
         exit 1
         ;;
@@ -30,21 +30,21 @@ HOSTNAME_ALIAS="${HOSTNAME_ALIAS:-homelab}"
 HOSTS_FILE="${HOSTS_FILE:-/etc/hosts}"
 
 if [[ -z "${HOSTNAME_ALIAS}" ]]; then
-    echo "[update_wsl_hosts] ERROR: HOSTNAME_ALIAS가 비어 있음" >&2
+    echo "[update_wsl_hosts] ERROR: HOSTNAME_ALIAS is empty" >&2
     exit 1
 fi
 if [[ ! "${HOSTNAME_ALIAS}" =~ ^[A-Za-z0-9.-]+$ ]]; then
-    echo "[update_wsl_hosts] ERROR: HOSTNAME_ALIAS 형식이 유효하지 않음: ${HOSTNAME_ALIAS}" >&2
+    echo "[update_wsl_hosts] ERROR: invalid HOSTNAME_ALIAS format: ${HOSTNAME_ALIAS}" >&2
     exit 1
 fi
 if [[ ! -f "${HOSTS_FILE}" ]]; then
-    echo "[update_wsl_hosts] ERROR: hosts 파일이 없음: ${HOSTS_FILE}" >&2
+    echo "[update_wsl_hosts] ERROR: hosts file not found: ${HOSTS_FILE}" >&2
     exit 1
 fi
 
 GATEWAY_IP="$(ip route show default | awk '{print $3; exit}')"
 if [[ -z "${GATEWAY_IP}" ]]; then
-    echo "[update_wsl_hosts] ERROR: 게이트웨이 IP를 감지할 수 없음" >&2
+    echo "[update_wsl_hosts] ERROR: failed to detect the gateway IP" >&2
     exit 1
 fi
 
