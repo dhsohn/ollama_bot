@@ -29,13 +29,18 @@ def _resolve_chat_model_and_role(
     if explicit_model is not None:
         return explicit_model, None
 
+    default_model = get_default_chat_model(engine._config).strip() or None
     role = requested_role.strip().lower() if isinstance(requested_role, str) and requested_role.strip() else None
     if role:
         mapped_model = engine._resolve_model_for_role(role)
         if mapped_model is not None:
             return mapped_model, role
+        if role != "skill":
+            # Preserve explicitly requested roles like "coding" even when they
+            # share the default chat model, so preparation and telemetry can
+            # still see the caller's intent.
+            return default_model, role
 
-    default_model = get_default_chat_model(engine._config).strip() or None
     return default_model, None
 
 

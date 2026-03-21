@@ -188,6 +188,35 @@ class TestRunSkillChat:
         finally:
             mod.run_chunked_summary_pipeline = original
 
+    @pytest.mark.asyncio
+    async def test_skill_chat_preserves_explicit_non_default_role_with_single_model(self) -> None:
+        engine = MagicMock()
+        engine._extract_skill_user_input = MagicMock(return_value="short text")
+        engine._should_use_chunked_summary = MagicMock(return_value=False)
+        engine._resolve_model_for_role = MagicMock(return_value=None)
+        engine._config.ollama.chat_model = "default-model"
+        engine._prepare_target_model = AsyncMock(return_value=("default-model", "coding"))
+        engine._llm_client = AsyncMock()
+        engine._llm_client.chat = AsyncMock(
+            return_value=ChatResponse(content="result", usage=None)
+        )
+
+        skill = _make_skill(name="code_review", model_role="coding")
+        messages = [{"role": "user", "content": "input"}]
+
+        content, _usage, model = await run_skill_chat(
+            engine,
+            skill=skill,
+            messages=messages,
+            model_override=None,
+        )
+
+        assert content == "result"
+        assert model == "default-model"
+        prepare_kwargs = engine._prepare_target_model.await_args.kwargs
+        assert prepare_kwargs["model"] == "default-model"
+        assert prepare_kwargs["role"] == "coding"
+
 
 class TestRunChunkedSummaryPipeline:
     @pytest.mark.asyncio
