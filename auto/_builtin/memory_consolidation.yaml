@@ -7,7 +7,7 @@ schedule: "0 4 * * sun"
 action:
   type: "callable"
   target: "memory_consolidation"
-  model_role: "reasoning"
+  llm_timeout: 180
   parameters:
     min_entries_per_category: 5
     max_llm_calls: 3
@@ -18,4 +18,4 @@ output:
 retry:
   max_attempts: 2
   delay_seconds: 60
-timeout: 300
+timeout: 600

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import shutil
 from collections import OrderedDict
 from pathlib import Path
@@ -16,6 +17,7 @@ from .common import (
     count_recent_errors_async,
     get_log_level,
     parse_json_array,
+    resolve_llm_timeout,
     truncate,
 )
 
@@ -126,6 +128,13 @@ def build_log_triage_callable(
     data_dir: str,
     logger: Any,
 ):
+    def _reserve_llm_timeout(total_timeout: int | None) -> int | None:
+        if total_timeout is None:
+            return None
+        timeout_value = max(1, int(total_timeout))
+        reserve = min(15, max(1, timeout_value // 5))
+        return max(1, timeout_value - reserve)
+
     def _normalize_text(value: Any, *, max_chars: int = 160) -> str:
         if value is None:
             return ""
@@ -284,6 +293,7 @@ def build_log_triage_callable(
         temperature: float | None = None,
         max_tokens: int | None = None,
         timeout: int | None = None,
+        llm_timeout: int | None = None,
     ) -> str:
         """최근 error/warning 로그를 요약해 운영자가 바로 대응할 수 있게 정리한다."""
         if hours_back <= 0:
@@ -321,16 +331,25 @@ def build_log_triage_callable(
             groups=groups,
             max_findings=max_findings,
         )
+        explicit_llm_timeout, timeout_is_hard = resolve_llm_timeout(
+            timeout=None,
+            llm_timeout=llm_timeout,
+        )
+        effective_llm_timeout = explicit_llm_timeout or _reserve_llm_timeout(timeout)
 
         try:
-            raw = await engine.process_prompt(
-                prompt=prompt,
-                response_format=TRIAGE_SCHEMA,
-                max_tokens=max_tokens if max_tokens is not None else 768,
-                temperature=temperature if temperature is not None else 0.2,
-                model_override=model,
-                model_role=model_role,
-                timeout=timeout,
+            raw = await asyncio.wait_for(
+                engine.process_prompt(
+                    prompt=prompt,
+                    response_format=TRIAGE_SCHEMA,
+                    max_tokens=max_tokens if max_tokens is not None else 768,
+                    temperature=temperature if temperature is not None else 0.2,
+                    model_override=model,
+                    model_role=model_role,
+                    timeout=effective_llm_timeout,
+                    timeout_is_hard=timeout_is_hard,
+                ),
+                timeout=effective_llm_timeout,
             )
             items = parse_json_array(raw)
             if items is None:

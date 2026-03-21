@@ -321,7 +321,6 @@ async def preload_default_model(
         try:
             maybe_result = prepare_model(
                 model=default_model,
-                role="default",
             )
             if inspect.isawaitable(maybe_result):
                 await maybe_result

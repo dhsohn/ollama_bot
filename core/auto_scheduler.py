@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import yaml
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from core.config import AppSettings, get_default_chat_model
 from core.logging_setup import get_logger
@@ -39,6 +39,7 @@ class AutoAction(BaseModel):
     parameters: dict = Field(default_factory=dict)
     model: str | None = None
     model_role: str | None = None
+    llm_timeout: int | None = None
     temperature: float | None = None
     max_tokens: int | None = None
 
@@ -66,6 +67,15 @@ class AutoAction(BaseModel):
             return None
         if value < 1:
             raise ValueError("max_tokens must be >= 1")
+        return value
+
+    @field_validator("llm_timeout")
+    @classmethod
+    def validate_llm_timeout(cls, value: int | None) -> int | None:
+        if value is None:
+            return None
+        if value < 1:
+            raise ValueError("llm_timeout must be >= 1")
         return value
 
 
@@ -125,6 +135,13 @@ class AutoDefinition(BaseModel):
             raise ValueError("timeout must be >= 1")
         return value
 
+    @model_validator(mode="after")
+    def validate_timeout_budget_order(self) -> "AutoDefinition":
+        llm_timeout = self.action.llm_timeout
+        if llm_timeout is not None and llm_timeout > self.timeout:
+            raise ValueError("action.llm_timeout must be <= timeout")
+        return self
+
 
 class DuplicateAutomationError(ValueError):
     """Raised when two automations share the same name."""
@@ -153,6 +170,7 @@ class EngineInterface(Protocol):
         model_override: str | None = None,
         model_role: str | None = None,
         timeout: int | None = None,
+        timeout_is_hard: bool = False,
     ) -> str: ...
 
 
@@ -422,6 +440,7 @@ class AutoScheduler:
             raise RuntimeError("Engine not set")
         action = auto.action
         model_override, model_role = self._resolve_action_model(action)
+        llm_timeout = action.llm_timeout if action.llm_timeout is not None else auto.timeout
         return await self._engine.execute_skill(
             skill_name=action.target,
             parameters=action.parameters,
@@ -429,7 +448,7 @@ class AutoScheduler:
             model_role_override=model_role,
             max_tokens=action.max_tokens,
             temperature=action.temperature,
-            timeout=auto.timeout,
+            timeout=llm_timeout,
         )
 
     async def _run_prompt_action(self, auto: AutoDefinition) -> str:
@@ -449,6 +468,7 @@ class AutoScheduler:
             if action.temperature is not None
             else action.parameters.get("temperature")
         )
+        llm_timeout = action.llm_timeout if action.llm_timeout is not None else auto.timeout
         return await self._engine.process_prompt(
             prompt=action.target,
             chat_id=chat_id if isinstance(chat_id, int) else None,
@@ -457,7 +477,8 @@ class AutoScheduler:
             temperature=temperature if isinstance(temperature, int | float) else None,
             model_override=model_override,
             model_role=model_role,
-            timeout=auto.timeout,
+            timeout=llm_timeout,
+            timeout_is_hard=action.llm_timeout is not None,
         )
 
     async def _run_callable_action(self, auto: AutoDefinition) -> str:
@@ -480,6 +501,8 @@ class AutoScheduler:
         if action.max_tokens is not None:
             optional_kwargs["max_tokens"] = action.max_tokens
         optional_kwargs["timeout"] = auto.timeout
+        if action.llm_timeout is not None:
+            optional_kwargs["llm_timeout"] = action.llm_timeout
 
         self._inject_callable_kwargs(func, call_kwargs, optional_kwargs)
 
@@ -491,14 +514,14 @@ class AutoScheduler:
     def _resolve_action_model(self, action: AutoAction) -> tuple[str | None, str | None]:
         """Resolve the model and role to use for an automation action.
 
-        The default is the global default model with the default role.
+        The default is the global default model without a role tag.
         """
         model_override = action.model
         model_role = action.model_role
         if model_override is not None or model_role is not None:
             return model_override, model_role
         fallback_model = get_default_chat_model(self._config).strip() or None
-        return fallback_model, "default"
+        return fallback_model, None
 
     @staticmethod
     def _inject_callable_kwargs(
@@ -674,6 +697,7 @@ class AutoScheduler:
                 "action_type": auto.action.type,
                 "action_model": auto.action.model,
                 "action_model_role": auto.action.model_role,
+                "action_llm_timeout": auto.action.llm_timeout,
                 "next_run": next_run,
             })
         return result

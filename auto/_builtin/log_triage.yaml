@@ -7,6 +7,7 @@ schedule: "15 */6 * * *"
 action:
   type: "callable"
   target: "log_triage"
+  llm_timeout: 180
   parameters:
     hours_back: 6
     max_entries: 80
@@ -16,4 +17,4 @@ output:
 retry:
   max_attempts: 1
   delay_seconds: 60
-timeout: 120
+timeout: 240

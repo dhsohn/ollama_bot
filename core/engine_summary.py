@@ -19,6 +19,26 @@ if TYPE_CHECKING:
     from core.engine import Engine
 
 
+def _resolve_chat_model_and_role(
+    engine: Engine,
+    *,
+    model_override: str | None,
+    requested_role: str | None,
+) -> tuple[str | None, str | None]:
+    explicit_model = model_override.strip() if isinstance(model_override, str) and model_override.strip() else None
+    if explicit_model is not None:
+        return explicit_model, None
+
+    role = requested_role.strip().lower() if isinstance(requested_role, str) and requested_role.strip() else None
+    if role:
+        mapped_model = engine._resolve_model_for_role(role)
+        if mapped_model is not None:
+            return mapped_model, role
+
+    default_model = get_default_chat_model(engine._config).strip() or None
+    return default_model, None
+
+
 def is_summarize_skill(skill: SkillDefinition) -> bool:
     return skill.name.strip().lower() == "summarize"
 
@@ -95,7 +115,7 @@ async def run_skill_chat(
     chat_id: int | None = None,
 ) -> tuple[str, Any, str | None]:
     resolved_timeout = int(timeout_override or skill.timeout)
-    resolved_role = (model_role_override or skill.model_role).strip().lower()
+    requested_role = (model_role_override or skill.model_role).strip().lower()
     resolved_max_tokens = (
         max_tokens_override if max_tokens_override is not None else skill.max_tokens
     )
@@ -120,11 +140,17 @@ async def run_skill_chat(
                 error=str(exc),
             )
 
+    target_model_candidate, effective_role = _resolve_chat_model_and_role(
+        engine,
+        model_override=model_override,
+        requested_role=requested_role,
+    )
     target_model, _ = await engine._prepare_target_model(
-        model=model_override,
-        role=resolved_role,
+        model=target_model_candidate,
+        role=effective_role,
         timeout=resolved_timeout,
     )
+    target_model = target_model or target_model_candidate
     chat_response = await engine._llm_client.chat(
         messages=messages,
         model=target_model,
@@ -155,15 +181,29 @@ async def run_chunked_summary_pipeline(
     reduce_timeout = max(base_timeout, SUMMARY_REDUCE_TIMEOUT_SECONDS)
 
     if model_override:
-        map_model_candidate = model_override
-        map_role = "skill"
-        reduce_model_candidate = model_override
-        reduce_role = "skill"
+        map_model_candidate, map_role = _resolve_chat_model_and_role(
+            engine,
+            model_override=model_override,
+            requested_role=None,
+        )
+        reduce_model_candidate, reduce_role = _resolve_chat_model_and_role(
+            engine,
+            model_override=model_override,
+            requested_role=None,
+        )
     else:
-        map_model_candidate = get_default_chat_model(engine._config)
-        map_role = "default"
-        reduce_model_candidate = get_default_chat_model(engine._config)
-        reduce_role = "default"
+        map_model_candidate = engine._resolve_model_for_role("low_cost")
+        map_role = "low_cost" if map_model_candidate is not None else None
+        if map_model_candidate is None:
+            map_model_candidate = engine._resolve_model_for_role("reasoning")
+            map_role = "reasoning" if map_model_candidate is not None else None
+        if map_model_candidate is None:
+            map_model_candidate = get_default_chat_model(engine._config)
+
+        reduce_model_candidate = engine._resolve_model_for_role("reasoning")
+        reduce_role = "reasoning" if reduce_model_candidate is not None else None
+        if reduce_model_candidate is None:
+            reduce_model_candidate = map_model_candidate
 
     map_model, _ = await engine._prepare_target_model(
         model=map_model_candidate or None,
@@ -175,6 +215,8 @@ async def run_chunked_summary_pipeline(
         role=reduce_role,
         timeout=reduce_timeout,
     )
+    map_model = map_model or map_model_candidate
+    reduce_model = reduce_model or reduce_model_candidate
 
     engine._logger.info(
         "summarize_chunk_pipeline_started",

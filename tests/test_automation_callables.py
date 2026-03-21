@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
@@ -173,6 +174,48 @@ class TestDailySummaryCallable:
 
         assert "요약할 대화 기록이 없습니다" in result
         engine.process_prompt.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_daily_summary_uses_explicit_llm_timeout_budget(
+        self,
+        scheduler: AutoScheduler,
+        app_settings: AppSettings,
+        memory_manager: MemoryManager,
+    ) -> None:
+        json_response = json.dumps(
+            {"topics": ["테스트 주제"], "decisions": [], "todos": [], "notes": None},
+            ensure_ascii=False,
+        )
+        engine = AsyncMock()
+        engine.process_prompt = AsyncMock(return_value=json_response)
+        scheduler.set_dependencies(engine=engine, telegram=AsyncMock())
+        register_builtin_callables(
+            scheduler=scheduler,
+            engine=engine,
+            memory=memory_manager,
+            allowed_users=app_settings.security.allowed_users,
+            data_dir=app_settings.data_dir,
+        )
+
+        await _insert_yesterday_messages(memory_manager)
+
+        auto = AutoDefinition(
+            name="daily_summary",
+            description="일일 요약",
+            schedule="0 9 * * *",
+            action=AutoAction(
+                type="callable",
+                target="daily_summary",
+                llm_timeout=45,
+                parameters={"days_ago": 1, "timezone_name": "UTC"},
+            ),
+            timeout=120,
+        )
+        await scheduler._run_action(auto)
+
+        call_kwargs = engine.process_prompt.await_args.kwargs
+        assert call_kwargs["timeout"] == 45
+        assert call_kwargs["timeout_is_hard"] is True
 
     @pytest.mark.asyncio
     async def test_daily_summary_json_parse_fallback(
@@ -938,7 +981,7 @@ class TestLogTriageCallable:
         assert call_kwargs["response_format"] is _TRIAGE_SCHEMA
         assert "request_failed" in call_kwargs["prompt"]
         assert "semantic_cache_degraded" in call_kwargs["prompt"]
-        assert call_kwargs["timeout"] == 120
+        assert call_kwargs["timeout"] == 105
 
     @pytest.mark.asyncio
     async def test_falls_back_when_llm_json_is_invalid(
@@ -982,6 +1025,112 @@ class TestLogTriageCallable:
         assert "구조화 분석에 실패해 이벤트 요약으로 대체했습니다." in result
         assert "automation_failed" in result
         assert "daily_summary" in result
+
+    @pytest.mark.asyncio
+    async def test_falls_back_when_llm_budget_is_exceeded(
+        self,
+        scheduler: AutoScheduler,
+        app_settings: AppSettings,
+        memory_manager: MemoryManager,
+    ) -> None:
+        log_dir = Path(app_settings.data_dir) / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        now = datetime.now(UTC)
+        entries = [
+            {
+                "event": "automation_failed",
+                "log_level": "error",
+                "timestamp": now.isoformat(),
+                "name": "log_triage",
+                "error": "TimeoutError",
+            },
+            {
+                "event": "automation_attempt_failed",
+                "log_level": "warning",
+                "timestamp": now.isoformat(),
+                "name": "log_triage",
+                "error": "TimeoutError",
+            },
+        ]
+        (log_dir / "app.log").write_text(
+            "\n".join(json.dumps(item, ensure_ascii=False) for item in entries) + "\n",
+            encoding="utf-8",
+        )
+
+        engine = AsyncMock()
+        engine.process_prompt = AsyncMock(return_value="[]")
+        _setup_callables(scheduler, engine, memory_manager, app_settings)
+
+        async def fake_wait_for(awaitable, timeout=None):
+            if inspect.iscoroutine(awaitable):
+                awaitable.close()
+            raise TimeoutError("triage budget exceeded")
+
+        with patch(
+            "core.automation_callables_impl.observability.asyncio.wait_for",
+            side_effect=fake_wait_for,
+        ):
+            result = await scheduler._run_action(
+                _log_triage_auto(hours_back=1, max_entries=10, max_findings=3),
+            )
+
+        assert "구조화 분석에 실패해 이벤트 요약으로 대체했습니다." in result
+        assert "automation_failed" in result
+        assert "automation_attempt_failed" in result
+
+    @pytest.mark.asyncio
+    async def test_explicit_llm_timeout_overrides_reserved_timeout(
+        self,
+        scheduler: AutoScheduler,
+        app_settings: AppSettings,
+        memory_manager: MemoryManager,
+    ) -> None:
+        log_dir = Path(app_settings.data_dir) / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        now = datetime.now(UTC)
+        entries = [
+            {
+                "event": "request_failed",
+                "level": "error",
+                "timestamp": now.isoformat(),
+                "error": "connection refused",
+            },
+        ]
+        (log_dir / "app.log").write_text(
+            "\n".join(json.dumps(item, ensure_ascii=False) for item in entries) + "\n",
+            encoding="utf-8",
+        )
+
+        llm_response = json.dumps([
+            {
+                "event": "request_failed",
+                "severity": "warning",
+                "cause": "백엔드 요청이 실패했습니다.",
+                "action": "연결 상태를 확인하세요.",
+                "recurring": False,
+            },
+        ], ensure_ascii=False)
+        engine = AsyncMock()
+        engine.process_prompt = AsyncMock(return_value=llm_response)
+        _setup_callables(scheduler, engine, memory_manager, app_settings)
+
+        auto = AutoDefinition(
+            name="log_triage",
+            description="로그 triage",
+            schedule="15 */6 * * *",
+            action=AutoAction(
+                type="callable",
+                target="log_triage",
+                llm_timeout=45,
+                parameters={"hours_back": 1, "max_entries": 20, "max_findings": 3},
+            ),
+            timeout=120,
+        )
+        await scheduler._run_action(auto)
+
+        call_kwargs = engine.process_prompt.await_args.kwargs
+        assert call_kwargs["timeout"] == 45
+        assert call_kwargs["timeout_is_hard"] is True
 
 
 def _rag_reindex_auto(**overrides) -> AutoDefinition:

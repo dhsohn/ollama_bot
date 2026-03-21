@@ -14,6 +14,7 @@ from .common import (
     SQLITE_TIMESTAMP_FORMAT,
     STALE_EVALUATION_SCHEMA,
     parse_json_array,
+    resolve_llm_timeout,
 )
 
 
@@ -30,6 +31,8 @@ def build_memory_hygiene_callable(
         model_role: str | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        timeout: int | None = None,
+        llm_timeout: int | None = None,
     ) -> str:
         """메모리 품질을 점검하고 정리한다."""
         if stale_days < 1:
@@ -37,6 +40,10 @@ def build_memory_hygiene_callable(
         if max_llm_calls < 0:
             raise ValueError("max_llm_calls must be >= 0")
 
+        effective_llm_timeout, timeout_is_hard = resolve_llm_timeout(
+            timeout=timeout,
+            llm_timeout=llm_timeout,
+        )
         llm_calls_remaining = max_llm_calls
         sections: list[str] = []
         any_work_done = False
@@ -97,6 +104,8 @@ def build_memory_hygiene_callable(
                         temperature=temperature if temperature is not None else 0.2,
                         model_override=model,
                         model_role=model_role,
+                        timeout=effective_llm_timeout,
+                        timeout_is_hard=timeout_is_hard,
                     )
                     llm_calls_remaining -= 1
                     items = parse_json_array(raw)
@@ -178,6 +187,8 @@ def build_memory_hygiene_callable(
                         temperature=temperature if temperature is not None else 0.2,
                         model_override=model,
                         model_role=model_role,
+                        timeout=effective_llm_timeout,
+                        timeout_is_hard=timeout_is_hard,
                     )
                     llm_calls_remaining -= 1
                     items = parse_json_array(raw)

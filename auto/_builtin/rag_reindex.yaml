@@ -7,7 +7,6 @@ schedule: "30 3 * * 0"
 action:
   type: "callable"
   target: "rag_reindex"
-  model_role: "low_cost"
   parameters: {}
 output:
   send_to_telegram: true

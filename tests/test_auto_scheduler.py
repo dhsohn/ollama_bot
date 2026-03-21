@@ -95,6 +95,20 @@ class TestAutoScheduler:
                 timeout=0,
             )
 
+    def test_action_validation_rejects_non_positive_llm_timeout(self) -> None:
+        with pytest.raises(ValueError, match="llm_timeout must be >= 1"):
+            AutoAction(type="prompt", target="ping", llm_timeout=0)
+
+    def test_definition_validation_rejects_llm_timeout_above_overall_timeout(self) -> None:
+        with pytest.raises(ValueError, match="action.llm_timeout must be <= timeout"):
+            AutoDefinition(
+                name="bad_llm_timeout",
+                description="invalid llm timeout",
+                schedule="* * * * *",
+                action=AutoAction(type="prompt", target="ping", llm_timeout=31),
+                timeout=30,
+            )
+
     @pytest.mark.asyncio
     async def test_load_and_list_automations(self, scheduler: AutoScheduler, auto_dir: Path) -> None:
         _write_auto_yaml(
@@ -155,6 +169,8 @@ class TestAutoScheduler:
         assert output_file.read_text(encoding="utf-8") == "자동화 결과"
 
         scheduler._engine.process_prompt.assert_awaited_once()  # type: ignore[attr-defined]
+        call_kwargs = scheduler._engine.process_prompt.await_args.kwargs  # type: ignore[attr-defined]
+        assert call_kwargs["model_role"] is None
         scheduler._telegram.send_message.assert_awaited_once()  # type: ignore[attr-defined]
         send_text = scheduler._telegram.send_message.call_args[0][1]  # type: ignore[attr-defined]
         assert send_text.startswith("⏰ 자동화: report")
@@ -187,6 +203,31 @@ class TestAutoScheduler:
         assert call_kwargs["max_tokens"] == 321
 
     @pytest.mark.asyncio
+    async def test_prompt_action_uses_explicit_llm_timeout_budget(
+        self,
+        scheduler: AutoScheduler,
+    ) -> None:
+        auto = AutoDefinition(
+            name="prompt_llm_timeout",
+            description="prompt llm timeout",
+            schedule="* * * * *",
+            action=AutoAction(
+                type="prompt",
+                target="상태 점검",
+                model_role="reasoning",
+                llm_timeout=45,
+            ),
+            timeout=120,
+        )
+
+        await scheduler._run_action(auto)
+
+        scheduler._engine.process_prompt.assert_awaited_once()  # type: ignore[attr-defined]
+        call_kwargs = scheduler._engine.process_prompt.await_args.kwargs  # type: ignore[attr-defined]
+        assert call_kwargs["timeout"] == 45
+        assert call_kwargs["timeout_is_hard"] is True
+
+    @pytest.mark.asyncio
     async def test_callable_action_injects_model_kwargs_if_supported(
         self,
         scheduler: AutoScheduler,
@@ -200,6 +241,7 @@ class TestAutoScheduler:
             temperature: float | None = None,
             max_tokens: int | None = None,
             timeout: int | None = None,
+            llm_timeout: int | None = None,
         ) -> str:
             captured["greeting"] = greeting
             captured["model"] = model
@@ -207,6 +249,7 @@ class TestAutoScheduler:
             captured["temperature"] = temperature
             captured["max_tokens"] = max_tokens
             captured["timeout"] = timeout
+            captured["llm_timeout"] = llm_timeout
             return "ok"
 
         scheduler.register_callable("with_model_args", my_func)
@@ -220,6 +263,7 @@ class TestAutoScheduler:
                 parameters={"greeting": "world"},
                 model="my-model",
                 model_role="low_cost",
+                llm_timeout=33,
                 temperature=0.4,
                 max_tokens=700,
             ),
@@ -234,6 +278,30 @@ class TestAutoScheduler:
         assert captured["temperature"] == 0.4
         assert captured["max_tokens"] == 700
         assert captured["timeout"] == 77
+        assert captured["llm_timeout"] == 33
+
+    @pytest.mark.asyncio
+    async def test_skill_action_uses_explicit_llm_timeout_budget(
+        self,
+        scheduler: AutoScheduler,
+    ) -> None:
+        auto = AutoDefinition(
+            name="skill_llm_timeout",
+            description="skill llm timeout",
+            schedule="* * * * *",
+            action=AutoAction(
+                type="skill",
+                target="summarize",
+                llm_timeout=90,
+            ),
+            timeout=180,
+        )
+
+        await scheduler._run_action(auto)
+
+        scheduler._engine.execute_skill.assert_awaited_once()  # type: ignore[attr-defined]
+        call_kwargs = scheduler._engine.execute_skill.await_args.kwargs  # type: ignore[attr-defined]
+        assert call_kwargs["timeout"] == 90
 
     @pytest.mark.asyncio
     async def test_command_action_is_disabled(self, scheduler: AutoScheduler) -> None:

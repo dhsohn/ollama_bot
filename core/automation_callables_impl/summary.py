@@ -14,6 +14,7 @@ from .common import (
     PREFERENCES_SCHEMA,
     ROLE_LABELS,
     parse_json_array,
+    resolve_llm_timeout,
     safe_timezone,
     truncate,
 )
@@ -72,6 +73,8 @@ def build_daily_summary_callable(
         model_role: str | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        timeout: int | None = None,
+        llm_timeout: int | None = None,
     ) -> str:
         """어제(기본) 대화 기록을 조회해 일일 요약을 생성한다."""
         if days_ago < 0:
@@ -88,6 +91,10 @@ def build_daily_summary_callable(
         end_local = start_local + timedelta(days=1)
         start_utc = start_local.astimezone(UTC)
         end_utc = end_local.astimezone(UTC)
+        effective_llm_timeout, timeout_is_hard = resolve_llm_timeout(
+            timeout=timeout,
+            llm_timeout=llm_timeout,
+        )
 
         sections: list[str] = []
         found_any = False
@@ -124,6 +131,8 @@ def build_daily_summary_callable(
                 temperature=temperature if temperature is not None else 0.5,
                 model_override=model,
                 model_role=model_role,
+                timeout=effective_llm_timeout,
+                timeout_is_hard=timeout_is_hard,
             )
 
             try:
@@ -222,6 +231,8 @@ def build_extract_preferences_callable(
         model_role: str | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        timeout: int | None = None,
+        llm_timeout: int | None = None,
     ) -> str:
         """대화에서 사용자 선호도/고정 정보를 추출하여 장기 메모리에 저장한다."""
         tz = safe_timezone(timezone_name, logger)
@@ -231,6 +242,10 @@ def build_extract_preferences_callable(
         end_local = start_local + timedelta(days=1)
         start_utc = start_local.astimezone(UTC)
         end_utc = end_local.astimezone(UTC)
+        effective_llm_timeout, timeout_is_hard = resolve_llm_timeout(
+            timeout=timeout,
+            llm_timeout=llm_timeout,
+        )
 
         sections: list[str] = []
         found_any = False
@@ -268,6 +283,8 @@ def build_extract_preferences_callable(
                 temperature=temperature if temperature is not None else 0.3,
                 model_override=model,
                 model_role=model_role,
+                timeout=effective_llm_timeout,
+                timeout_is_hard=timeout_is_hard,
             )
             items = parse_json_array(response)
 

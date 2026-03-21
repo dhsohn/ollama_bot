@@ -102,6 +102,8 @@ class TestRunSkillChat:
         engine = MagicMock()
         engine._extract_skill_user_input = MagicMock(return_value="short text")
         engine._should_use_chunked_summary = MagicMock(return_value=False)
+        engine._resolve_model_for_role = MagicMock(return_value=None)
+        engine._config.ollama.chat_model = "default-model"
         engine._prepare_target_model = AsyncMock(return_value=("model-a", None))
         engine._llm_client = AsyncMock()
         engine._llm_client.chat = AsyncMock(
@@ -119,12 +121,16 @@ class TestRunSkillChat:
         )
         assert content == "result"
         assert model == "model-a"
+        prepare_kwargs = engine._prepare_target_model.await_args.kwargs
+        assert prepare_kwargs["model"] == "default-model"
+        assert prepare_kwargs["role"] is None
 
     @pytest.mark.asyncio
     async def test_skill_chat_with_overrides(self) -> None:
         engine = MagicMock()
         engine._extract_skill_user_input = MagicMock(return_value="short text")
         engine._should_use_chunked_summary = MagicMock(return_value=False)
+        engine._resolve_model_for_role = MagicMock(return_value=None)
         engine._prepare_target_model = AsyncMock(return_value=("override-model", None))
         engine._llm_client = AsyncMock()
         engine._llm_client.chat = AsyncMock(
@@ -143,12 +149,17 @@ class TestRunSkillChat:
             timeout_override=60,
         )
         assert content == "custom"
+        prepare_kwargs = engine._prepare_target_model.await_args.kwargs
+        assert prepare_kwargs["model"] == "override-model"
+        assert prepare_kwargs["role"] is None
 
     @pytest.mark.asyncio
     async def test_skill_chat_falls_back_when_chunked_fails(self) -> None:
         engine = MagicMock()
         engine._extract_skill_user_input = MagicMock(return_value="x" * 100_000)
         engine._should_use_chunked_summary = MagicMock(return_value=True)
+        engine._resolve_model_for_role = MagicMock(return_value=None)
+        engine._config.ollama.chat_model = "default-model"
         engine._logger = MagicMock()
         engine._prepare_target_model = AsyncMock(return_value=("model-b", None))
         engine._llm_client = AsyncMock()
@@ -200,6 +211,7 @@ class TestRunChunkedSummaryPipeline:
         engine._extract_skill_user_input = MagicMock(return_value="long text")
         engine._split_text_for_summary = MagicMock(return_value=["chunk1", "chunk2"])
         engine._config.ollama.chat_model = "default-model"
+        engine._resolve_model_for_role = MagicMock(return_value=None)
         engine._prepare_target_model = AsyncMock(return_value=("model-x", None))
         engine._inject_language_policy = MagicMock(side_effect=lambda x: x)
         engine._logger = MagicMock()
@@ -221,6 +233,9 @@ class TestRunChunkedSummaryPipeline:
         )
         assert content == "Final summary."
         assert model == "model-x"
+        prepare_calls = engine._prepare_target_model.await_args_list
+        assert prepare_calls[0].kwargs["role"] is None
+        assert prepare_calls[1].kwargs["role"] is None
 
     @pytest.mark.asyncio
     async def test_empty_intermediate_raises(self) -> None:
@@ -228,6 +243,7 @@ class TestRunChunkedSummaryPipeline:
         engine._extract_skill_user_input = MagicMock(return_value="long text")
         engine._split_text_for_summary = MagicMock(return_value=["chunk1", "chunk2"])
         engine._config.ollama.chat_model = "default-model"
+        engine._resolve_model_for_role = MagicMock(return_value=None)
         engine._prepare_target_model = AsyncMock(return_value=("model-x", None))
         engine._inject_language_policy = MagicMock(side_effect=lambda x: x)
         engine._logger = MagicMock()
@@ -253,6 +269,7 @@ class TestRunChunkedSummaryPipeline:
         engine._extract_skill_user_input = MagicMock(return_value="long text")
         engine._split_text_for_summary = MagicMock(return_value=["chunk1", "chunk2"])
         engine._config.ollama.chat_model = "default-model"
+        engine._resolve_model_for_role = MagicMock(return_value=None)
         engine._prepare_target_model = AsyncMock(return_value=("model-x", None))
         engine._inject_language_policy = MagicMock(side_effect=lambda x: x)
         engine._logger = MagicMock()
@@ -276,6 +293,7 @@ class TestRunChunkedSummaryPipeline:
         engine = MagicMock()
         engine._extract_skill_user_input = MagicMock(return_value="long text")
         engine._split_text_for_summary = MagicMock(return_value=["chunk1", "chunk2"])
+        engine._resolve_model_for_role = MagicMock(return_value=None)
         engine._prepare_target_model = AsyncMock(return_value=("custom-model", None))
         engine._inject_language_policy = MagicMock(side_effect=lambda x: x)
         engine._logger = MagicMock()
@@ -293,6 +311,9 @@ class TestRunChunkedSummaryPipeline:
             chat_id=111,
         )
         assert model == "custom-model"
+        prepare_calls = engine._prepare_target_model.await_args_list
+        assert prepare_calls[0].kwargs["role"] is None
+        assert prepare_calls[1].kwargs["role"] is None
 
     @pytest.mark.asyncio
     async def test_deduplicates_identical_map_summaries(self) -> None:
@@ -300,6 +321,7 @@ class TestRunChunkedSummaryPipeline:
         engine._extract_skill_user_input = MagicMock(return_value="long text")
         engine._split_text_for_summary = MagicMock(return_value=["chunk1", "chunk2"])
         engine._config.ollama.chat_model = "model"
+        engine._resolve_model_for_role = MagicMock(return_value=None)
         engine._prepare_target_model = AsyncMock(return_value=("model", None))
         engine._inject_language_policy = MagicMock(side_effect=lambda x: x)
         engine._logger = MagicMock()

@@ -8,7 +8,12 @@ from typing import Any
 from core.engine import Engine
 from core.memory import MemoryManager
 
-from .common import CONSOLIDATION_MERGE_SCHEMA, parse_json_array, truncate
+from .common import (
+    CONSOLIDATION_MERGE_SCHEMA,
+    parse_json_array,
+    resolve_llm_timeout,
+    truncate,
+)
 
 
 def build_memory_consolidation_callable(
@@ -25,6 +30,8 @@ def build_memory_consolidation_callable(
         model_role: str | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        timeout: int | None = None,
+        llm_timeout: int | None = None,
     ) -> str:
         """같은 카테고리의 관련 메모리 항목을 LLM으로 통합하여 압축한다."""
         if min_entries_per_category < 2:
@@ -34,6 +41,10 @@ def build_memory_consolidation_callable(
         if max_entries_per_merge < 2:
             raise ValueError("max_entries_per_merge must be >= 2")
 
+        effective_llm_timeout, timeout_is_hard = resolve_llm_timeout(
+            timeout=timeout,
+            llm_timeout=llm_timeout,
+        )
         llm_calls_remaining = max_llm_calls
         sections: list[str] = []
         any_work_done = False
@@ -87,6 +98,8 @@ def build_memory_consolidation_callable(
                         temperature=temperature if temperature is not None else 0.2,
                         model_override=model,
                         model_role=model_role,
+                        timeout=effective_llm_timeout,
+                        timeout_is_hard=timeout_is_hard,
                     )
                     llm_calls_remaining -= 1
                 except Exception as exc:

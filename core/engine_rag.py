@@ -182,11 +182,7 @@ async def prepare_full_request(
     injection, model selection, and timeout calculation, then returns the
     `messages`, `timeout`, `max_tokens`, and `target_model` needed for the LLM call.
     """
-    target_model = (
-        model_override
-        or engine._resolve_model_for_role("default")
-        or get_default_chat_model(engine._config)
-    )
+    target_model = model_override or get_default_chat_model(engine._config)
     rag_result = None
 
     if engine._rag_pipeline and engine._rag_pipeline.should_trigger_rag(text, metadata):
@@ -201,12 +197,12 @@ async def prepare_full_request(
     effective_timeout = engine._resolve_inference_timeout(
         base_timeout=prepared.timeout,
         intent=intent,
-        model_role="default",
+        model_role=None,
         has_images=bool(images),
     )
     prepared_model, _ = await engine._prepare_target_model(
         model=target_model,
-        role="default",
+        role=None,
         timeout=effective_timeout,
     )
     target_model = prepared_model or target_model
@@ -375,28 +371,37 @@ async def analyze_all_corpus(
     reduce_timeout = max(int(engine._config.bot.response_timeout), SUMMARY_REDUCE_TIMEOUT_SECONDS)
     final_timeout = max(int(engine._config.bot.response_timeout), REASONING_TIMEOUT_SECONDS)
 
+    default_chat_model = get_default_chat_model(engine._config)
     map_model_candidate = engine._resolve_model_for_role("low_cost")
+    map_role = "low_cost" if map_model_candidate is not None else None
     if map_model_candidate is None:
         map_model_candidate = engine._resolve_model_for_role("reasoning")
+        map_role = "reasoning" if map_model_candidate is not None else None
+    if map_model_candidate is None:
+        map_model_candidate = default_chat_model
     map_model, _ = await engine._prepare_target_model(
         model=map_model_candidate,
-        role="low_cost",
+        role=map_role,
         timeout=map_timeout,
     )
 
     reduce_model_candidate = engine._resolve_model_for_role("reasoning")
+    reduce_role = "reasoning" if reduce_model_candidate is not None else None
     if reduce_model_candidate is None:
         reduce_model_candidate = map_model
     reduce_model, _ = await engine._prepare_target_model(
         model=reduce_model_candidate,
-        role="reasoning",
+        role=reduce_role,
         timeout=reduce_timeout,
     )
     final_model, _ = await engine._prepare_target_model(
         model=reduce_model_candidate,
-        role="reasoning",
+        role=reduce_role,
         timeout=final_timeout,
     )
+    map_model = map_model or map_model_candidate
+    reduce_model = reduce_model or reduce_model_candidate
+    final_model = final_model or reduce_model_candidate
 
     map_system = engine._inject_language_policy(
         "You are a document evidence extractor. Extract only facts directly related to the question as JSON. "

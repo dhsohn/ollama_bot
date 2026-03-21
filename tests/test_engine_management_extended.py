@@ -208,6 +208,23 @@ class TestProcessPrompt:
         )
         assert result == "response"
 
+    @pytest.mark.asyncio
+    async def test_hard_timeout_bypasses_timeout_expansion(self) -> None:
+        engine = _make_engine()
+        engine._resolve_inference_timeout = MagicMock(return_value=999)
+
+        result = await process_prompt(
+            engine,
+            "test",
+            model_role="reasoning",
+            timeout=120,
+            timeout_is_hard=True,
+        )
+
+        assert result == "response"
+        engine._resolve_inference_timeout.assert_not_called()
+        assert engine._llm_client.chat.await_args.kwargs["timeout"] == 120
+
 
 class TestChangeModel:
     @pytest.mark.asyncio

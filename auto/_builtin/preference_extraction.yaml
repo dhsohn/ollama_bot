@@ -7,7 +7,7 @@ schedule: "0 0 * * *"
 action:
   type: "callable"
   target: "extract_preferences"
-  model_role: "low_cost"
+  llm_timeout: 150
   parameters:
     days_ago: 1
     timezone_name: "Asia/Seoul"

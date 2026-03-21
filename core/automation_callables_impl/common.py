@@ -161,6 +161,19 @@ def truncate(text: str, max_chars: int) -> str:
     return text[:max_chars] + "..."
 
 
+def resolve_llm_timeout(
+    *,
+    timeout: int | None,
+    llm_timeout: int | None,
+) -> tuple[int | None, bool]:
+    """Resolve an explicit per-LLM timeout and whether it should be enforced."""
+    if llm_timeout is not None:
+        return max(1, int(llm_timeout)), True
+    if timeout is not None:
+        return max(1, int(timeout)), False
+    return None, False
+
+
 def parse_json_array(text: str) -> list[dict] | None:
     """LLM 응답에서 JSON 배열을 파싱한다. 코드 펜스를 제거하고 폴백 시도."""
     cleaned = re.sub(r"```(?:json)?\s*", "", text).strip().rstrip("`")

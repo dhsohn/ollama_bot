@@ -197,6 +197,7 @@ async def process_prompt(
     model_override: str | None = None,
     model_role: str | None = None,
     timeout: int | None = None,
+    timeout_is_hard: bool = False,
     system_prompt_override: str | None = None,
 ) -> str:
     _ = chat_id
@@ -207,12 +208,15 @@ async def process_prompt(
         {"role": "user", "content": prompt},
     ]
     base_timeout = int(timeout or self._config.bot.response_timeout)
-    effective_timeout = self._resolve_inference_timeout(
-        base_timeout=base_timeout,
-        intent=None,
-        model_role=model_role,
-        has_images=False,
-    )
+    if timeout_is_hard:
+        effective_timeout = base_timeout
+    else:
+        effective_timeout = self._resolve_inference_timeout(
+            base_timeout=base_timeout,
+            intent=None,
+            model_role=model_role,
+            has_images=False,
+        )
     target_model, _ = await self._prepare_target_model(
         model=model_override,
         role=model_role,
