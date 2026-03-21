@@ -202,11 +202,22 @@ def count_recent_errors(
     log_path: Path,
     hours_back: int,
     max_entries: int = 0,
+    *,
+    exclude_names: set[str] | None = None,
+    exclude_event_prefixes: tuple[str, ...] = (),
 ) -> tuple[list[dict], int, int]:
     """로그 파일에서 최근 error/warning 엔트리를 수집한다."""
     entries: list[dict] = []
     error_count = 0
     warning_count = 0
+    normalized_exclude_names = {
+        str(name).strip().lower() for name in (exclude_names or set()) if str(name).strip()
+    }
+    normalized_event_prefixes = tuple(
+        str(prefix).strip().lower()
+        for prefix in exclude_event_prefixes
+        if str(prefix).strip()
+    )
 
     if not log_path.exists() or not log_path.is_dir():
         return entries, error_count, warning_count
@@ -252,6 +263,15 @@ def count_recent_errors(
                 except (ValueError, TypeError):
                     pass
 
+            entry_name = str(entry.get("name", "")).strip().lower()
+            event_name = str(entry.get("event", "")).strip().lower()
+            if entry_name and entry_name in normalized_exclude_names:
+                continue
+            if event_name and any(
+                event_name.startswith(prefix) for prefix in normalized_event_prefixes
+            ):
+                continue
+
             if level == "error":
                 error_count += 1
             else:
@@ -269,6 +289,9 @@ async def count_recent_errors_async(
     log_path: Path,
     hours_back: int,
     max_entries: int = 0,
+    *,
+    exclude_names: set[str] | None = None,
+    exclude_event_prefixes: tuple[str, ...] = (),
 ) -> tuple[list[dict], int, int]:
     """count_recent_errors를 스레드풀에서 실행해 이벤트루프를 보호한다."""
     loop = asyncio.get_running_loop()
@@ -279,5 +302,7 @@ async def count_recent_errors_async(
             log_path,
             hours_back,
             max_entries,
+            exclude_names=exclude_names,
+            exclude_event_prefixes=exclude_event_prefixes,
         ),
     )

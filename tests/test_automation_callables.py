@@ -846,6 +846,36 @@ class TestHealthCheckCallable:
         assert "시스템 상태 점검" in result
 
     @pytest.mark.asyncio
+    async def test_health_check_uses_english_when_bot_language_is_en(
+        self,
+        scheduler: AutoScheduler,
+        app_settings: AppSettings,
+        memory_manager: MemoryManager,
+    ) -> None:
+        app_settings.bot.language = "en"
+        status = _ok_status()
+        status["llm"] = {"status": "error", "error": "timeout"}
+        engine = AsyncMock()
+        engine.get_status = AsyncMock(return_value=status)
+        _setup_callables(scheduler, engine, memory_manager, app_settings)
+
+        log_dir = Path(app_settings.data_dir) / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        now = datetime.now(UTC)
+        entry = json.dumps({
+            "event": "test_error",
+            "log_level": "error",
+            "timestamp": now.isoformat(),
+        })
+        (log_dir / "app.log").write_text(entry + "\n")
+
+        result = await scheduler._run_action(_health_check_auto())
+
+        assert "System Health Check" in result
+        assert "Error logs" in result
+        assert "시스템 상태 점검" not in result
+
+    @pytest.mark.asyncio
     async def test_no_log_dir(
         self,
         scheduler: AutoScheduler,
@@ -921,6 +951,44 @@ class TestLogTriageCallable:
         engine.process_prompt.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_ignores_log_triage_self_logs(
+        self,
+        scheduler: AutoScheduler,
+        app_settings: AppSettings,
+        memory_manager: MemoryManager,
+    ) -> None:
+        log_dir = Path(app_settings.data_dir) / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        now = datetime.now(UTC)
+        entries = [
+            {
+                "event": "automation_failed",
+                "log_level": "error",
+                "timestamp": now.isoformat(),
+                "name": "log_triage",
+                "error": "TimeoutError",
+            },
+            {
+                "event": "log_triage_empty_findings",
+                "level": "warning",
+                "timestamp": now.isoformat(),
+            },
+        ]
+        (log_dir / "app.log").write_text(
+            "\n".join(json.dumps(item, ensure_ascii=False) for item in entries) + "\n",
+            encoding="utf-8",
+        )
+
+        engine = AsyncMock()
+        engine.process_prompt = AsyncMock(return_value="[]")
+        _setup_callables(scheduler, engine, memory_manager, app_settings)
+
+        result = await scheduler._run_action(_log_triage_auto(hours_back=1))
+
+        assert result == ""
+        engine.process_prompt.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_formats_llm_triage_report(
         self,
         scheduler: AutoScheduler,
@@ -949,6 +1017,13 @@ class TestLogTriageCallable:
                 "timestamp": now.isoformat(),
                 "reason": "cache miss burst",
             },
+            {
+                "event": "automation_failed",
+                "log_level": "error",
+                "timestamp": now.isoformat(),
+                "name": "log_triage",
+                "error": "TimeoutError",
+            },
         ]
         (log_dir / "app.log").write_text(
             "\n".join(json.dumps(item, ensure_ascii=False) for item in entries) + "\n",
@@ -973,6 +1048,8 @@ class TestLogTriageCallable:
         )
 
         assert "로그 triage 결과" in result
+        assert "- error: 2건" in result
+        assert "- warning: 1건" in result
         assert "request_failed" in result
         assert "반복" in result
         assert "Ollama 서버 연결 상태와 포트를 확인하세요." in result
@@ -981,6 +1058,8 @@ class TestLogTriageCallable:
         assert call_kwargs["response_format"] is _TRIAGE_SCHEMA
         assert "request_failed" in call_kwargs["prompt"]
         assert "semantic_cache_degraded" in call_kwargs["prompt"]
+        assert "name=log_triage" not in call_kwargs["prompt"]
+        assert "automation_failed" not in call_kwargs["prompt"]
         assert call_kwargs["timeout"] == 105
 
     @pytest.mark.asyncio
@@ -1027,6 +1106,99 @@ class TestLogTriageCallable:
         assert "daily_summary" in result
 
     @pytest.mark.asyncio
+    async def test_reports_no_actionable_issues_when_llm_returns_empty_array(
+        self,
+        scheduler: AutoScheduler,
+        app_settings: AppSettings,
+        memory_manager: MemoryManager,
+    ) -> None:
+        log_dir = Path(app_settings.data_dir) / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        now = datetime.now(UTC)
+        entries = [
+            {
+                "event": "automation_failed",
+                "log_level": "error",
+                "timestamp": now.isoformat(),
+                "name": "daily_summary",
+                "error": "timeout",
+            },
+            {
+                "event": "automation_attempt_failed",
+                "log_level": "warning",
+                "timestamp": now.isoformat(),
+                "name": "daily_summary",
+                "error": "timeout",
+            },
+        ]
+        (log_dir / "app.log").write_text(
+            "\n".join(json.dumps(item, ensure_ascii=False) for item in entries) + "\n",
+            encoding="utf-8",
+        )
+
+        engine = AsyncMock()
+        engine.process_prompt = AsyncMock(return_value="[]")
+        _setup_callables(scheduler, engine, memory_manager, app_settings)
+
+        result = await scheduler._run_action(
+            _log_triage_auto(hours_back=1, max_entries=10, max_findings=3),
+        )
+
+        assert "중요 이슈 없음" in result
+        assert "즉시 대응이 필요한 항목은 없었습니다." in result
+        assert "구조화 분석에 실패해 이벤트 요약으로 대체했습니다." not in result
+        assert "automation_failed" in result
+        assert "automation_attempt_failed" in result
+        assert "daily_summary" in result
+
+    @pytest.mark.asyncio
+    async def test_reports_no_actionable_issues_in_english_when_bot_language_is_en(
+        self,
+        scheduler: AutoScheduler,
+        app_settings: AppSettings,
+        memory_manager: MemoryManager,
+    ) -> None:
+        app_settings.bot.language = "en"
+        log_dir = Path(app_settings.data_dir) / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        now = datetime.now(UTC)
+        entries = [
+            {
+                "event": "automation_failed",
+                "log_level": "error",
+                "timestamp": now.isoformat(),
+                "name": "daily_summary",
+                "error": "timeout",
+            },
+            {
+                "event": "automation_attempt_failed",
+                "log_level": "warning",
+                "timestamp": now.isoformat(),
+                "name": "daily_summary",
+                "error": "timeout",
+            },
+        ]
+        (log_dir / "app.log").write_text(
+            "\n".join(json.dumps(item, ensure_ascii=False) for item in entries) + "\n",
+            encoding="utf-8",
+        )
+
+        engine = AsyncMock()
+        engine.process_prompt = AsyncMock(return_value="[]")
+        _setup_callables(scheduler, engine, memory_manager, app_settings)
+
+        result = await scheduler._run_action(
+            _log_triage_auto(hours_back=1, max_entries=10, max_findings=3),
+        )
+
+        assert "Log Triage Report" in result
+        assert "No actionable issues" in result
+        assert "로그 triage 결과" not in result
+        call_kwargs = engine.process_prompt.await_args.kwargs
+        assert "Triage recent application logs" in call_kwargs["prompt"]
+        assert "최근 애플리케이션 로그" not in call_kwargs["prompt"]
+
+    @pytest.mark.asyncio
     async def test_falls_back_when_llm_budget_is_exceeded(
         self,
         scheduler: AutoScheduler,
@@ -1041,14 +1213,14 @@ class TestLogTriageCallable:
                 "event": "automation_failed",
                 "log_level": "error",
                 "timestamp": now.isoformat(),
-                "name": "log_triage",
+                "name": "daily_summary",
                 "error": "TimeoutError",
             },
             {
                 "event": "automation_attempt_failed",
                 "log_level": "warning",
                 "timestamp": now.isoformat(),
-                "name": "log_triage",
+                "name": "daily_summary",
                 "error": "TimeoutError",
             },
         ]
@@ -1077,6 +1249,7 @@ class TestLogTriageCallable:
         assert "구조화 분석에 실패해 이벤트 요약으로 대체했습니다." in result
         assert "automation_failed" in result
         assert "automation_attempt_failed" in result
+        assert "daily_summary" in result
 
     @pytest.mark.asyncio
     async def test_explicit_llm_timeout_overrides_reserved_timeout(

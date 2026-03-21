@@ -22,6 +22,7 @@ from apscheduler.triggers.cron import CronTrigger
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from core.config import AppSettings, get_default_chat_model
+from core.engine_context import normalize_language
 from core.logging_setup import get_logger
 from core.security import SecurityManager
 
@@ -570,13 +571,14 @@ class AutoScheduler:
 
         # Telegram delivery
         if output.send_to_telegram and self._telegram:
+            lang = normalize_language(self._config.bot.language)
             # Send HTML-tagged results with HTML parse mode.
             use_html = "<b>" in result or "<pre>" in result
             parse_mode = "HTML" if use_html else None
             header = (
-                f"⏰ <b>자동화: {auto.name}</b>\n\n"
+                f"⏰ <b>{'Automation' if lang == 'en' else '자동화'}: {auto.name}</b>\n\n"
                 if use_html
-                else f"⏰ 자동화: {auto.name}\n\n"
+                else f"⏰ {'Automation' if lang == 'en' else '자동화'}: {auto.name}\n\n"
             )
             for user_id in self._config.security.allowed_users:
                 try:

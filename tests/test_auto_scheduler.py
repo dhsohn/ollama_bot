@@ -177,6 +177,40 @@ class TestAutoScheduler:
         assert "*자동화:" not in send_text
 
     @pytest.mark.asyncio
+    async def test_execute_prompt_automation_uses_english_delivery_header_when_bot_language_is_en(
+        self,
+        scheduler: AutoScheduler,
+        app_settings: AppSettings,
+        auto_dir: Path,
+    ) -> None:
+        app_settings.bot.language = "en"
+        _write_auto_yaml(
+            auto_dir / "custom" / "report_en.yaml",
+            """
+            name: "report_en"
+            description: "status report"
+            enabled: true
+            schedule: "*/30 * * * *"
+            action:
+              type: "prompt"
+              target: "health status"
+            output:
+              send_to_telegram: true
+            retry:
+              max_attempts: 1
+              delay_seconds: 1
+            timeout: 30
+            """,
+        )
+
+        await scheduler.load_automations()
+        await scheduler._execute_automation("report_en")
+
+        scheduler._telegram.send_message.assert_awaited_once()  # type: ignore[attr-defined]
+        send_text = scheduler._telegram.send_message.call_args[0][1]  # type: ignore[attr-defined]
+        assert send_text.startswith("⏰ Automation: report_en")
+
+    @pytest.mark.asyncio
     async def test_prompt_action_uses_configured_action_model_role(
         self,
         scheduler: AutoScheduler,

@@ -53,6 +53,9 @@ def register_builtin_callables(
 ) -> None:
     """Register built-in automation callables with the scheduler."""
     logger = get_logger("automation_callables")
+    scheduler_config = getattr(scheduler, "_config", None)
+    scheduler_bot = getattr(scheduler_config, "bot", None)
+    default_language = getattr(scheduler_bot, "language", "ko")
 
     scheduler.register_callable(
         "daily_summary",
@@ -79,6 +82,7 @@ def register_builtin_callables(
             memory=memory,
             data_dir=data_dir,
             logger=logger,
+            default_language=default_language,
         ),
     )
     scheduler.register_callable(
@@ -87,6 +91,7 @@ def register_builtin_callables(
             engine=engine,
             data_dir=data_dir,
             logger=logger,
+            default_language=default_language,
         ),
     )
     scheduler.register_callable(
