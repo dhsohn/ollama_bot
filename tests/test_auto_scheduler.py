@@ -100,7 +100,7 @@ class TestAutoScheduler:
             AutoAction(type="prompt", target="ping", llm_timeout=0)
 
     def test_definition_validation_rejects_llm_timeout_above_overall_timeout(self) -> None:
-        with pytest.raises(ValueError, match="action.llm_timeout must be <= timeout"):
+        with pytest.raises(ValueError, match=r"action\.llm_timeout must be <= timeout"):
             AutoDefinition(
                 name="bad_llm_timeout",
                 description="invalid llm timeout",

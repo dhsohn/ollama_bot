@@ -136,7 +136,7 @@ class AutoDefinition(BaseModel):
         return value
 
     @model_validator(mode="after")
-    def validate_timeout_budget_order(self) -> "AutoDefinition":
+    def validate_timeout_budget_order(self) -> AutoDefinition:
         llm_timeout = self.action.llm_timeout
         if llm_timeout is not None and llm_timeout > self.timeout:
             raise ValueError("action.llm_timeout must be <= timeout")
