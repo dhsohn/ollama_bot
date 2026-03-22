@@ -6,6 +6,7 @@ import re
 import time
 from collections.abc import Callable
 from contextlib import suppress
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from telegram.constants import ChatAction
@@ -40,6 +41,295 @@ _FULL_SCAN_AUTO_TRIGGER_RE = re.compile(
 )
 
 
+@dataclass(frozen=True)
+class _IncomingMessagePayload:
+    text: str
+    images: list[bytes] | None
+    image_download_failed: bool
+
+
+@dataclass(frozen=True)
+class _ContinuationDecision:
+    text: str
+    state: dict[str, Any] | None
+    root_query: str | None
+
+
+@dataclass(frozen=True)
+class _StreamTimeoutSettings:
+    first_chunk_timeout_seconds: float
+    chunk_timeout_seconds: float
+    max_stream_seconds: float
+    render_timeout: float
+
+
+async def _extract_message_payload(
+    self: TelegramHandler,
+    message: Any,
+    *,
+    text_override: str | None,
+    chat_id: int,
+) -> _IncomingMessagePayload:
+    raw_text = (
+        text_override
+        if text_override is not None
+        else (message.text or message.caption or "")
+    )
+
+    images: list[bytes] | None = None
+    image_download_failed = False
+    if message.photo:
+        try:
+            photo = message.photo[-1]
+            file = await photo.get_file()
+            image_bytes = await file.download_as_bytearray()
+            images = [bytes(image_bytes)]
+        except Exception as exc:
+            image_download_failed = True
+            self._logger.warning(
+                "image_download_failed",
+                chat_id=chat_id,
+                error=str(exc),
+            )
+
+    text = self._security.sanitize_input(raw_text) if raw_text else ""
+    return _IncomingMessagePayload(
+        text=text,
+        images=images,
+        image_download_failed=image_download_failed,
+    )
+
+
+async def _resolve_continuation_request(
+    self: TelegramHandler,
+    *,
+    chat_id: int,
+    text: str,
+    images: list[bytes] | None,
+    force_continuation: bool,
+    lang: str,
+    message: Any,
+) -> _ContinuationDecision | None:
+    self._cleanup_pending_continuations()
+
+    if force_continuation or (not images and self._is_continue_request(text)):
+        continuation_state = self._take_pending_continuation(chat_id)
+        if continuation_state is None:
+            await message.reply_text(t("continuation_no_pending", lang))
+            return None
+        root_query = str(continuation_state.get("root_query", "")).strip()
+        return _ContinuationDecision(
+            text=self._build_continuation_prompt(continuation_state, lang=lang),
+            state=continuation_state,
+            root_query=root_query,
+        )
+
+    self._clear_pending_continuation(chat_id)
+    return _ContinuationDecision(text=text, state=None, root_query=None)
+
+
+def _resolve_stream_timeouts(
+    *,
+    response_timeout: float,
+    intent: str | None,
+    has_images: bool,
+) -> _StreamTimeoutSettings:
+    intent_key = str(intent).strip().lower() if intent is not None else None
+    if has_images or intent_key in _STREAM_LONG_TIMEOUT_INTENTS:
+        max_stream_seconds = max(
+            response_timeout,
+            _STREAM_REASONING_MAX_SECONDS_CAP,
+        )
+        return _StreamTimeoutSettings(
+            first_chunk_timeout_seconds=_STREAM_REASONING_FIRST_CHUNK_TIMEOUT_SECONDS,
+            chunk_timeout_seconds=_STREAM_REASONING_CHUNK_TIMEOUT_SECONDS,
+            max_stream_seconds=max_stream_seconds,
+            render_timeout=max_stream_seconds + _STREAM_RENDER_WAIT_GRACE_SECONDS,
+        )
+
+    max_stream_seconds = min(
+        response_timeout,
+        _STREAM_DEFAULT_MAX_SECONDS_CAP,
+    )
+    return _StreamTimeoutSettings(
+        first_chunk_timeout_seconds=_STREAM_DEFAULT_FIRST_CHUNK_TIMEOUT_SECONDS,
+        chunk_timeout_seconds=_STREAM_DEFAULT_CHUNK_TIMEOUT_SECONDS,
+        max_stream_seconds=max_stream_seconds,
+        render_timeout=max_stream_seconds + _STREAM_RENDER_WAIT_GRACE_SECONDS,
+    )
+
+
+async def _consume_stream_metadata(
+    engine: Any,
+    chat_id: int,
+    result: Any,
+) -> None:
+    consume_meta = getattr(engine, "consume_last_stream_meta", None)
+    if not callable(consume_meta):
+        return
+
+    stream_meta = consume_meta(chat_id)
+    if inspect.isawaitable(stream_meta):
+        stream_meta = await stream_meta
+    if not isinstance(stream_meta, dict):
+        return
+
+    result.tier = stream_meta.get("tier", result.tier)
+    result.intent = stream_meta.get("intent")
+    result.cache_id = stream_meta.get("cache_id")
+    result.usage = stream_meta.get("usage")
+    if result.stop_reason is None:
+        result.stop_reason = stream_meta.get("stop_reason")
+
+
+def _resolve_recovery_reason(
+    result: Any,
+    detect_output_anomalies_fn: Callable[[str, str], list[str]],
+) -> tuple[str | None, list[str]]:
+    stop_reason = getattr(result, "stop_reason", None)
+    if stop_reason in {"chunk_timeout", "repeated_chunks"}:
+        return stop_reason, []
+    if stop_reason is not None:
+        return None, []
+
+    anomaly_reasons = detect_output_anomalies_fn(
+        result.full_response,
+        result.full_response,
+    )
+    actionable_reasons = [
+        reason
+        for reason in anomaly_reasons
+        if reason != "empty_after_sanitize"
+    ]
+    if actionable_reasons:
+        return "response_anomaly", actionable_reasons
+    return None, []
+
+
+async def _recover_stream_response(
+    self: TelegramHandler,
+    *,
+    chat_id: int,
+    text: str,
+    images: list[bytes] | None,
+    sent_message: Any,
+    message: Any,
+    result: Any,
+    recovery_reason: str,
+    anomaly_reasons: list[str],
+) -> None:
+    self._logger.warning(
+        "stream_recovery_triggered",
+        chat_id=chat_id,
+        reason=recovery_reason,
+        anomaly_reasons=anomaly_reasons or None,
+    )
+    try:
+        rollback_fn = getattr(self._engine, "rollback_last_turn", None)
+        if callable(rollback_fn):
+            deleted = await rollback_fn(chat_id)
+            self._logger.info(
+                "stream_recovery_turn_rolled_back",
+                chat_id=chat_id,
+                deleted=deleted,
+            )
+    except Exception as rb_exc:
+        self._logger.warning(
+            "stream_recovery_rollback_failed",
+            chat_id=chat_id,
+            error=str(rb_exc),
+        )
+
+    try:
+        recovered_response = await asyncio.wait_for(
+            self._engine.process_message(
+                chat_id,
+                text,
+                images=images,
+                metadata={"skip_semantic_cache": True},
+            ),
+            timeout=_STREAM_RECOVERY_TIMEOUT_SECONDS,
+        )
+    except Exception as exc:
+        self._logger.warning(
+            "stream_recovery_failed",
+            chat_id=chat_id,
+            reason=recovery_reason,
+            error=str(exc),
+        )
+        return
+
+    recovered_text = str(recovered_response).strip()
+    if not recovered_text:
+        return
+
+    recovered_parts = self._split_message(recovered_text)
+    if not recovered_parts:
+        return
+
+    last_recovered = None
+    try:
+        await sent_message.edit_text(recovered_parts[0])
+        last_recovered = sent_message
+    except Exception:
+        last_recovered = await message.reply_text(recovered_parts[0])
+
+    for part in recovered_parts[1:]:
+        last_recovered = await message.reply_text(part)
+
+    if last_recovered is not None:
+        result.last_message = last_recovered
+        result.full_response = recovered_text
+
+
+async def _handle_continuation_followup(
+    self: TelegramHandler,
+    *,
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    message: Any,
+    chat_id: int,
+    text: str,
+    lang: str,
+    result: Any,
+    continuation_state: dict[str, Any] | None,
+    continuation_root_query: str | None,
+    auto_continuation_turn: int,
+) -> bool:
+    stop_reason = getattr(result, "stop_reason", None)
+    if stop_reason != "max_total_chars":
+        self._clear_pending_continuation(chat_id)
+        return False
+
+    next_turn = 1
+    if continuation_state is not None:
+        next_turn = max(1, int(continuation_state.get("turn", 0)) + 1)
+    root_query = (continuation_root_query or "").strip() or text
+    self._set_pending_continuation(
+        chat_id,
+        root_query=root_query,
+        turn=next_turn,
+    )
+    if auto_continuation_turn < _AUTO_CONTINUATION_MAX_TURNS:
+        await message.reply_text(t("continuation_auto_followup", lang))
+        await self._handle_message_impl(
+            update,
+            context,
+            text_override="",
+            force_continuation=True,
+            auto_continuation_turn=auto_continuation_turn + 1,
+        )
+        return True
+
+    await message.reply_text(
+        self._build_long_response_followup_message(
+            result.full_response,
+            lang=lang,
+        )
+    )
+    return True
+
+
 async def handle_message(
     self: TelegramHandler,
     update: Update,
@@ -66,51 +356,36 @@ async def handle_message_impl(
         return
     chat_id = chat.id
     lang = await get_user_language(self, chat_id)
-    raw_text = (
-        text_override
-        if text_override is not None
-        else (message.text or message.caption or "")
+    payload = await _extract_message_payload(
+        self,
+        message,
+        text_override=text_override,
+        chat_id=chat_id,
     )
-
-    images: list[bytes] | None = None
-    image_download_failed = False
-    if message.photo:
-        try:
-            photo = message.photo[-1]
-            file = await photo.get_file()
-            image_bytes = await file.download_as_bytearray()
-            images = [bytes(image_bytes)]
-        except Exception as exc:
-            image_download_failed = True
-            self._logger.warning(
-                "image_download_failed",
-                chat_id=chat_id,
-                error=str(exc),
-            )
-
-    if not raw_text and not images and not force_continuation:
-        if image_download_failed:
+    if not payload.text and not payload.images and not force_continuation:
+        if payload.image_download_failed:
             await message.reply_text(t("stream_image_download_failed", lang))
         return
 
-    text = self._security.sanitize_input(raw_text) if raw_text else ""
-    self._cleanup_pending_continuations()
-    continuation_state: dict[str, Any] | None = None
-    continuation_root_query: str | None = None
-    if force_continuation or (not images and self._is_continue_request(text)):
-        continuation_state = self._take_pending_continuation(chat_id)
-        if continuation_state is None:
-            await message.reply_text(t("continuation_no_pending", lang))
-            return
-        continuation_root_query = str(continuation_state.get("root_query", "")).strip()
-        text = self._build_continuation_prompt(continuation_state, lang=lang)
-    else:
-        self._pending_continuation.pop(chat_id, None)
+    continuation = await _resolve_continuation_request(
+        self,
+        chat_id=chat_id,
+        text=payload.text,
+        images=payload.images,
+        force_continuation=force_continuation,
+        lang=lang,
+        message=message,
+    )
+    if continuation is None:
+        return
+    text = continuation.text
+    continuation_state = continuation.state
+    continuation_root_query = continuation.root_query
 
-    if not text.strip() and not images:
+    if not text.strip() and not payload.images:
         return
 
-    if continuation_state is None and not images and self._should_auto_trigger_analyze_all(text):
+    if continuation_state is None and not payload.images and self._should_auto_trigger_analyze_all(text):
         self._logger.info("analyze_all_auto_triggered", chat_id=chat_id)
         await self._run_analyze_all_flow(
             chat=chat,
@@ -140,161 +415,64 @@ async def handle_message_impl(
         else:
             intent = raw_intent
 
-        intent_key = str(intent).strip().lower() if intent is not None else None
-        if images or intent_key in _STREAM_LONG_TIMEOUT_INTENTS:
-            first_chunk_timeout_seconds = _STREAM_REASONING_FIRST_CHUNK_TIMEOUT_SECONDS
-            chunk_timeout_seconds = _STREAM_REASONING_CHUNK_TIMEOUT_SECONDS
-            effective_stream_seconds = max(
-                float(self._config.bot.response_timeout),
-                _STREAM_REASONING_MAX_SECONDS_CAP,
-            )
-        else:
-            first_chunk_timeout_seconds = _STREAM_DEFAULT_FIRST_CHUNK_TIMEOUT_SECONDS
-            chunk_timeout_seconds = _STREAM_DEFAULT_CHUNK_TIMEOUT_SECONDS
-            effective_stream_seconds = min(
-                float(self._config.bot.response_timeout),
-                _STREAM_DEFAULT_MAX_SECONDS_CAP,
-            )
-        render_timeout = effective_stream_seconds + _STREAM_RENDER_WAIT_GRACE_SECONDS
+        timeout_settings = _resolve_stream_timeouts(
+            response_timeout=float(self._config.bot.response_timeout),
+            intent=intent,
+            has_images=bool(payload.images),
+        )
+        render_timeout = timeout_settings.render_timeout
         result = await asyncio.wait_for(
             stream_and_render_fn(
-                stream=self._engine.process_message_stream(chat_id, text, images=images),
+                stream=self._engine.process_message_stream(chat_id, text, images=payload.images),
                 sent_message=sent_message,
                 reply_text=message.reply_text,
                 split_message_fn=self._split_message,
                 edit_interval=_EDIT_INTERVAL,
                 edit_char_threshold=_EDIT_CHAR_THRESHOLD,
                 max_edit_length=self._max_message_length,
-                first_chunk_timeout_seconds=first_chunk_timeout_seconds,
-                chunk_timeout_seconds=chunk_timeout_seconds,
-                max_stream_seconds=effective_stream_seconds,
+                first_chunk_timeout_seconds=timeout_settings.first_chunk_timeout_seconds,
+                chunk_timeout_seconds=timeout_settings.chunk_timeout_seconds,
+                max_stream_seconds=timeout_settings.max_stream_seconds,
                 max_total_chars=_STREAM_MAX_TOTAL_CHARS,
                 max_repeated_chunks=_STREAM_MAX_REPEATED_CHUNKS,
                 lang=lang,
             ),
             timeout=render_timeout,
         )
-        consume_meta = getattr(self._engine, "consume_last_stream_meta", None)
-        if callable(consume_meta):
-            stream_meta = consume_meta(chat_id)
-            if inspect.isawaitable(stream_meta):
-                stream_meta = await stream_meta
-            if isinstance(stream_meta, dict):
-                result.tier = stream_meta.get("tier", result.tier)
-                result.intent = stream_meta.get("intent")
-                result.cache_id = stream_meta.get("cache_id")
-                result.usage = stream_meta.get("usage")
-                if result.stop_reason is None:
-                    result.stop_reason = stream_meta.get("stop_reason")
-        stop_reason = getattr(result, "stop_reason", None)
-        recovery_reason: str | None = None
-        anomaly_reasons: list[str] = []
-        if stop_reason in {"chunk_timeout", "repeated_chunks"}:
-            recovery_reason = stop_reason
-        elif stop_reason is None:
-            anomaly_reasons = detect_output_anomalies_fn(
-                result.full_response,
-                result.full_response,
-            )
-            actionable_reasons = [
-                reason
-                for reason in anomaly_reasons
-                if reason != "empty_after_sanitize"
-            ]
-            if actionable_reasons:
-                anomaly_reasons = actionable_reasons
-                recovery_reason = "response_anomaly"
-
+        await _consume_stream_metadata(self._engine, chat_id, result)
+        recovery_reason, anomaly_reasons = _resolve_recovery_reason(
+            result,
+            detect_output_anomalies_fn,
+        )
         if recovery_reason is not None:
-            self._logger.warning(
-                "stream_recovery_triggered",
+            await _recover_stream_response(
+                self,
                 chat_id=chat_id,
-                reason=recovery_reason,
-                anomaly_reasons=anomaly_reasons or None,
+                text=text,
+                images=payload.images,
+                sent_message=sent_message,
+                message=message,
+                result=result,
+                recovery_reason=recovery_reason,
+                anomaly_reasons=anomaly_reasons,
             )
-            try:
-                rollback_fn = getattr(self._engine, "rollback_last_turn", None)
-                if callable(rollback_fn):
-                    deleted = await rollback_fn(chat_id)
-                    self._logger.info(
-                        "stream_recovery_turn_rolled_back",
-                        chat_id=chat_id,
-                        deleted=deleted,
-                    )
-            except Exception as rb_exc:
-                self._logger.warning(
-                    "stream_recovery_rollback_failed",
-                    chat_id=chat_id,
-                    error=str(rb_exc),
-                )
-            try:
-                recovered_response = await asyncio.wait_for(
-                    self._engine.process_message(
-                        chat_id,
-                        text,
-                        images=images,
-                        metadata={"skip_semantic_cache": True},
-                    ),
-                    timeout=_STREAM_RECOVERY_TIMEOUT_SECONDS,
-                )
-            except Exception as exc:
-                self._logger.warning(
-                    "stream_recovery_failed",
-                    chat_id=chat_id,
-                    reason=recovery_reason,
-                    error=str(exc),
-                )
-            else:
-                recovered_text = str(recovered_response).strip()
-                if recovered_text:
-                    recovered_parts = self._split_message(recovered_text)
-                    if recovered_parts:
-                        last_recovered = None
-                        try:
-                            await sent_message.edit_text(recovered_parts[0])
-                            last_recovered = sent_message
-                        except Exception:
-                            last_recovered = await message.reply_text(recovered_parts[0])
-
-                        for part in recovered_parts[1:]:
-                            last_recovered = await message.reply_text(part)
-
-                        if last_recovered is not None:
-                            result.last_message = last_recovered
-                            result.full_response = recovered_text
 
         await self._link_feedback_target(chat_id, result)
         await self._attach_feedback_controls(chat_id, text, result)
-
-        stop_reason = getattr(result, "stop_reason", None)
-        if stop_reason == "max_total_chars":
-            next_turn = 1
-            if continuation_state is not None:
-                next_turn = max(1, int(continuation_state.get("turn", 0)) + 1)
-            root_query = (continuation_root_query or "").strip() or text
-            self._set_pending_continuation(
-                chat_id,
-                root_query=root_query,
-                turn=next_turn,
-            )
-            if auto_continuation_turn < _AUTO_CONTINUATION_MAX_TURNS:
-                await message.reply_text(t("continuation_auto_followup", lang))
-                await self._handle_message_impl(
-                    update,
-                    context,
-                    text_override="",
-                    force_continuation=True,
-                    auto_continuation_turn=auto_continuation_turn + 1,
-                )
-                return
-            await message.reply_text(
-                self._build_long_response_followup_message(
-                    result.full_response,
-                    lang=lang,
-                )
-            )
-        else:
-            self._pending_continuation.pop(chat_id, None)
+        if await _handle_continuation_followup(
+            self,
+            update=update,
+            context=context,
+            message=message,
+            chat_id=chat_id,
+            text=text,
+            lang=lang,
+            result=result,
+            continuation_state=continuation_state,
+            continuation_root_query=continuation_root_query,
+            auto_continuation_turn=auto_continuation_turn,
+        ):
+            return
 
     except TimeoutError:
         self._logger.error(

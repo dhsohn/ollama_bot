@@ -4,6 +4,7 @@ import inspect
 import json
 import time
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from core import engine_planner, engine_reviewer
@@ -25,6 +26,35 @@ from core.text_utils import sanitize_model_output
 if TYPE_CHECKING:
     from core.engine import Engine
     from core.intent_router import ContextStrategy
+
+
+@dataclass(frozen=True)
+class _FullRequestContext:
+    rag_result: Any
+    target_model: str
+    effective_timeout: int
+    messages: list[dict[str, str]]
+    max_tokens: int | None
+
+
+@dataclass(frozen=True)
+class _FullScanTimeouts:
+    map_timeout: int
+    reduce_timeout: int
+    final_timeout: int
+
+
+@dataclass(frozen=True)
+class _FullScanModels:
+    map_model: str
+    reduce_model: str
+    final_model: str
+
+
+@dataclass
+class _MappedEvidence:
+    evidence_lines: list[str]
+    mapped_segments: int = 0
 
 
 async def emit_full_scan_progress(
@@ -164,6 +194,104 @@ def pack_blocks_for_reduction(
     return groups
 
 
+async def _maybe_execute_rag(
+    engine: Engine,
+    *,
+    text: str,
+    metadata: dict | None,
+) -> Any:
+    if engine._rag_pipeline and engine._rag_pipeline.should_trigger_rag(text, metadata):
+        return await engine._rag_pipeline.execute(text, metadata)
+    return None
+
+
+async def _resolve_full_request_target_model(
+    engine: Engine,
+    *,
+    model_override: str | None,
+    effective_timeout: int,
+) -> str:
+    target_model = model_override or get_default_chat_model(engine._config)
+    prepared_model, _ = await engine._prepare_target_model(
+        model=target_model,
+        role=None,
+        timeout=effective_timeout,
+    )
+    return prepared_model or target_model
+
+
+async def _inject_context_provider_messages(
+    engine: Engine,
+    *,
+    messages: list[dict[str, str]],
+    text: str,
+) -> list[dict[str, str]]:
+    updated_messages = messages
+    for provider in engine._context_providers:
+        try:
+            extra = await provider.get_context(text)
+            if extra:
+                updated_messages = inject_extra_context(updated_messages, extra)
+        except Exception as exc:
+            engine._logger.warning(
+                "context_provider_failed",
+                provider=type(provider).__name__,
+                error=str(exc),
+            )
+    return updated_messages
+
+
+async def _prepare_full_request_context(
+    engine: Engine,
+    *,
+    chat_id: int,
+    text: str,
+    model_override: str | None,
+    images: list[bytes] | None,
+    metadata: dict | None,
+    intent: str | None,
+    strategy: ContextStrategy | None,
+    stream: bool,
+) -> _FullRequestContext:
+    rag_result = await _maybe_execute_rag(
+        engine,
+        text=text,
+        metadata=metadata,
+    )
+    prepared = await engine._prepare_request(
+        chat_id,
+        text,
+        stream=stream,
+        strategy=strategy,
+    )
+    effective_timeout = engine._resolve_inference_timeout(
+        base_timeout=prepared.timeout,
+        intent=intent,
+        model_role=None,
+        has_images=bool(images),
+    )
+    target_model = await _resolve_full_request_target_model(
+        engine,
+        model_override=model_override,
+        effective_timeout=effective_timeout,
+    )
+    messages = prepared.messages
+    if rag_result and rag_result.contexts:
+        messages = inject_rag_context(messages, rag_result)
+    messages = await _inject_context_provider_messages(
+        engine,
+        messages=messages,
+        text=text,
+    )
+    return _FullRequestContext(
+        rag_result=rag_result,
+        target_model=target_model,
+        effective_timeout=effective_timeout,
+        messages=messages,
+        max_tokens=prepared.max_tokens,
+    )
+
+
 async def prepare_full_request(
     engine: Engine,
     *,
@@ -182,46 +310,17 @@ async def prepare_full_request(
     injection, model selection, and timeout calculation, then returns the
     `messages`, `timeout`, `max_tokens`, and `target_model` needed for the LLM call.
     """
-    target_model = model_override or get_default_chat_model(engine._config)
-    rag_result = None
-
-    if engine._rag_pipeline and engine._rag_pipeline.should_trigger_rag(text, metadata):
-        rag_result = await engine._rag_pipeline.execute(text, metadata)
-
-    prepared = await engine._prepare_request(
-        chat_id,
-        text,
-        stream=stream,
-        strategy=strategy,
-    )
-    effective_timeout = engine._resolve_inference_timeout(
-        base_timeout=prepared.timeout,
+    request_context = await _prepare_full_request_context(
+        engine,
+        chat_id=chat_id,
+        text=text,
+        model_override=model_override,
+        images=images,
+        metadata=metadata,
         intent=intent,
-        model_role=None,
-        has_images=bool(images),
+        strategy=strategy,
+        stream=stream,
     )
-    prepared_model, _ = await engine._prepare_target_model(
-        model=target_model,
-        role=None,
-        timeout=effective_timeout,
-    )
-    target_model = prepared_model or target_model
-
-    messages = prepared.messages
-    if rag_result and rag_result.contexts:
-        messages = inject_rag_context(messages, rag_result)
-
-    for provider in engine._context_providers:
-        try:
-            extra = await provider.get_context(text)
-            if extra:
-                messages = inject_extra_context(messages, extra)
-        except Exception as exc:
-            engine._logger.warning(
-                "context_provider_failed",
-                provider=type(provider).__name__,
-                error=str(exc),
-            )
 
     messages, planner_applied = await engine_planner.maybe_apply_response_plan(
         engine,
@@ -229,10 +328,10 @@ async def prepare_full_request(
         text=text,
         intent=intent,
         strategy=strategy,
-        messages=messages,
-        rag_result=rag_result,
-        target_model=target_model,
-        timeout=effective_timeout,
+        messages=request_context.messages,
+        rag_result=request_context.rag_result,
+        target_model=request_context.target_model,
+        timeout=request_context.effective_timeout,
         images=images,
     )
     review_enabled = engine_reviewer.should_review_response(
@@ -244,10 +343,10 @@ async def prepare_full_request(
 
     return {
         "messages": messages,
-        "timeout": effective_timeout,
-        "max_tokens": prepared.max_tokens,
-        "target_model": target_model,
-        "rag_result": rag_result,
+        "timeout": request_context.effective_timeout,
+        "max_tokens": request_context.max_tokens,
+        "target_model": request_context.target_model,
+        "rag_result": request_context.rag_result,
         "planner_applied": planner_applied,
         "review_enabled": review_enabled,
         "stream_buffering": review_enabled and engine._config.response_reviewer.stream_buffering,
@@ -319,44 +418,69 @@ def extract_json_payload(text: str) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
-async def analyze_all_corpus(
-    engine: Engine,
-    query: str,
-    *,
-    progress_callback: Callable[[dict[str, Any]], Awaitable[None] | None] | None = None,
-) -> dict[str, Any]:
-    """Read the entire RAG index and analyze it with a map-reduce flow."""
-    t0 = time.monotonic()
-    question = query.strip()
-    if not question:
-        raise ValueError("query_is_empty")
-    if engine._rag_pipeline is None:
-        raise RuntimeError("rag_pipeline_disabled")
+def _build_empty_full_scan_result(*, started_at: float) -> dict[str, Any]:
+    return {
+        "answer": "The RAG index is empty. Cannot perform full analysis.",
+        "stats": {
+            "total_chunks": 0,
+            "total_segments": 0,
+            "mapped_segments": 0,
+            "evidence_lines": 0,
+            "duration_ms": round((time.monotonic() - started_at) * 1000, 1),
+        },
+    }
 
+
+def _build_no_evidence_full_scan_result(
+    *,
+    started_at: float,
+    total_chunks: int,
+    total_segments: int,
+    mapped_segments: int,
+) -> dict[str, Any]:
+    return {
+        "answer": (
+            "I read the entire document but could not find evidence directly related to the question. "
+            "Please try narrowing down or being more specific with your question."
+        ),
+        "stats": {
+            "total_chunks": total_chunks,
+            "total_segments": total_segments,
+            "mapped_segments": mapped_segments,
+            "evidence_lines": 0,
+            "duration_ms": round((time.monotonic() - started_at) * 1000, 1),
+        },
+    }
+
+
+async def _collect_full_scan_segments(
+    engine: Engine,
+    *,
+    progress_callback: Callable[[dict[str, Any]], Awaitable[None] | None] | None,
+) -> tuple[list[dict[str, Any]], int]:
+    rag_pipeline = engine._rag_pipeline
+    if rag_pipeline is None:
+        raise RuntimeError("rag_pipeline_disabled")
     await emit_full_scan_progress(
         progress_callback,
         {"phase": "collect", "message": "Collecting all chunks from RAG index..."},
     )
-    chunks = await engine._rag_pipeline.get_all_chunks()
+    chunks = await rag_pipeline.get_all_chunks()
     total_chunks = len(chunks)
-    if total_chunks == 0:
-        return {
-            "answer": "The RAG index is empty. Cannot perform full analysis.",
-            "stats": {
-                "total_chunks": 0,
-                "total_segments": 0,
-                "mapped_segments": 0,
-                "evidence_lines": 0,
-                "duration_ms": round((time.monotonic() - t0) * 1000, 1),
-            },
-        }
-
     segments = build_full_scan_segments(
         chunks,
         max_chars=FULL_SCAN_SEGMENT_MAX_CHARS,
         segment_factory=lambda **kwargs: kwargs,
     )
-    total_segments = len(segments)
+    return segments, total_chunks
+
+
+async def _emit_full_scan_map_start(
+    *,
+    progress_callback: Callable[[dict[str, Any]], Awaitable[None] | None] | None,
+    total_chunks: int,
+    total_segments: int,
+) -> None:
     await emit_full_scan_progress(
         progress_callback,
         {
@@ -367,10 +491,21 @@ async def analyze_all_corpus(
         },
     )
 
-    map_timeout = max(int(engine._config.bot.response_timeout), SUMMARY_MAP_TIMEOUT_SECONDS)
-    reduce_timeout = max(int(engine._config.bot.response_timeout), SUMMARY_REDUCE_TIMEOUT_SECONDS)
-    final_timeout = max(int(engine._config.bot.response_timeout), REASONING_TIMEOUT_SECONDS)
 
+def _resolve_full_scan_timeouts(engine: Engine) -> _FullScanTimeouts:
+    base_timeout = int(engine._config.bot.response_timeout)
+    return _FullScanTimeouts(
+        map_timeout=max(base_timeout, SUMMARY_MAP_TIMEOUT_SECONDS),
+        reduce_timeout=max(base_timeout, SUMMARY_REDUCE_TIMEOUT_SECONDS),
+        final_timeout=max(base_timeout, REASONING_TIMEOUT_SECONDS),
+    )
+
+
+async def _resolve_full_scan_models(
+    engine: Engine,
+    *,
+    timeouts: _FullScanTimeouts,
+) -> _FullScanModels:
     default_chat_model = get_default_chat_model(engine._config)
     map_model_candidate = engine._resolve_model_for_role("low_cost")
     map_role = "low_cost" if map_model_candidate is not None else None
@@ -382,7 +517,7 @@ async def analyze_all_corpus(
     map_model, _ = await engine._prepare_target_model(
         model=map_model_candidate,
         role=map_role,
-        timeout=map_timeout,
+        timeout=timeouts.map_timeout,
     )
 
     reduce_model_candidate = engine._resolve_model_for_role("reasoning")
@@ -392,39 +527,82 @@ async def analyze_all_corpus(
     reduce_model, _ = await engine._prepare_target_model(
         model=reduce_model_candidate,
         role=reduce_role,
-        timeout=reduce_timeout,
+        timeout=timeouts.reduce_timeout,
     )
     final_model, _ = await engine._prepare_target_model(
         model=reduce_model_candidate,
         role=reduce_role,
-        timeout=final_timeout,
+        timeout=timeouts.final_timeout,
     )
-    map_model = map_model or map_model_candidate
-    reduce_model = reduce_model or reduce_model_candidate
-    final_model = final_model or reduce_model_candidate
+    return _FullScanModels(
+        map_model=map_model or map_model_candidate,
+        reduce_model=reduce_model or reduce_model_candidate,
+        final_model=final_model or reduce_model_candidate,
+    )
 
-    map_system = engine._inject_language_policy(
+
+def _build_full_scan_map_system(engine: Engine) -> str:
+    return engine._inject_language_policy(
         "You are a document evidence extractor. Extract only facts directly related to the question as JSON. "
         "If uncertain, respond with relevant=false."
     )
-    evidence_lines: list[str] = []
-    mapped_segments = 0
+
+
+def _build_full_scan_map_prompt(question: str, segment: dict[str, Any]) -> str:
+    return (
+        "[Question]\n"
+        f"{question}\n\n"
+        "[Document segment metadata]\n"
+        f"source_path: {segment['source_path']}\n"
+        f"chunk_range: {segment['start_chunk_id']}-{segment['end_chunk_id']}\n\n"
+        "[Document segment body]\n"
+        f"{segment['text']}\n\n"
+        "Output only the following JSON:\n"
+        "{\"relevant\": true|false, \"findings\": [\"evidence-based sentence\"], \"confidence\": 0.0~1.0}\n"
+        "Rules:\n"
+        "- Maximum 4 findings\n"
+        "- Include only information directly related to the question\n"
+        "- No speculation"
+    )
+
+
+def _extract_full_scan_findings(payload: dict[str, Any]) -> list[str]:
+    findings_raw = payload.get("findings", [])
+    findings: list[str] = []
+    if isinstance(findings_raw, list):
+        for item in findings_raw:
+            text_item = sanitize_model_output(str(item)).strip()
+            if text_item:
+                findings.append(text_item)
+    return findings
+
+
+def _append_full_scan_evidence(
+    evidence_lines: list[str],
+    *,
+    segment: dict[str, Any],
+    findings: list[str],
+) -> None:
+    citation = f"{segment['source_path']}#{segment['start_chunk_id']}-{segment['end_chunk_id']}"
+    for finding in findings[:4]:
+        evidence_lines.append(f"- [{citation}] {finding}")
+
+
+async def _map_full_scan_segments(
+    engine: Engine,
+    *,
+    question: str,
+    segments: list[dict[str, Any]],
+    progress_callback: Callable[[dict[str, Any]], Awaitable[None] | None] | None,
+    map_model: str,
+    map_timeout: int,
+) -> _MappedEvidence:
+    total_segments = len(segments)
+    map_system = _build_full_scan_map_system(engine)
+    mapped = _MappedEvidence(evidence_lines=[])
+
     for index, segment in enumerate(segments, start=1):
-        map_prompt = (
-            "[Question]\n"
-            f"{question}\n\n"
-            "[Document segment metadata]\n"
-            f"source_path: {segment['source_path']}\n"
-            f"chunk_range: {segment['start_chunk_id']}-{segment['end_chunk_id']}\n\n"
-            "[Document segment body]\n"
-            f"{segment['text']}\n\n"
-            "Output only the following JSON:\n"
-            "{\"relevant\": true|false, \"findings\": [\"evidence-based sentence\"], \"confidence\": 0.0~1.0}\n"
-            "Rules:\n"
-            "- Maximum 4 findings\n"
-            "- Include only information directly related to the question\n"
-            "- No speculation"
-        )
+        map_prompt = _build_full_scan_map_prompt(question, segment)
         try:
             map_resp = await engine._llm_client.chat(
                 messages=[
@@ -451,22 +629,18 @@ async def analyze_all_corpus(
         if payload is None:
             continue
         relevant = bool(payload.get("relevant", False))
-        findings_raw = payload.get("findings", [])
-        findings: list[str] = []
-        if isinstance(findings_raw, list):
-            for item in findings_raw:
-                text_item = sanitize_model_output(str(item)).strip()
-                if text_item:
-                    findings.append(text_item)
+        findings = _extract_full_scan_findings(payload)
         if not relevant and not findings:
             continue
         if not findings:
             continue
 
-        mapped_segments += 1
-        citation = f"{segment['source_path']}#{segment['start_chunk_id']}-{segment['end_chunk_id']}"
-        for finding in findings[:4]:
-            evidence_lines.append(f"- [{citation}] {finding}")
+        mapped.mapped_segments += 1
+        _append_full_scan_evidence(
+            mapped.evidence_lines,
+            segment=segment,
+            findings=findings,
+        )
 
         if (
             index == 1
@@ -479,37 +653,53 @@ async def analyze_all_corpus(
                     "phase": "map",
                     "processed_segments": index,
                     "total_segments": total_segments,
-                    "mapped_segments": mapped_segments,
-                    "evidence_lines": len(evidence_lines),
+                    "mapped_segments": mapped.mapped_segments,
+                    "evidence_lines": len(mapped.evidence_lines),
                 },
             )
 
-    if not evidence_lines:
-        duration_ms = round((time.monotonic() - t0) * 1000, 1)
-        return {
-            "answer": (
-                "I read the entire document but could not find evidence directly related to the question. "
-                "Please try narrowing down or being more specific with your question."
-            ),
-            "stats": {
-                "total_chunks": total_chunks,
-                "total_segments": total_segments,
-                "mapped_segments": mapped_segments,
-                "evidence_lines": 0,
-                "duration_ms": duration_ms,
-            },
-        }
+    return mapped
 
+
+def _build_full_scan_reduce_system(engine: Engine) -> str:
+    return engine._inject_language_policy(
+        "You are an evidence consolidation summarizer. Compress the input evidence without loss. "
+        "Preserve citation markers ([path#chunk])."
+    )
+
+
+def _build_full_scan_reduce_prompt(question: str, group_text: str) -> str:
+    return (
+        "[Question]\n"
+        f"{question}\n\n"
+        "[Evidence list]\n"
+        f"{group_text}\n\n"
+        "Remove duplicates and rewrite only key evidence as bullet points.\n"
+        "Output rules:\n"
+        "- Maximum 12 bullet points\n"
+        "- Keep at least 1 citation marker per bullet"
+    )
+
+
+async def _reduce_full_scan_evidence(
+    engine: Engine,
+    *,
+    question: str,
+    evidence_lines: list[str],
+    progress_callback: Callable[[dict[str, Any]], Awaitable[None] | None] | None,
+    reduce_model: str,
+    reduce_timeout: int,
+) -> list[str]:
     reduced_blocks = list(evidence_lines)
     reduce_pass = 0
+
     while reduce_pass < FULL_SCAN_REDUCE_MAX_PASSES:
         groups = pack_blocks_for_reduction(
             reduced_blocks,
             max_chars=FULL_SCAN_REDUCE_GROUP_MAX_CHARS,
         )
         if len(groups) <= 1:
-            reduced_blocks = groups
-            break
+            return groups
 
         reduce_pass += 1
         await emit_full_scan_progress(
@@ -522,21 +712,9 @@ async def analyze_all_corpus(
         )
 
         next_blocks: list[str] = []
-        reduce_system = engine._inject_language_policy(
-            "You are an evidence consolidation summarizer. Compress the input evidence without loss. "
-            "Preserve citation markers ([path#chunk])."
-        )
+        reduce_system = _build_full_scan_reduce_system(engine)
         for group_index, group_text in enumerate(groups, start=1):
-            reduce_prompt = (
-                "[Question]\n"
-                f"{question}\n\n"
-                "[Evidence list]\n"
-                f"{group_text}\n\n"
-                "Remove duplicates and rewrite only key evidence as bullet points.\n"
-                "Output rules:\n"
-                "- Maximum 12 bullet points\n"
-                "- Keep at least 1 citation marker per bullet"
-            )
+            reduce_prompt = _build_full_scan_reduce_prompt(question, group_text)
             try:
                 reduce_resp = await engine._llm_client.chat(
                     messages=[
@@ -565,17 +743,19 @@ async def analyze_all_corpus(
             break
         reduced_blocks = next_blocks
 
-    evidence_text = "\n\n".join(reduced_blocks).strip()
-    await emit_full_scan_progress(
-        progress_callback,
-        {"phase": "final", "message": "Generating final answer..."},
-    )
-    final_system = engine._inject_language_policy(
+    return reduced_blocks
+
+
+def _build_full_scan_final_system(engine: Engine) -> str:
+    return engine._inject_language_policy(
         "You are a senior analyst who has reviewed the entire document. "
         "Answer the question using only the evidence below, and attach citation markers ([path#chunk]) to key claims. "
         "Explicitly state 'insufficient evidence' for parts lacking evidence."
     )
-    final_prompt = (
+
+
+def _build_full_scan_final_prompt(question: str, evidence_text: str) -> str:
+    return (
         "[Question]\n"
         f"{question}\n\n"
         "[Consolidated evidence]\n"
@@ -585,29 +765,110 @@ async def analyze_all_corpus(
         "2) 3-8 key evidence bullets (with citation markers per bullet)\n"
         "3) Items with insufficient evidence / needing further verification (if any)"
     )
+
+
+async def _generate_full_scan_answer(
+    engine: Engine,
+    *,
+    question: str,
+    reduced_blocks: list[str],
+    progress_callback: Callable[[dict[str, Any]], Awaitable[None] | None] | None,
+    final_model: str,
+    final_timeout: int,
+) -> str:
+    evidence_text = "\n\n".join(reduced_blocks).strip()
+    await emit_full_scan_progress(
+        progress_callback,
+        {"phase": "final", "message": "Generating final answer..."},
+    )
     final_resp = await engine._llm_client.chat(
         messages=[
-            {"role": "system", "content": final_system},
-            {"role": "user", "content": final_prompt},
+            {"role": "system", "content": _build_full_scan_final_system(engine)},
+            {"role": "user", "content": _build_full_scan_final_prompt(question, evidence_text)},
         ],
         model=final_model,
         timeout=final_timeout,
         max_tokens=FULL_SCAN_FINAL_MAX_TOKENS,
         temperature=0.0,
     )
-    answer = sanitize_model_output(final_resp.content).strip()
-    duration_ms = round((time.monotonic() - t0) * 1000, 1)
+    return sanitize_model_output(final_resp.content).strip()
+
+
+async def analyze_all_corpus(
+    engine: Engine,
+    query: str,
+    *,
+    progress_callback: Callable[[dict[str, Any]], Awaitable[None] | None] | None = None,
+) -> dict[str, Any]:
+    """Read the entire RAG index and analyze it with a map-reduce flow."""
+    t0 = time.monotonic()
+    question = query.strip()
+    if not question:
+        raise ValueError("query_is_empty")
+    if engine._rag_pipeline is None:
+        raise RuntimeError("rag_pipeline_disabled")
+
+    segments, total_chunks = await _collect_full_scan_segments(
+        engine,
+        progress_callback=progress_callback,
+    )
+    if total_chunks == 0:
+        return _build_empty_full_scan_result(started_at=t0)
+
+    total_segments = len(segments)
+    await _emit_full_scan_map_start(
+        progress_callback=progress_callback,
+        total_chunks=total_chunks,
+        total_segments=total_segments,
+    )
+    timeouts = _resolve_full_scan_timeouts(engine)
+    models = await _resolve_full_scan_models(
+        engine,
+        timeouts=timeouts,
+    )
+    mapped = await _map_full_scan_segments(
+        engine,
+        question=question,
+        segments=segments,
+        progress_callback=progress_callback,
+        map_model=models.map_model,
+        map_timeout=timeouts.map_timeout,
+    )
+    if not mapped.evidence_lines:
+        return _build_no_evidence_full_scan_result(
+            started_at=t0,
+            total_chunks=total_chunks,
+            total_segments=total_segments,
+            mapped_segments=mapped.mapped_segments,
+        )
+
+    reduced_blocks = await _reduce_full_scan_evidence(
+        engine,
+        question=question,
+        evidence_lines=mapped.evidence_lines,
+        progress_callback=progress_callback,
+        reduce_model=models.reduce_model,
+        reduce_timeout=timeouts.reduce_timeout,
+    )
+    answer = await _generate_full_scan_answer(
+        engine,
+        question=question,
+        reduced_blocks=reduced_blocks,
+        progress_callback=progress_callback,
+        final_model=models.final_model,
+        final_timeout=timeouts.final_timeout,
+    )
     return {
         "answer": answer,
         "stats": {
             "total_chunks": total_chunks,
             "total_segments": total_segments,
-            "mapped_segments": mapped_segments,
-            "evidence_lines": len(evidence_lines),
-            "duration_ms": duration_ms,
-            "map_model": map_model,
-            "reduce_model": reduce_model,
-            "final_model": final_model,
+            "mapped_segments": mapped.mapped_segments,
+            "evidence_lines": len(mapped.evidence_lines),
+            "duration_ms": round((time.monotonic() - t0) * 1000, 1),
+            "map_model": models.map_model,
+            "reduce_model": models.reduce_model,
+            "final_model": models.final_model,
         },
     }
 

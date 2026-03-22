@@ -30,6 +30,7 @@ from core.security import SecurityManager
 from core.telegram_decorators import auth_required as _auth_required
 from core.telegram_decorators import global_slot_required as _global_slot_required
 from core.telegram_message_renderer import escape_html, split_message, stream_and_render
+from core.telegram_state import TelegramInteractionState
 from core.telegram_utils import (
     coerce_error_list,
     format_memory_gb,
@@ -63,15 +64,25 @@ class TelegramHandler:
         self._logger = get_logger("telegram")
         self._max_message_length = config.telegram.max_message_length
         self._scheduler = None
-        self._preview_cache: dict[tuple[int, int], dict] = {}
-        self._pending_reason: dict[int, dict] = {}
-        self._pending_continuation: dict[int, dict[str, Any]] = {}
+        self._interaction_state = TelegramInteractionState()
 
     def set_scheduler(self, scheduler) -> None:
         self._scheduler = scheduler
 
     def has_scheduler(self) -> bool:
         return self._scheduler is not None
+
+    @property
+    def _preview_cache(self) -> dict[tuple[int, int], dict[str, Any]]:
+        return self._interaction_state.previews.entries
+
+    @property
+    def _pending_reason(self) -> dict[int, dict[str, Any]]:
+        return self._interaction_state.pending_reasons.entries
+
+    @property
+    def _pending_continuation(self) -> dict[int, dict[str, Any]]:
+        return self._interaction_state.continuations.entries
 
     @property
     def _feedback_enabled(self) -> bool:
@@ -258,13 +269,13 @@ class TelegramHandler:
 
     def _cleanup_pending_continuations(self) -> None:
         telegram_messages.cleanup_pending_continuations(
-            self,
+            self._interaction_state.continuations,
             monotonic_fn=time.monotonic,
         )
 
     def _take_pending_continuation(self, chat_id: int) -> dict[str, Any] | None:
         return telegram_messages.take_pending_continuation(
-            self,
+            self._interaction_state.continuations,
             chat_id,
             monotonic_fn=time.monotonic,
         )
@@ -277,12 +288,15 @@ class TelegramHandler:
         turn: int,
     ) -> None:
         telegram_messages.set_pending_continuation(
-            self,
+            self._interaction_state.continuations,
             chat_id,
             root_query=root_query,
             turn=turn,
             monotonic_fn=time.monotonic,
         )
+
+    def _clear_pending_continuation(self, chat_id: int) -> None:
+        self._interaction_state.continuations.discard(chat_id)
 
     @staticmethod
     def _build_continuation_prompt(pending: dict[str, Any], *, lang: str) -> str:

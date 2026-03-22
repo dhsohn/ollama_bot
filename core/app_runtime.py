@@ -25,13 +25,13 @@ from core.runtime_env import (
 )
 from core.runtime_factory import RuntimeState, StartupError
 from core.runtime_factory import build_runtime as _build_runtime
-from core.runtime_factory import (
+from core.runtime_factory_support import (
     handle_optional_component_failure as _handle_optional_component_failure,
 )
-from core.runtime_factory import (
+from core.runtime_factory_support import (
     log_degraded_startup_summary as _log_degraded_startup_summary,
 )
-from core.runtime_factory import (
+from core.runtime_factory_support import (
     validate_required_settings as _validate_required_settings,
 )
 from core.runtime_lifecycle import run_runtime
@@ -43,6 +43,28 @@ _is_wsl_environment = is_wsl_environment
 _normalize_host_token = normalize_host_token
 _iter_wsl_bridge_candidates = iter_wsl_bridge_candidates
 _can_connect_tcp = can_connect_tcp
+
+
+def _load_runtime_config_or_exit() -> Any:
+    """Load application config or exit with an operator-facing message."""
+    try:
+        return load_config()
+    except ValueError as exc:
+        print(
+            f"Error: invalid configuration. {exc}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
+async def _build_runtime_or_exit(config: Any, logger: Any) -> RuntimeState:
+    """Validate config, build runtime, or exit with a startup message."""
+    try:
+        _validate_required_settings(config, logger)
+        return await _build_runtime(config, logger)
+    except StartupError as exc:
+        print(exc.message, file=sys.stderr)
+        sys.exit(1)
 
 
 def _resolve_wsl_loopback_host(
@@ -67,26 +89,12 @@ async def async_main(
     app_name: str,
 ) -> None:
     """Async main loop."""
-    try:
-        config = load_config()
-    except ValueError as exc:
-        print(
-            f"Error: invalid configuration. {exc}",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
+    config = _load_runtime_config_or_exit()
     log_dir = str(Path(config.data_dir) / "logs")
     setup_logging(config.log_level, log_dir=log_dir)
     logger = get_logger(app_name)
     logger.info("starting", app=app_name, version="0.1.0")
-    try:
-        _validate_required_settings(config, logger)
-        runtime = await _build_runtime(config, logger)
-    except StartupError as exc:
-        print(exc.message, file=sys.stderr)
-        sys.exit(1)
-
+    runtime = await _build_runtime_or_exit(config, logger)
     await run_runtime(runtime)
 
 

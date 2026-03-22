@@ -14,6 +14,8 @@ from core.feedback_manager import FeedbackManager
 from core.llm_protocol import LLMClientProtocol
 from core.memory import MemoryManager
 from core.runtime_factory_steps import (
+    OptionalRuntimeComponents,
+    RetrievalRuntimeComponents,
     initialize_chat_client,
     initialize_memory_stack,
     initialize_optional_components,
@@ -54,6 +56,122 @@ class RuntimeState:
     degraded_components: list[dict[str, str]] = field(default_factory=list)
 
 
+@dataclass
+class RuntimeBootstrapArtifacts:
+    """Intermediate runtime dependencies collected before final wiring."""
+
+    security: SecurityManager
+    memory: MemoryManager
+    feedback: FeedbackManager | None
+    llm: LLMClientProtocol
+    default_model: str
+    skills: Any
+    skill_count: int
+    optional_components: OptionalRuntimeComponents
+    retrieval_components: RetrievalRuntimeComponents
+    rag_pipeline: Any
+    rag_startup_index_task: asyncio.Task[Any] | None
+
+
+async def _initialize_runtime_dependencies(
+    config: AppSettings,
+    logger: Any,
+    cleanup_stack: AsyncExitStack,
+    degraded_components: list[dict[str, str]],
+) -> RuntimeBootstrapArtifacts:
+    """Build the dependency graph up to the Engine/Telegram wiring boundary."""
+    security = SecurityManager(config.security)
+    logger.info(
+        "security_initialized",
+        allowed_users=len(config.security.allowed_users),
+    )
+
+    memory, feedback = await initialize_memory_stack(config, cleanup_stack, logger)
+    rewrite_ollama_host(config, logger)
+    llm, default_model = await initialize_chat_client(
+        config,
+        cleanup_stack,
+        logger,
+    )
+    skills, skill_count = await initialize_skills(security, logger)
+    optional_components = await initialize_optional_components(
+        config,
+        logger,
+        degraded_components,
+        llm=llm,
+        memory=memory,
+        cleanup_stack=cleanup_stack,
+    )
+    retrieval_components = await initialize_retrieval_components(
+        config,
+        logger,
+        degraded_components,
+        cleanup_stack,
+    )
+    await preload_default_model(
+        llm,
+        default_model=default_model,
+        config=config,
+        logger=logger,
+        degraded_components=degraded_components,
+    )
+    rag_pipeline, rag_startup_index_task = await initialize_rag_pipeline(
+        config,
+        logger,
+        degraded_components,
+        cleanup_stack,
+        retrieval_client=retrieval_components.retrieval_client,
+        model_registry=retrieval_components.model_registry,
+    )
+    return RuntimeBootstrapArtifacts(
+        security=security,
+        memory=memory,
+        feedback=feedback,
+        llm=llm,
+        default_model=default_model,
+        skills=skills,
+        skill_count=skill_count,
+        optional_components=optional_components,
+        retrieval_components=retrieval_components,
+        rag_pipeline=rag_pipeline,
+        rag_startup_index_task=rag_startup_index_task,
+    )
+
+
+def _build_engine(
+    config: AppSettings,
+    artifacts: RuntimeBootstrapArtifacts,
+) -> Engine:
+    """Construct the Engine from the already-initialized runtime artifacts."""
+    return Engine(
+        config=config,
+        llm_client=artifacts.llm,
+        memory=artifacts.memory,
+        skills=artifacts.skills,
+        feedback_manager=artifacts.feedback,
+        instant_responder=artifacts.optional_components.instant_responder,
+        semantic_cache=artifacts.optional_components.semantic_cache,
+        intent_router=artifacts.optional_components.intent_router,
+        context_compressor=artifacts.optional_components.context_compressor,
+        rag_pipeline=artifacts.rag_pipeline,
+    )
+
+
+def _build_telegram(
+    config: AppSettings,
+    artifacts: RuntimeBootstrapArtifacts,
+    engine: Engine,
+) -> TelegramHandler:
+    """Construct the Telegram handler from the initialized runtime artifacts."""
+    return TelegramHandler(
+        config=config,
+        engine=engine,
+        security=artifacts.security,
+        feedback=artifacts.feedback,
+        semantic_cache=artifacts.optional_components.semantic_cache,
+    )
+
+
 async def build_runtime(
     config: AppSettings,
     logger: Any,
@@ -63,109 +181,39 @@ async def build_runtime(
     degraded_components: list[dict[str, str]] = []
     try:
         _acquire_runtime_lock(config, cleanup_stack, logger)
-
-        security = SecurityManager(config.security)
-        logger.info(
-            "security_initialized",
-            allowed_users=len(config.security.allowed_users),
-        )
-
-        memory, feedback = await initialize_memory_stack(config, cleanup_stack, logger)
-
-        rewrite_ollama_host(config, logger)
-
-        llm, default_model = await initialize_chat_client(
+        artifacts = await _initialize_runtime_dependencies(
             config,
+            logger,
             cleanup_stack,
-            logger,
-        )
-
-        skills, skill_count = await initialize_skills(security, logger)
-
-        optional_components = await initialize_optional_components(
-            config,
-            logger,
             degraded_components,
-            llm=llm,
-            memory=memory,
-            cleanup_stack=cleanup_stack,
         )
-        instant_responder = optional_components.instant_responder
-        semantic_cache = optional_components.semantic_cache
-        intent_router = optional_components.intent_router
-        context_compressor = optional_components.context_compressor
-
-        retrieval_components = await initialize_retrieval_components(
-            config,
-            logger,
-            degraded_components,
-            cleanup_stack,
-        )
-        retrieval_client = retrieval_components.retrieval_client
-        model_registry = retrieval_components.model_registry
-
-        await preload_default_model(
-            llm,
-            default_model=default_model,
-            config=config,
-            logger=logger,
-            degraded_components=degraded_components,
-        )
-
-        rag_pipeline, rag_startup_index_task = await initialize_rag_pipeline(
-            config,
-            logger,
-            degraded_components,
-            cleanup_stack,
-            retrieval_client=retrieval_client,
-            model_registry=model_registry,
-        )
-
-        engine = Engine(
-            config=config,
-            llm_client=llm,
-            memory=memory,
-            skills=skills,
-            feedback_manager=feedback,
-            instant_responder=instant_responder,
-            semantic_cache=semantic_cache,
-            intent_router=intent_router,
-            context_compressor=context_compressor,
-            rag_pipeline=rag_pipeline,
-        )
-
-        telegram = TelegramHandler(
-            config=config,
-            engine=engine,
-            security=security,
-            feedback=feedback,
-            semantic_cache=semantic_cache,
-        )
+        engine = _build_engine(config, artifacts)
+        telegram = _build_telegram(config, artifacts, engine)
 
         scheduler, auto_count, app = await initialize_scheduler_stack(
             config,
             logger,
-            security,
+            artifacts.security,
             engine,
             telegram,
-            memory,
-            feedback,
+            artifacts.memory,
+            artifacts.feedback,
         )
         log_degraded_startup_summary(logger, degraded_components)
 
         return RuntimeState(
             config=config,
             logger=logger,
-            memory=memory,
-            llm=llm,
+            memory=artifacts.memory,
+            llm=artifacts.llm,
             app=app,
             scheduler=scheduler,
-            skill_count=skill_count,
+            skill_count=artifacts.skill_count,
             auto_count=auto_count,
             cleanup_stack=cleanup_stack,
-            feedback=feedback,
-            semantic_cache=semantic_cache,
-            rag_startup_index_task=rag_startup_index_task,
+            feedback=artifacts.feedback,
+            semantic_cache=artifacts.optional_components.semantic_cache,
+            rag_startup_index_task=artifacts.rag_startup_index_task,
             degraded_components=degraded_components,
         )
     except Exception:

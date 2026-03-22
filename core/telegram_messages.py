@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 from telegram.ext import ContextTypes
 
 from core import telegram_continuation, telegram_streaming
+from core.telegram_state import ContinuationStore
 
 if TYPE_CHECKING:
     from telegram import Update
@@ -73,31 +74,31 @@ def is_continue_request(text: str) -> bool:
 
 
 def cleanup_pending_continuations(
-    self: TelegramHandler,
+    store: ContinuationStore,
     *,
     monotonic_fn: Callable[[], float],
 ) -> None:
     telegram_continuation.cleanup_pending_continuations(
-        self,
+        store,
         monotonic_fn=monotonic_fn,
     )
 
 
 def take_pending_continuation(
-    self: TelegramHandler,
+    store: ContinuationStore,
     chat_id: int,
     *,
     monotonic_fn: Callable[[], float],
 ) -> dict[str, Any] | None:
     return telegram_continuation.take_pending_continuation(
-        self,
+        store,
         chat_id,
         monotonic_fn=monotonic_fn,
     )
 
 
 def set_pending_continuation(
-    self: TelegramHandler,
+    store: ContinuationStore,
     chat_id: int,
     *,
     root_query: str,
@@ -105,7 +106,7 @@ def set_pending_continuation(
     monotonic_fn: Callable[[], float],
 ) -> None:
     telegram_continuation.set_pending_continuation(
-        self,
+        store,
         chat_id,
         root_query=root_query,
         turn=turn,

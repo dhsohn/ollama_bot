@@ -80,6 +80,19 @@ def _set_stream_meta(
     model_role: str | None = None,
     rag_trace: dict | None = None,
 ) -> None:
+    tracking_ops = getattr(self, "_tracking_ops", None)
+    if tracking_ops is not None:
+        tracking_ops.set_stream_meta(
+            chat_id,
+            tier=tier,
+            intent=intent,
+            cache_id=cache_id,
+            stop_reason=stop_reason,
+            usage=usage,
+            model_role=model_role,
+            rag_trace=rag_trace,
+        )
+        return
     engine_tracking.set_stream_meta(
         self,
         chat_id,
@@ -96,6 +109,10 @@ def _set_stream_meta(
 
 
 def _cleanup_stream_meta(self: Any, now: float | None = None) -> None:
+    tracking_ops = getattr(self, "_tracking_ops", None)
+    if tracking_ops is not None:
+        tracking_ops.cleanup_stream_meta(now=now)
+        return
     engine_tracking.cleanup_stream_meta(
         self,
         now=now,

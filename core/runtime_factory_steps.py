@@ -151,6 +151,81 @@ async def initialize_skills(security, logger: Any):
     return skills, skill_count
 
 
+async def _initialize_semantic_cache(
+    config: AppSettings,
+    logger: Any,
+    degraded_components: list[dict[str, str]],
+    cleanup_stack: AsyncExitStack,
+) -> Any:
+    cache_db: Any = None
+    try:
+        from core.semantic_cache import SemanticCache
+
+        cache_db_path = Path(config.data_dir) / "memory" / "cache.db"
+        cache_db = await _open_sqlite_db(cache_db_path)
+        semantic_cache = SemanticCache(
+            db=cache_db,
+            model_name=config.semantic_cache.model_name,
+            similarity_threshold=config.semantic_cache.similarity_threshold,
+            max_entries=config.semantic_cache.max_entries,
+            ttl_hours=config.semantic_cache.ttl_hours,
+            min_query_chars=config.semantic_cache.min_query_chars,
+            exclude_patterns=config.semantic_cache.exclude_patterns,
+        )
+        await semantic_cache.initialize()
+        cleanup_stack.push_async_callback(cache_db.close)
+        logger.info(
+            "semantic_cache_initialized",
+            enabled=semantic_cache.enabled,
+        )
+        return semantic_cache
+    except Exception as exc:
+        if cache_db is not None:
+            await cache_db.close()
+        handle_optional_component_failure(
+            config,
+            logger,
+            degraded_components,
+            component="semantic_cache",
+            error=exc,
+        )
+        return None
+
+
+async def _initialize_intent_router(
+    config: AppSettings,
+    logger: Any,
+    degraded_components: list[dict[str, str]],
+    *,
+    shared_encoder: Any,
+) -> Any:
+    try:
+        from core.intent_router import IntentRouter
+
+        intent_router = await run_in_thread(
+            IntentRouter,
+            routes_path=config.intent_router.routes_path,
+            encoder_model=config.intent_router.encoder_model,
+            min_confidence=config.intent_router.min_confidence,
+            encoder=shared_encoder,
+        )
+        logger.info(
+            "intent_router_initialized",
+            enabled=intent_router.enabled,
+            routes=intent_router.routes_count,
+        )
+        return intent_router
+    except Exception as exc:
+        handle_optional_component_failure(
+            config,
+            logger,
+            degraded_components,
+            component="intent_router",
+            error=exc,
+        )
+        return None
+
+
 async def initialize_optional_components(
     config: AppSettings,
     logger: Any,
@@ -172,70 +247,26 @@ async def initialize_optional_components(
         )
 
     if config.semantic_cache.enabled:
-        cache_db: Any = None
-        try:
-            from core.semantic_cache import SemanticCache
-
-            cache_db_path = Path(config.data_dir) / "memory" / "cache.db"
-            cache_db = await _open_sqlite_db(cache_db_path)
-            components.semantic_cache = SemanticCache(
-                db=cache_db,
-                model_name=config.semantic_cache.model_name,
-                similarity_threshold=config.semantic_cache.similarity_threshold,
-                max_entries=config.semantic_cache.max_entries,
-                ttl_hours=config.semantic_cache.ttl_hours,
-                min_query_chars=config.semantic_cache.min_query_chars,
-                exclude_patterns=config.semantic_cache.exclude_patterns,
-            )
-            await components.semantic_cache.initialize()
-            cleanup_stack.push_async_callback(cache_db.close)
-            logger.info(
-                "semantic_cache_initialized",
-                enabled=components.semantic_cache.enabled,
-            )
-        except Exception as exc:
-            if cache_db is not None:
-                await cache_db.close()
-            handle_optional_component_failure(
-                config,
-                logger,
-                degraded_components,
-                component="semantic_cache",
-                error=exc,
-            )
-            components.semantic_cache = None
+        components.semantic_cache = await _initialize_semantic_cache(
+            config,
+            logger,
+            degraded_components,
+            cleanup_stack,
+        )
 
     if config.intent_router.enabled:
-        try:
-            from core.intent_router import IntentRouter
-
-            shared_encoder = (
-                components.semantic_cache.encoder
-                if components.semantic_cache is not None
-                and components.semantic_cache.enabled
-                else None
-            )
-            components.intent_router = await run_in_thread(
-                IntentRouter,
-                routes_path=config.intent_router.routes_path,
-                encoder_model=config.intent_router.encoder_model,
-                min_confidence=config.intent_router.min_confidence,
-                encoder=shared_encoder,
-            )
-            logger.info(
-                "intent_router_initialized",
-                enabled=components.intent_router.enabled,
-                routes=components.intent_router.routes_count,
-            )
-        except Exception as exc:
-            handle_optional_component_failure(
-                config,
-                logger,
-                degraded_components,
-                component="intent_router",
-                error=exc,
-            )
-            components.intent_router = None
+        shared_encoder = (
+            components.semantic_cache.encoder
+            if components.semantic_cache is not None
+            and components.semantic_cache.enabled
+            else None
+        )
+        components.intent_router = await _initialize_intent_router(
+            config,
+            logger,
+            degraded_components,
+            shared_encoder=shared_encoder,
+        )
 
     if config.context_compressor.enabled:
         components.context_compressor = ContextCompressor(
@@ -281,31 +312,47 @@ async def initialize_retrieval_components(
             components.retrieval_client = None
 
     if components.retrieval_client is not None:
-        try:
-            from core.config import ModelRegistryConfig
-            from core.model_registry import ModelRegistry
-
-            retrieval_proto = cast(RetrievalClientProtocol, components.retrieval_client)
-            components.model_registry = ModelRegistry(
-                ModelRegistryConfig(
-                    default_model=get_default_chat_model(config),
-                    embedding_model=config.ollama.embedding_model,
-                    reranker_model=config.ollama.reranker_model,
-                ),
-                retrieval_proto,
-            )
-            await components.model_registry.initialize()
-        except Exception as exc:
-            handle_optional_component_failure(
-                config,
-                logger,
-                degraded_components,
-                component="model_registry",
-                error=exc,
-            )
-            components.model_registry = None
+        components.model_registry = await _initialize_model_registry(
+            config,
+            logger,
+            degraded_components,
+            retrieval_client=components.retrieval_client,
+        )
 
     return components
+
+
+async def _initialize_model_registry(
+    config: AppSettings,
+    logger: Any,
+    degraded_components: list[dict[str, str]],
+    *,
+    retrieval_client: OllamaClient,
+) -> Any:
+    try:
+        from core.config import ModelRegistryConfig
+        from core.model_registry import ModelRegistry
+
+        retrieval_proto = cast(RetrievalClientProtocol, retrieval_client)
+        model_registry = ModelRegistry(
+            ModelRegistryConfig(
+                default_model=get_default_chat_model(config),
+                embedding_model=config.ollama.embedding_model,
+                reranker_model=config.ollama.reranker_model,
+            ),
+            retrieval_proto,
+        )
+        await model_registry.initialize()
+        return model_registry
+    except Exception as exc:
+        handle_optional_component_failure(
+            config,
+            logger,
+            degraded_components,
+            component="model_registry",
+            error=exc,
+        )
+        return None
 
 
 async def preload_default_model(
@@ -503,17 +550,13 @@ def schedule_rag_startup_index(indexer: Any, kb_dirs_to_index: list[str], logger
     return task
 
 
-async def initialize_scheduler_stack(
+def _build_scheduler(
     config: AppSettings,
-    logger: Any,
     security: Any,
-    engine: Any,
-    telegram: Any,
-    memory: MemoryManager,
-    feedback: FeedbackManager | None,
-) -> tuple[AutoScheduler, int, Any]:
+    logger: Any,
+) -> AutoScheduler:
     try:
-        scheduler = AutoScheduler(
+        return AutoScheduler(
             config=config,
             security=security,
             auto_dir="auto",
@@ -525,6 +568,16 @@ async def initialize_scheduler_stack(
             "Check `scheduler.timezone` in config/config.yaml."
         ) from exc
 
+
+def _wire_scheduler_dependencies(
+    scheduler: AutoScheduler,
+    *,
+    telegram: Any,
+    engine: Any,
+    memory: MemoryManager,
+    feedback: FeedbackManager | None,
+    config: AppSettings,
+) -> None:
     scheduler.set_dependencies(engine=engine, telegram=telegram)
     if not scheduler.dependencies_ready():
         raise StartupError(
@@ -543,6 +596,26 @@ async def initialize_scheduler_stack(
         raise StartupError(
             "Telegram handler must receive scheduler before initialization."
         )
+
+
+async def initialize_scheduler_stack(
+    config: AppSettings,
+    logger: Any,
+    security: Any,
+    engine: Any,
+    telegram: Any,
+    memory: MemoryManager,
+    feedback: FeedbackManager | None,
+) -> tuple[AutoScheduler, int, Any]:
+    scheduler = _build_scheduler(config, security, logger)
+    _wire_scheduler_dependencies(
+        scheduler,
+        telegram=telegram,
+        engine=engine,
+        memory=memory,
+        feedback=feedback,
+        config=config,
+    )
 
     try:
         auto_count = await scheduler.load_automations(strict=True)

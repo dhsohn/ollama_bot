@@ -65,44 +65,21 @@ async def attach_feedback_controls(
 
 def cleanup_preview_cache(self: TelegramHandler) -> None:
     """Purge expired preview-cache entries and enforce the size limit."""
-    self._cleanup_pending_reasons()
-    self._cleanup_pending_continuations()
+    interaction_state = self._interaction_state
+    interaction_state.pending_reasons.cleanup(monotonic_fn=time.monotonic)
+    interaction_state.continuations.cleanup(monotonic_fn=time.monotonic)
     max_size = self._config.feedback.preview_cache_max_size
     ttl_hours = self._config.feedback.preview_cache_ttl_hours
-    if max_size <= 0 or ttl_hours <= 0:
-        self._preview_cache.clear()
-        return
-
-    now = time.monotonic()
-    ttl_seconds = ttl_hours * 3600
-    expired = [
-        key
-        for key, value in self._preview_cache.items()
-        if now - value["ts"] > ttl_seconds
-    ]
-    for key in expired:
-        del self._preview_cache[key]
-
-    while len(self._preview_cache) > max_size:
-        oldest_key = min(
-            self._preview_cache,
-            key=lambda key: self._preview_cache[key]["ts"],
-        )
-        del self._preview_cache[oldest_key]
+    interaction_state.previews.prune(
+        max_size=max_size,
+        ttl_hours=ttl_hours,
+        monotonic_fn=time.monotonic,
+    )
 
 
 def cleanup_pending_reasons(self: TelegramHandler) -> None:
     """Remove expired pending-reason entries."""
-    if not self._pending_reason:
-        return
-    now = time.monotonic()
-    expired_chat_ids = [
-        chat_id
-        for chat_id, pending in self._pending_reason.items()
-        if now > float(pending.get("expires", 0.0))
-    ]
-    for chat_id in expired_chat_ids:
-        del self._pending_reason[chat_id]
+    self._interaction_state.pending_reasons.cleanup(monotonic_fn=time.monotonic)
 
 
 def cache_preview(
@@ -116,22 +93,17 @@ def cache_preview(
     max_chars = self._config.feedback.preview_max_chars
     max_size = self._config.feedback.preview_cache_max_size
     ttl_hours = self._config.feedback.preview_cache_ttl_hours
-    if max_chars <= 0 or max_size <= 0 or ttl_hours <= 0:
-        return
     self._cleanup_preview_cache()
-
-    while len(self._preview_cache) >= max_size:
-        oldest_key = min(
-            self._preview_cache,
-            key=lambda key: self._preview_cache[key]["ts"],
-        )
-        del self._preview_cache[oldest_key]
-
-    self._preview_cache[(chat_id, bot_message_id)] = {
-        "user": user_text[:max_chars],
-        "bot": bot_text[:max_chars],
-        "ts": time.monotonic(),
-    }
+    self._interaction_state.previews.cache(
+        chat_id=chat_id,
+        bot_message_id=bot_message_id,
+        user_text=user_text,
+        bot_text=bot_text,
+        max_chars=max_chars,
+        max_size=max_size,
+        ttl_hours=ttl_hours,
+        monotonic_fn=time.monotonic,
+    )
 
 
 def parse_feedback_callback_data(data: str | None) -> tuple[int, int] | None:
@@ -195,7 +167,8 @@ async def handle_feedback_callback(
         return
 
     self._cleanup_preview_cache()
-    preview = self._preview_cache.get((chat_id, bot_message_id), {})
+    interaction_state = self._interaction_state
+    preview = interaction_state.previews.get(chat_id, bot_message_id)
     is_update = await self._feedback.store_feedback(
         chat_id=chat_id,
         bot_message_id=bot_message_id,
@@ -204,13 +177,13 @@ async def handle_feedback_callback(
         bot_preview=preview.get("bot"),
     )
 
-    pending = self._pending_reason.get(chat_id)
+    pending = interaction_state.pending_reasons.get(chat_id)
     if (
         pending is not None
         and pending.get("bot_message_id") == bot_message_id
         and (is_update or rating == 1)
     ):
-        del self._pending_reason[chat_id]
+        interaction_state.pending_reasons.discard(chat_id)
 
     if (
         rating == -1
@@ -233,22 +206,22 @@ async def handle_feedback_callback(
             self._logger.debug("cache_feedback_invalidation_failed", error=str(exc))
 
     if rating == -1 and not is_update and self._config.feedback.collect_reason:
-        existing_pending = self._pending_reason.get(chat_id)
+        existing_pending = interaction_state.pending_reasons.pop(chat_id)
         replaced_pending = False
         if existing_pending is not None:
             previous_expires = float(existing_pending.get("expires", 0.0))
             previous_bot_message_id = existing_pending.get("bot_message_id")
-            del self._pending_reason[chat_id]
             replaced_pending = (
                 time.monotonic() <= previous_expires
                 and previous_bot_message_id != bot_message_id
             )
 
         timeout = self._config.feedback.reason_timeout_seconds
-        self._pending_reason[chat_id] = {
-            "bot_message_id": bot_message_id,
-            "expires": time.monotonic() + timeout,
-        }
+        interaction_state.pending_reasons.set(
+            chat_id,
+            bot_message_id=bot_message_id,
+            expires=time.monotonic() + timeout,
+        )
         await query.answer(t("feedback_thanks", lang), show_alert=False)
         if query.message is not None and hasattr(query.message, "reply_text"):
             if replaced_pending:
@@ -322,14 +295,15 @@ async def handle_reason_input(
     text: str,
     update: Update,
 ) -> bool:
-    pending = self._pending_reason.get(chat_id)
+    pending_reasons = self._interaction_state.pending_reasons
+    pending = pending_reasons.get(chat_id)
     if pending is None:
         return False
 
     lang = await get_user_language(self, chat_id)
 
     if time.monotonic() > pending["expires"]:
-        del self._pending_reason[chat_id]
+        pending_reasons.discard(chat_id)
         await update.effective_message.reply_text(  # type: ignore[union-attr]
             t("feedback_reason_expired", lang)
         )
@@ -355,7 +329,7 @@ async def handle_reason_input(
             reason=reason,
         )
 
-    del self._pending_reason[chat_id]
+    pending_reasons.discard(chat_id)
     if updated:
         await update.effective_message.reply_text(  # type: ignore[union-attr]
             t("feedback_reason_saved", lang)
@@ -376,8 +350,8 @@ async def handle_reason_skip(
     chat_id = update.effective_chat.id  # type: ignore[union-attr]
     lang = await get_user_language(self, chat_id)
 
-    if chat_id in self._pending_reason:
-        del self._pending_reason[chat_id]
+    if self._interaction_state.pending_reasons.get(chat_id) is not None:
+        self._interaction_state.pending_reasons.discard(chat_id)
         await update.effective_message.reply_text(  # type: ignore[union-attr]
             t("feedback_reason_skipped", lang)
         )

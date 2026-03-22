@@ -7,7 +7,6 @@ APScheduler cron jobs, and executes them.
 from __future__ import annotations
 
 import asyncio
-import functools
 import inspect
 from collections.abc import Callable
 from datetime import UTC, datetime, timezone
@@ -21,8 +20,8 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from core import auto_scheduler_actions, auto_scheduler_delivery
 from core.config import AppSettings, get_default_chat_model
-from core.engine_context import normalize_language
 from core.logging_setup import get_logger
 from core.security import SecurityManager
 
@@ -210,6 +209,16 @@ class AutoScheduler:
         }
 
     @staticmethod
+    async def _sleep(delay_seconds: int) -> None:
+        await asyncio.sleep(delay_seconds)
+
+    def _get_default_model(self) -> str:
+        return get_default_chat_model(self._config)
+
+    def _current_datetime(self) -> datetime:
+        return datetime.now(self._timezone)
+
+    @staticmethod
     def _resolve_timezone(name: str):
         """Return a tzinfo object available in the current runtime environment."""
         try:
@@ -380,149 +389,27 @@ class AutoScheduler:
 
     async def _execute_automation(self, auto_name: str) -> bool:
         """Execute an automation job, including retry logic."""
-        auto = self._automations.get(auto_name)
-        if not auto or not auto.enabled:
-            return False
-
-        self._logger.info("automation_executing", name=auto_name)
-
-        last_error: Exception | None = None
-        result: str | None = None
-        succeeded = False
-
-        for attempt in range(auto.retry.max_attempts):
-            try:
-                result = await asyncio.wait_for(
-                    self._run_action(auto),
-                    timeout=auto.timeout,
-                )
-                succeeded = True
-                break
-            except Exception as exc:
-                last_error = exc
-                self._logger.warning(
-                    "automation_attempt_failed",
-                    name=auto_name,
-                    attempt=attempt + 1,
-                    error=self._format_exception(exc),
-                )
-                if attempt < auto.retry.max_attempts - 1:
-                    await asyncio.sleep(auto.retry.delay_seconds)
-
-        if succeeded:
-            if result:
-                self._logger.info("automation_completed", name=auto_name)
-                await self._deliver_output(auto, result)
-            else:
-                self._logger.info("automation_completed_no_output", name=auto_name)
-            return True
-        else:
-            self._logger.error(
-                "automation_failed",
-                name=auto_name,
-                error=self._format_exception(last_error),
-            )
-            await self._deliver_failure_notice(auto, last_error)
-            return False
+        return await auto_scheduler_actions.execute_automation(self, auto_name)
 
     async def _run_action(self, auto: AutoDefinition) -> str:
         """Dispatch to the appropriate handler for the action type."""
-        action = auto.action
-        handler = self._action_handlers.get(action.type)
-        if handler is None:
-            raise ValueError(f"Unknown action type: {action.type}")
-        result = handler(auto)
-        if inspect.isawaitable(result):
-            return await result
-        return str(result)
+        return await auto_scheduler_actions.run_action(self, auto)
 
     async def _run_skill_action(self, auto: AutoDefinition) -> str:
-        if self._engine is None:
-            raise RuntimeError("Engine not set")
-        action = auto.action
-        model_override, model_role = self._resolve_action_model(action)
-        llm_timeout = action.llm_timeout if action.llm_timeout is not None else auto.timeout
-        return await self._engine.execute_skill(
-            skill_name=action.target,
-            parameters=action.parameters,
-            model_override=model_override,
-            model_role_override=model_role,
-            max_tokens=action.max_tokens,
-            temperature=action.temperature,
-            timeout=llm_timeout,
-        )
+        return await auto_scheduler_actions.run_skill_action(self, auto)
 
     async def _run_prompt_action(self, auto: AutoDefinition) -> str:
-        if self._engine is None:
-            raise RuntimeError("Engine not set")
-        action = auto.action
-        model_override, model_role = self._resolve_action_model(action)
-        response_format = action.parameters.get("response_format")
-        chat_id = action.parameters.get("chat_id")
-        max_tokens = (
-            action.max_tokens
-            if action.max_tokens is not None
-            else action.parameters.get("max_tokens")
-        )
-        temperature = (
-            action.temperature
-            if action.temperature is not None
-            else action.parameters.get("temperature")
-        )
-        llm_timeout = action.llm_timeout if action.llm_timeout is not None else auto.timeout
-        return await self._engine.process_prompt(
-            prompt=action.target,
-            chat_id=chat_id if isinstance(chat_id, int) else None,
-            response_format=response_format,
-            max_tokens=max_tokens if isinstance(max_tokens, int) else None,
-            temperature=temperature if isinstance(temperature, int | float) else None,
-            model_override=model_override,
-            model_role=model_role,
-            timeout=llm_timeout,
-            timeout_is_hard=action.llm_timeout is not None,
-        )
+        return await auto_scheduler_actions.run_prompt_action(self, auto)
 
     async def _run_callable_action(self, auto: AutoDefinition) -> str:
-        action = auto.action
-        func = self._callables.get(action.target)
-        if func is None:
-            raise ValueError(
-                f"Callable '{action.target}' not registered. "
-                f"Available: {list(self._callables.keys())}"
-            )
-        call_kwargs = dict(action.parameters)
-        model_override, model_role = self._resolve_action_model(action)
-        optional_kwargs: dict[str, Any] = {}
-        if model_override is not None:
-            optional_kwargs["model"] = model_override
-        if model_role is not None:
-            optional_kwargs["model_role"] = model_role
-        if action.temperature is not None:
-            optional_kwargs["temperature"] = action.temperature
-        if action.max_tokens is not None:
-            optional_kwargs["max_tokens"] = action.max_tokens
-        optional_kwargs["timeout"] = auto.timeout
-        if action.llm_timeout is not None:
-            optional_kwargs["llm_timeout"] = action.llm_timeout
-
-        self._inject_callable_kwargs(func, call_kwargs, optional_kwargs)
-
-        output = func(**call_kwargs)
-        if inspect.isawaitable(output):
-            output = await output
-        return "" if output is None else str(output)
+        return await auto_scheduler_actions.run_callable_action(self, auto)
 
     def _resolve_action_model(self, action: AutoAction) -> tuple[str | None, str | None]:
         """Resolve the model and role to use for an automation action.
 
         The default is the global default model without a role tag.
         """
-        model_override = action.model
-        model_role = action.model_role
-        if model_override is not None or model_role is not None:
-            return model_override, model_role
-        fallback_model = get_default_chat_model(self._config).strip() or None
-        return fallback_model, None
+        return auto_scheduler_actions.resolve_action_model(self, action)
 
     @staticmethod
     def _inject_callable_kwargs(
@@ -531,95 +418,18 @@ class AutoScheduler:
         optional_kwargs: dict[str, Any],
     ) -> None:
         """Inject only supported optional kwargs based on the callable signature."""
-        if not optional_kwargs:
-            return
-        try:
-            signature = inspect.signature(func)
-        except (TypeError, ValueError):
-            return
-
-        accepts_var_kw = any(
-            param.kind == inspect.Parameter.VAR_KEYWORD
-            for param in signature.parameters.values()
+        auto_scheduler_actions.inject_callable_kwargs(
+            func,
+            call_kwargs,
+            optional_kwargs,
         )
-        accepted_names = {
-            name
-            for name, param in signature.parameters.items()
-            if param.kind in (
-                inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                inspect.Parameter.KEYWORD_ONLY,
-            )
-        }
-        for key, value in optional_kwargs.items():
-            if key in call_kwargs:
-                continue
-            if accepts_var_kw or key in accepted_names:
-                call_kwargs[key] = value
 
     def _run_command_action(self, auto: AutoDefinition) -> str:
-        # In v0.1, system-command execution is disabled for security reasons.
-        self._logger.warning(
-            "command_action_disabled",
-            name=auto.name,
-            target=auto.action.target,
-        )
-        return "[보안 제한] 'command' 타입은 v0.1에서 비활성화되어 있습니다."
+        return auto_scheduler_actions.run_command_action(self, auto)
 
     async def _deliver_output(self, auto: AutoDefinition, result: str) -> None:
         """Deliver automation output to Telegram and/or save it to a file."""
-        output = auto.output
-
-        # Telegram delivery
-        if output.send_to_telegram and self._telegram:
-            lang = normalize_language(self._config.bot.language)
-            # Send HTML-tagged results with HTML parse mode.
-            use_html = "<b>" in result or "<pre>" in result
-            parse_mode = "HTML" if use_html else None
-            header = (
-                f"⏰ <b>{'Automation' if lang == 'en' else '자동화'}: {auto.name}</b>\n\n"
-                if use_html
-                else f"⏰ {'Automation' if lang == 'en' else '자동화'}: {auto.name}\n\n"
-            )
-            for user_id in self._config.security.allowed_users:
-                try:
-                    await self._telegram.send_message(
-                        user_id, header + result, parse_mode=parse_mode,
-                    )
-                except Exception as exc:
-                    self._logger.error(
-                        "auto_telegram_send_failed",
-                        user_id=user_id,
-                        error=str(exc),
-                    )
-
-        # File output
-        if output.save_to_file:
-            try:
-                # Replace date placeholders.
-                now = datetime.now(self._timezone)
-                file_path = output.save_to_file.replace(
-                    "{date}", now.strftime("%Y%m%d")
-                )
-
-                # Validate the output path.
-                validated_path = self._security.validate_path(
-                    file_path, base_dir=self._config.data_dir
-                )
-                validated_path.parent.mkdir(parents=True, exist_ok=True)
-                loop = asyncio.get_running_loop()
-                await loop.run_in_executor(
-                    None,
-                    functools.partial(validated_path.write_text, result, encoding="utf-8"),
-                )
-                self._logger.info(
-                    "auto_output_saved", path=str(validated_path)
-                )
-            except Exception as exc:
-                self._logger.error(
-                    "auto_file_save_failed",
-                    path=output.save_to_file,
-                    error=str(exc),
-                )
+        await auto_scheduler_delivery.deliver_output(self, auto, result)
 
     async def _deliver_failure_notice(
         self,
@@ -627,40 +437,12 @@ class AutoScheduler:
         error: Exception | None,
     ) -> None:
         """Send an automation failure notice to Telegram."""
-        if self._telegram is None:
-            return
-
-        from html import escape as _h
-
-        now = datetime.now(self._timezone).strftime("%Y-%m-%d %H:%M:%S %Z")
-        message = (
-            f"⚠️ <b>자동화 실패: {_h(auto.name)}</b>\n"
-            f"- 시각: {now}\n"
-            f"- 원인: <code>{_h(self._format_exception(error))}</code>\n"
-            f"- 재시도: {auto.retry.max_attempts}회 모두 실패"
-        )
-
-        for user_id in self._config.security.allowed_users:
-            try:
-                await self._telegram.send_message(
-                    user_id, message, parse_mode="HTML",
-                )
-            except Exception as exc:
-                self._logger.error(
-                    "auto_failure_notice_send_failed",
-                    user_id=user_id,
-                    error=self._format_exception(exc),
-                )
+        await auto_scheduler_delivery.deliver_failure_notice(self, auto, error)
 
     @staticmethod
     def _format_exception(exc: Exception | None) -> str:
         """Normalize an exception into a string that includes its class name."""
-        if exc is None:
-            return "unknown"
-        message = str(exc).strip()
-        if message:
-            return f"{exc.__class__.__name__}: {message}"
-        return exc.__class__.__name__
+        return auto_scheduler_delivery.format_exception(exc)
 
     def start(self) -> None:
         """Start the scheduler."""

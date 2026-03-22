@@ -5,6 +5,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from core.i18n import t
+from core.telegram_state import ContinuationStore
 
 if TYPE_CHECKING:
     from core.telegram_handler import TelegramHandler
@@ -21,50 +22,37 @@ def is_continue_request(text: str) -> bool:
 
 
 def cleanup_pending_continuations(
-    self: TelegramHandler,
+    store: ContinuationStore,
     *,
     monotonic_fn: Callable[[], float],
 ) -> None:
-    if not self._pending_continuation:
-        return
-    now = monotonic_fn()
-    expired_chat_ids = [
-        chat_id
-        for chat_id, pending in self._pending_continuation.items()
-        if now > float(pending.get("expires", 0.0))
-    ]
-    for chat_id in expired_chat_ids:
-        del self._pending_continuation[chat_id]
+    store.cleanup(monotonic_fn=monotonic_fn)
 
 
 def take_pending_continuation(
-    self: TelegramHandler,
+    store: ContinuationStore,
     chat_id: int,
     *,
     monotonic_fn: Callable[[], float],
 ) -> dict[str, Any] | None:
-    cleanup_pending_continuations(self, monotonic_fn=monotonic_fn)
-    pending = self._pending_continuation.get(chat_id)
-    if pending is None:
-        return None
-    del self._pending_continuation[chat_id]
-    return pending
+    return store.take(chat_id, monotonic_fn=monotonic_fn)
 
 
 def set_pending_continuation(
-    self: TelegramHandler,
+    store: ContinuationStore,
     chat_id: int,
     *,
     root_query: str,
     turn: int,
     monotonic_fn: Callable[[], float],
 ) -> None:
-    cleanup_pending_continuations(self, monotonic_fn=monotonic_fn)
-    self._pending_continuation[chat_id] = {
-        "root_query": root_query,
-        "turn": max(1, turn),
-        "expires": monotonic_fn() + _CONTINUATION_TTL_SECONDS,
-    }
+    store.set(
+        chat_id,
+        root_query=root_query,
+        turn=turn,
+        ttl_seconds=_CONTINUATION_TTL_SECONDS,
+        monotonic_fn=monotonic_fn,
+    )
 
 
 def build_continuation_prompt(pending: dict[str, Any]) -> str:

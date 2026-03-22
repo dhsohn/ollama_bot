@@ -18,18 +18,11 @@ import time
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
 
-from core import (
-    engine_delegates,
-    engine_management,
-    engine_rag,
-)
+from core import engine_background, engine_management, engine_status, engine_tracking
 from core.config import AppSettings, get_system_prompt
+from core.engine_mixins import EngineDelegateMixin, EngineManagementMixin
 from core.engine_types import (
     ContextProvider,
-    _FullScanSegment,
-    _PreparedFullRequest,
-    _PreparedRequest,
-    _RoutingDecision,
     _StreamMeta,
 )
 from core.enums import RoutingTier
@@ -46,13 +39,13 @@ if TYPE_CHECKING:
     from core.instant_responder import InstantResponder
     from core.intent_router import IntentRouter
     from core.rag.pipeline import RAGPipeline
-    from core.semantic_cache import CacheContext, SemanticCache
+    from core.semantic_cache import SemanticCache
 _STREAM_META_TTL_SECONDS = 600.0
 _STREAM_META_MAX_ENTRIES = 2048
 _STREAM_REPEATED_CHUNK_ABORT_THRESHOLD = 30
 
 
-class Engine:
+class Engine(EngineManagementMixin, EngineDelegateMixin):
     """Conversation engine that orchestrates routing and context management."""
 
     def __init__(
@@ -94,81 +87,21 @@ class Engine:
         self._summary_tasks: set[asyncio.Task[Any]] = set()
         self._degraded_since: dict[str, float] = {}
         self._rag_reindex_lock = asyncio.Lock()
+        self._tracking_ops = engine_tracking.EngineTrackingOperations(
+            self,
+            meta_factory=_StreamMeta,
+            monotonic_fn=lambda: time.monotonic(),
+        )
+        self._background_summary_controller = engine_background.BackgroundSummaryController(self)
+        self._status_service = engine_status.EngineStatusService(
+            self,
+            monotonic_fn=lambda: time.monotonic(),
+        )
+        self._management_api = engine_management.EngineManagementAPI(self)
         self._stream_orchestrator = EngineStreamOrchestrator(
             self,
             repeated_chunk_abort_threshold=_STREAM_REPEATED_CHUNK_ABORT_THRESHOLD,
         )
-
-    # Thin delegations live in dedicated modules so this file stays focused on
-    # top-level request handling and constructor state.
-    rollback_last_turn = engine_management.rollback_last_turn
-    classify_intent = engine_management.classify_intent
-    route_request = engine_management.route_request
-    retrieve = engine_management.retrieve
-    generate = engine_management.generate
-    analyze_all_corpus = engine_management.analyze_all_corpus
-    reindex_rag_corpus = engine_management.reindex_rag_corpus
-    consume_last_stream_meta = engine_management.consume_last_stream_meta
-    execute_skill = engine_management.execute_skill
-    process_prompt = engine_management.process_prompt
-    change_model = engine_management.change_model
-    list_models = engine_management.list_models
-    get_current_model = engine_management.get_current_model
-    reload_skills = engine_management.reload_skills
-    list_skills = engine_management.list_skills
-    get_last_skill_load_errors = engine_management.get_last_skill_load_errors
-    get_memory_stats = engine_management.get_memory_stats
-    clear_conversation = engine_management.clear_conversation
-    export_conversation_markdown = engine_management.export_conversation_markdown
-    get_status = engine_management.get_status
-    _build_optimization_tier_details = engine_management._build_optimization_tier_details
-    _build_rag_tier_detail = engine_management._build_rag_tier_detail
-    _manual_tier_detail = engine_management._manual_tier_detail
-    _make_tier_detail = engine_management._make_tier_detail
-    _format_uptime = staticmethod(engine_management._format_uptime)
-
-    _track_request = engine_delegates._track_request
-    _classify_route = engine_delegates._classify_route
-    _decide_routing = engine_delegates._decide_routing
-    _set_stream_meta = engine_delegates._set_stream_meta
-    _cleanup_stream_meta = engine_delegates._cleanup_stream_meta
-    _build_cache_context = engine_delegates._build_cache_context
-    _is_cache_response_acceptable = staticmethod(engine_delegates._is_cache_response_acceptable)
-    _log_request = engine_delegates._log_request
-    _inject_rag_context = staticmethod(engine_delegates._inject_rag_context)
-    _inject_extra_context = staticmethod(engine_delegates._inject_extra_context)
-    _trigger_background_summary = engine_delegates._trigger_background_summary
-    _handle_summary_task_done = engine_delegates._handle_summary_task_done
-    _handle_background_task_error = engine_delegates._handle_background_task_error
-    _emit_full_scan_progress = staticmethod(engine_delegates._emit_full_scan_progress)
-    _build_full_scan_segments = staticmethod(engine_delegates._build_full_scan_segments)
-    _pack_blocks_for_reduction = staticmethod(engine_delegates._pack_blocks_for_reduction)
-    _prepare_request = engine_delegates._prepare_request
-    _resolve_inference_timeout = staticmethod(engine_delegates._resolve_inference_timeout)
-    _prepare_full_request = engine_delegates._prepare_full_request
-    _extract_json_payload = staticmethod(engine_delegates._extract_json_payload)
-    _maybe_store_semantic_cache = engine_delegates._maybe_store_semantic_cache
-    _maybe_review_full_response = engine_delegates._maybe_review_full_response
-    _is_summarize_skill = staticmethod(engine_delegates._is_summarize_skill)
-    _extract_skill_user_input = staticmethod(engine_delegates._extract_skill_user_input)
-    _should_use_chunked_summary = engine_delegates._should_use_chunked_summary
-    _split_text_for_summary = staticmethod(engine_delegates._split_text_for_summary)
-    _run_skill_chat = engine_delegates._run_skill_chat
-    _run_chunked_summary_pipeline = engine_delegates._run_chunked_summary_pipeline
-    _prepare_target_model = engine_delegates._prepare_target_model
-    _resolve_model_for_role = engine_delegates._resolve_model_for_role
-    _persist_turn = engine_delegates._persist_turn
-    _persist_failed_turn = engine_delegates._persist_failed_turn
-    _build_context = engine_delegates._build_context
-    _build_base_context = engine_delegates._build_base_context
-    _sanitize_history_for_prompt = engine_delegates._sanitize_history_for_prompt
-    _inject_preferences = engine_delegates._inject_preferences
-    _inject_guidelines = engine_delegates._inject_guidelines
-    _inject_dicl_examples = engine_delegates._inject_dicl_examples
-    _inject_intent_suffix = staticmethod(engine_delegates._inject_intent_suffix)
-    _normalize_language = staticmethod(engine_delegates._normalize_language)
-    _inject_language_policy = engine_delegates._inject_language_policy
-    _assemble_messages = staticmethod(engine_delegates._assemble_messages)
 
     @staticmethod
     def _resolve_system_prompt(config: AppSettings) -> str:
