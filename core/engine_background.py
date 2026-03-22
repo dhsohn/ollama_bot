@@ -46,8 +46,9 @@ class BackgroundSummaryController:
         task.add_done_callback(engine._handle_summary_task_done)
 
     def handle_summary_task_done(self, task: asyncio.Task[Any]) -> None:
-        self._engine._summary_tasks.discard(task)
-        self.handle_background_task_error(task)
+        engine = self._engine
+        engine._summary_tasks.discard(task)
+        engine._handle_background_task_error(task)
 
     def handle_background_task_error(self, task: asyncio.Task[Any]) -> None:
         """Log background-task failures instead of silently dropping them."""

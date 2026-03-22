@@ -23,6 +23,7 @@ from core.config import AppSettings, get_system_prompt
 from core.engine_mixins import EngineDelegateMixin, EngineManagementMixin
 from core.engine_types import (
     ContextProvider,
+    _RoutingDecision,
     _StreamMeta,
 )
 from core.enums import RoutingTier
